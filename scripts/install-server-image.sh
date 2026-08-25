@@ -3,11 +3,11 @@
 set -Eeuo pipefail
 
 REPOSITORY_REF="${REPOSITORY_REF:-main}"
-INSTALL_DIR="${INSTALL_DIR:-/opt/open-ai-canvas}"
+INSTALL_DIR="${INSTALL_DIR:-/opt/beidou-kai}"
 CANVAS_HTTP_PORT="${CANVAS_HTTP_PORT:-3000}"
 CANVAS_IMAGE_TAG="${CANVAS_IMAGE_TAG:-latest}"
 COMPOSE_FILE="docker-compose.deploy.yml"
-COMPOSE_URL="${COMPOSE_URL:-https://raw.githubusercontent.com/ddcat-ai/open-ai-canvas/${REPOSITORY_REF}/${COMPOSE_FILE}}"
+COMPOSE_URL="${COMPOSE_URL:-https://raw.githubusercontent.com/xum74526-art/kai--/${REPOSITORY_REF}/${COMPOSE_FILE}}"
 
 step() {
     printf '\n==> %s\n' "$1"
@@ -141,7 +141,7 @@ print_result() {
     printf '访问地址：http://%s:%s\n' "$local_ip" "$CANVAS_HTTP_PORT"
     printf '安装目录：%s\n' "$INSTALL_DIR"
     printf '查看状态：cd %q && docker compose --env-file .env -f %s ps\n' "$INSTALL_DIR" "$COMPOSE_FILE"
-    printf '\n首次打开后注册的第一个账号会自动成为管理员。公网长期使用前请配置 HTTPS。\n'
+    printf '\n新注册账号默认为普通用户；请通过受控流程初始化管理员。公网长期使用前请配置 HTTPS。\n'
 }
 
 main() {

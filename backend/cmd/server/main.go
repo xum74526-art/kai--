@@ -102,7 +102,7 @@ func main() {
 	handler.RegisterProjectRoutes(projectAPI, svc)
 	handler.RegisterCanvasShareRoutes(api, svc)
 
-	log.Printf("KAI影 backend listening on %s", addr)
+	log.Printf("北斗 KAI影 backend listening on %s", addr)
 	if err := r.Run(addr); err != nil {
 		log.Fatal(err)
 	}

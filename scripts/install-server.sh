@@ -2,9 +2,9 @@
 
 set -Eeuo pipefail
 
-REPOSITORY_URL="${REPOSITORY_URL:-https://github.com/ddcat-ai/open-ai-canvas.git}"
+REPOSITORY_URL="${REPOSITORY_URL:-https://github.com/xum74526-art/kai--.git}"
 REPOSITORY_REF="${REPOSITORY_REF:-main}"
-INSTALL_DIR="${INSTALL_DIR:-/opt/open-ai-canvas}"
+INSTALL_DIR="${INSTALL_DIR:-/opt/beidou-kai}"
 CANVAS_HTTP_PORT="${CANVAS_HTTP_PORT:-3000}"
 COMPOSE_FILE="docker-compose.deploy.yml"
 BUILD_COMPOSE_FILE="docker-compose.build.yml"
@@ -64,7 +64,7 @@ install_docker() {
 }
 
 sync_source() {
-    step "下载 KAI影源码"
+    step "下载北斗 KAI影源码"
     if [[ -d "$INSTALL_DIR/.git" ]]; then
         cd "$INSTALL_DIR"
         [[ -z "$(git status --porcelain --untracked-files=no)" ]] || fail "$INSTALL_DIR 存在本地代码改动，请先处理后再更新"
@@ -129,7 +129,7 @@ print_result() {
     printf '访问地址：http://%s:%s\n' "$local_ip" "$CANVAS_HTTP_PORT"
     printf '安装目录：%s\n' "$INSTALL_DIR"
     printf '查看状态：cd %q && docker compose --env-file .env -f %s -f %s ps\n' "$INSTALL_DIR" "$COMPOSE_FILE" "$BUILD_COMPOSE_FILE"
-    printf '\n首次打开后注册的第一个账号会自动成为管理员。公网长期使用前请配置 HTTPS。\n'
+    printf '\n新注册账号默认为普通用户；请通过受控流程初始化管理员。公网长期使用前请配置 HTTPS。\n'
 }
 
 main() {

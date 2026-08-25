@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-labelledby="title">
+  <title id="title">北斗 KAI影</title>
+  <defs>
+    <linearGradient id="paper" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#faf7f0"/>
+      <stop offset="1" stop-color="#d8d1c4"/>
+    </linearGradient>
+    <linearGradient id="seal" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#d05a3f"/>
+      <stop offset="1" stop-color="#922e23"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="28" fill="#0b0b0c"/>
+  <circle cx="64" cy="64" r="38" fill="none" stroke="url(#paper)" stroke-width="5" opacity=".9"/>
+  <path d="M28 41c15-17 40-24 62-14 23 10 34 34 27 56" fill="none" stroke="url(#paper)" stroke-width="7" stroke-linecap="round" opacity=".78"/>
+  <circle cx="94" cy="30" r="7" fill="url(#seal)"/>
+  <text x="64" y="78" fill="url(#paper)" font-family="KaiTi, STKaiti, serif" font-size="43" text-anchor="middle">影</text>
+</svg>

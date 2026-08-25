@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "infinite-canvas",
+      "name": "beidou-kai-web",
       "dependencies": {
         "@ant-design/icons": "^6.3.2",
         "@codemirror/lang-json": "^6.0.2",

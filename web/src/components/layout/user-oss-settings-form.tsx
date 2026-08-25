@@ -131,7 +131,7 @@ export function UserOSSSettingsForm() {
                     <Input spellCheck={false} placeholder={isTencentCOS ? "my-canvas-assets-1250000000" : isQiniuKodo ? "七牛云存储空间名称" : "my-canvas-assets"} />
                 </Form.Item>
                 <Form.Item name="pathPrefix" label="路径前缀" className="mb-3">
-                    <Input spellCheck={false} placeholder="infinite-canvas" />
+                    <Input spellCheck={false} placeholder="beidou-kai" />
                 </Form.Item>
                 <Form.Item name="accessKeyId" label={accessKeyIdLabel} className="mb-3 xl:col-span-1">
                     <Input autoComplete="off" spellCheck={false} placeholder={isTencentCOS ? "腾讯云 SecretId" : isQiniuKodo ? "七牛云 AccessKey" : "阿里云 AccessKey ID"} />

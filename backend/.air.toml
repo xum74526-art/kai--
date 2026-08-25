@@ -1,9 +1,9 @@
 root = "."
-tmp_dir = "/tmp/open-ai-canvas-air"
+tmp_dir = "/tmp/beidou-kai-air"
 
 [build]
-bin = "/tmp/open-ai-canvas-air/server"
-cmd = "go build -o /tmp/open-ai-canvas-air/server ./cmd/server"
+bin = "/tmp/beidou-kai-air/server"
+cmd = "go build -o /tmp/beidou-kai-air/server ./cmd/server"
 delay = 800
 exclude_dir = ["data", "tmp", "vendor"]
 exclude_regex = ["_test\\.go"]
