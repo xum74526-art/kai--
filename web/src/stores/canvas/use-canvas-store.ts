@@ -40,6 +40,7 @@ type CanvasStore = {
 };
 
 const initialViewport: ViewportTransform = { x: 0, y: 0, k: 1 };
+// 保留历史 storage key，现有画布数据仍依赖该命名空间。
 export const CANVAS_STORE_KEY = "infinite-canvas:canvas_store";
 type PersistedCanvasState = Pick<CanvasStore, "projects">;
 type QueuedCanvasPersist = {

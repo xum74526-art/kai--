@@ -42,7 +42,7 @@ codex plugin add infinite-canvas@infinite-canvas-local
 如果你就在 KAI影仓库中调试插件，可以直接添加当前仓库。建议使用仓库绝对路径，避免 Codex 从其他工作目录解析失败：
 
 ```bash
-cd /path/to/infinite-canvas
+cd /path/to/kai--
 codex plugin marketplace add "$(pwd)"
 codex plugin add infinite-canvas@infinite-canvas-local
 ```

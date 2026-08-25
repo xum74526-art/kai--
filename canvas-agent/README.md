@@ -52,7 +52,7 @@ Canvas Agent 默认只监听 `127.0.0.1`。网页第一次带正确 token 连接
 添加本地 marketplace 时建议使用仓库绝对路径，避免 Codex 从其他工作目录解析失败：
 
 ```bash
-cd /path/to/infinite-canvas
+cd /path/to/kai--
 codex plugin marketplace add "$(pwd)"
 codex plugin add infinite-canvas@infinite-canvas-local
 ```
@@ -74,7 +74,7 @@ codex mcp add infinite-canvas -- npx -y @ddcat666/open-ai-canvas-agent mcp
 本仓库开发时可以改成，实际使用建议替换为本机绝对路径：
 
 ```bash
-codex mcp add infinite-canvas -- node /path/to/infinite-canvas/canvas-agent/dist/index.js mcp
+codex mcp add infinite-canvas -- node /path/to/kai--/canvas-agent/dist/index.js mcp
 ```
 
 Canvas Agent 源码使用 TypeScript 编写，MCP 协议层使用官方 `@modelcontextprotocol/sdk`，工具入参使用 `zod` 描述。
@@ -134,7 +134,7 @@ claude mcp add --scope user --transport stdio infinite-canvas -- npx -y @ddcat66
 本仓库开发时可以改成：
 
 ```bash
-claude mcp add --scope user --transport stdio infinite-canvas -- node /path/to/infinite-canvas/canvas-agent/dist/index.js mcp
+claude mcp add --scope user --transport stdio infinite-canvas -- node /path/to/kai--/canvas-agent/dist/index.js mcp
 ```
 
 Canvas Agent 调用 Claude Code 时会默认带上 `--allowedTools mcp__infinite-canvas__*`，画布写操作仍由网页侧边栏确认。

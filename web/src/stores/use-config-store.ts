@@ -92,6 +92,7 @@ export type AiConfig = {
     canvasImageCount: string;
 };
 
+// 保留历史 storage key，避免品牌调整后用户的模型渠道配置看似丢失。
 export const CONFIG_STORE_KEY = "open_ai_canvas:ai_config_store";
 export type ModelCapability = "image" | "video" | "text" | "audio";
 const CHANNEL_MODEL_SEPARATOR = "::";

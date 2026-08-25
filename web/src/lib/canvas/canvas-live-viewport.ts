@@ -5,7 +5,7 @@ export const CANVAS_GRAPHICS_VIEWPORT_PREVIEW_EVENT = "canvas:graphics-viewport-
 export const CANVAS_SELECTION_PREVIEW_EVENT = "canvas:selection-preview";
 
 // 空间网格点模式的点半径（像素单位）。远距（缩放 < 0.12）时用更小半径避免糊成一团。
-// 同时被 <CanvasGrid>（infinite-canvas）与滚动同步（applyCanvasLiveViewport）共享，避免两处漂移。
+// 同时被无限画布网格与滚动同步（applyCanvasLiveViewport）共享，避免两处漂移。
 export function canvasDotPx(scale: number): string {
     return scale < 0.12 ? "1.2px" : "2px";
 }

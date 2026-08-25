@@ -80,7 +80,7 @@ export function getAntThemeConfig(dark: boolean): ThemeConfig {
 
     return {
         algorithm: dark ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm,
-        cssVar: { key: dark ? "infinite-canvas-dark" : "infinite-canvas-light" },
+        cssVar: { key: dark ? "beidou-kai-dark" : "beidou-kai-light" },
         token: {
             colorPrimary: color.solidBg,
             colorPrimaryHover: color.solidHoverBg,

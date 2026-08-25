@@ -17,6 +17,7 @@ import (
 	"gorm.io/gorm"
 )
 
+// Cookie 名属于登录兼容合同，直接改名会让现有会话全部失效。
 const SessionCookieName = "open_ai_canvas_session"
 
 const sessionMaxAge = 30 * 24 * time.Hour

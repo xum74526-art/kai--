@@ -30,6 +30,7 @@ func (s *Service) MigrateLegacyStorage() (StorageMigrationSummary, error) {
 	if err := os.MkdirAll(backupDir, 0o750); err != nil {
 		return StorageMigrationSummary{}, err
 	}
+	// 备份前缀与历史数据库名保持一致，便于已有部署定位和恢复迁移前快照。
 	backup := filepath.Join(backupDir, "open_ai_canvas-before-storage-v2-"+time.Now().Format("20060102-150405")+".db")
 	if err := s.repo.BackupSQLite(backup); err != nil {
 		return StorageMigrationSummary{}, fmt.Errorf("备份数据库失败：%w", err)

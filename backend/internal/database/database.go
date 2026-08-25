@@ -29,6 +29,7 @@ func Open(config Config) (*gorm.DB, error) {
 			if err := os.MkdirAll(config.DataDir, 0o755); err != nil {
 				return nil, err
 			}
+			// 沿用历史数据库文件名，避免品牌调整后误连到新建空库。
 			dsn = config.DataDir + "/open_ai_canvas.db?_busy_timeout=5000&_journal_mode=WAL&_foreign_keys=on&_synchronous=NORMAL"
 		}
 		return gorm.Open(sqlite.Open(dsn), &gorm.Config{})

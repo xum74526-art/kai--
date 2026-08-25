@@ -18,6 +18,7 @@ type CanvasClipboard = {
     connections: CanvasConnection[];
 };
 
+// 剪贴板前缀属于导入兼容合同，需继续识别旧版本复制的节点数据。
 const CANVAS_NODES_CLIPBOARD_PREFIX = "open-ai-canvas-nodes:";
 const CANVAS_NODES_JSON_CLIPBOARD_PREFIX = "open-ai-canvas-nodes-json:";
 const CANVAS_NODES_CLIPBOARD_STORAGE_KEY = "open-ai-canvas:nodes-clipboard";

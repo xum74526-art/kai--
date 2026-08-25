@@ -13,7 +13,7 @@ import { useThemeStore } from "@/stores/use-theme-store";
 import type { ImageAsset } from "@/stores/use-asset-store";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 
-export const CANVAS_IMAGE_ASSET_DND_TYPE = "application/x-infinite-canvas-image-asset";
+export const CANVAS_IMAGE_ASSET_DND_TYPE = "application/x-beidou-kai-image-asset";
 
 type TrayTab = "library" | "canvas";
 
