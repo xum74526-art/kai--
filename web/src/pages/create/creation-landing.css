@@ -1,0 +1,726 @@
+.creation-home .creation-empty-workspace.creation-empty-workspace-redesign {
+    display: block;
+    width: 100%;
+    max-width: none;
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+    margin: 0;
+    padding: 0;
+    overscroll-behavior: contain;
+    scrollbar-gutter: auto;
+}
+
+.creation-landing {
+    --creation-stage-accent: var(--workspace-accent);
+    --creation-stage-text: var(--color-neutral-0);
+    --creation-stage-muted: color-mix(in srgb, var(--color-neutral-0) 72%, transparent);
+    --creation-stage-caption: color-mix(in srgb, var(--color-neutral-0) 82%, transparent);
+    --creation-stage-left: color-mix(in srgb, var(--color-neutral-950) 88%, transparent);
+    --creation-stage-bottom: color-mix(in srgb, var(--color-neutral-950) 76%, transparent);
+    --creation-stage-edge: color-mix(in srgb, var(--color-neutral-950) 18%, transparent);
+    --creation-stage-surface: color-mix(in srgb, var(--color-neutral-950) 86%, transparent);
+    --creation-stage-surface-strong: color-mix(in srgb, var(--color-neutral-950) 94%, transparent);
+    --creation-stage-surface-hover: color-mix(in srgb, var(--color-neutral-0) 10%, transparent);
+    --creation-stage-border: color-mix(in srgb, var(--color-neutral-0) 13%, transparent);
+    --creation-stage-border-strong: color-mix(in srgb, var(--color-neutral-0) 24%, transparent);
+    --creation-stage-tint: 63, 75, 84;
+    --creation-stage-media-saturation: .82;
+    position: relative;
+    isolation: isolate;
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+    background: var(--creation-bg);
+    padding: var(--space-4);
+}
+
+html:not(.dark) .creation-landing {
+    --creation-stage-text: var(--color-neutral-950);
+    --creation-stage-muted: color-mix(in srgb, var(--color-neutral-950) 68%, transparent);
+    --creation-stage-caption: color-mix(in srgb, var(--color-neutral-950) 82%, transparent);
+    --creation-stage-left: color-mix(in srgb, var(--color-neutral-0) 92%, transparent);
+    --creation-stage-bottom: color-mix(in srgb, var(--color-neutral-0) 76%, transparent);
+    --creation-stage-edge: color-mix(in srgb, var(--color-neutral-0) 16%, transparent);
+    --creation-stage-surface: color-mix(in srgb, var(--color-neutral-0) 90%, transparent);
+    --creation-stage-surface-strong: color-mix(in srgb, var(--color-neutral-0) 96%, transparent);
+    --creation-stage-surface-hover: color-mix(in srgb, var(--color-neutral-950) 8%, transparent);
+    --creation-stage-border: color-mix(in srgb, var(--color-neutral-950) 14%, transparent);
+    --creation-stage-border-strong: color-mix(in srgb, var(--color-neutral-950) 24%, transparent);
+}
+
+.creation-landing[data-scene="space"] {
+    --creation-stage-tint: 44, 64, 79;
+    --creation-stage-media-saturation: .9;
+}
+
+.creation-landing[data-scene="motion"] {
+    --creation-stage-tint: 30, 90, 96;
+    --creation-stage-media-saturation: .98;
+}
+
+.creation-landing[data-scene="world"] {
+    --creation-stage-tint: 61, 65, 94;
+    --creation-stage-media-saturation: .92;
+}
+
+.creation-landing[data-scene="commerce"] {
+    --creation-stage-tint: 91, 79, 77;
+    --creation-stage-media-saturation: .72;
+}
+
+.creation-stage {
+    position: relative;
+    isolation: isolate;
+    width: 100%;
+    height: 100%;
+    min-height: 620px;
+    overflow: hidden;
+    border-radius: var(--r-lg);
+    background: var(--creation-stage-surface-strong);
+}
+
+.creation-stage-media {
+    position: absolute;
+    z-index: -5;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    object-position: center;
+    filter: saturate(var(--creation-stage-media-saturation)) contrast(1.02) brightness(.9);
+    transform: scale(1.025);
+    transition: opacity var(--motion-dur-slow) var(--motion-ease-out), filter var(--motion-state) var(--motion-ease-out);
+}
+
+.creation-stage-video {
+    opacity: 0;
+}
+
+.creation-stage-video.is-ready {
+    opacity: 1;
+}
+
+.creation-stage-wash,
+.creation-stage-grain {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+}
+
+.creation-stage-wash {
+    z-index: -4;
+    background:
+        linear-gradient(90deg, var(--creation-stage-left) 0%, var(--creation-stage-left) 32%, rgba(var(--creation-stage-tint), .18) 62%, var(--creation-stage-edge) 100%),
+        linear-gradient(0deg, var(--creation-stage-bottom) 0%, transparent 52%),
+        radial-gradient(circle at 78% 28%, rgba(var(--creation-stage-tint), .18), transparent 48%);
+}
+
+.creation-stage-grain {
+    z-index: -3;
+    background-image: radial-gradient(color-mix(in srgb, var(--color-neutral-0) 9%, transparent) .5px, transparent .5px);
+    background-size: 5px 5px;
+    opacity: .1;
+}
+
+.creation-stage-controls {
+    position: absolute;
+    z-index: 8;
+    top: var(--space-5);
+    right: var(--space-5);
+    display: flex;
+    gap: var(--space-2);
+}
+
+.creation-stage-control {
+    display: inline-flex;
+    min-width: 0;
+    height: var(--space-10);
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-2);
+    border: var(--stroke-1) solid var(--creation-stage-border-strong);
+    border-radius: var(--r-sm);
+    background: var(--creation-stage-surface);
+    color: var(--creation-stage-text);
+    padding: 0 var(--space-3);
+    font-size: var(--fs-label);
+    backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+    transition: background-color var(--motion-state) ease-out, border-color var(--motion-state) ease-out, color var(--motion-state) ease-out;
+}
+
+.creation-stage-control.is-icon {
+    width: var(--space-10);
+    padding: 0;
+}
+
+.creation-stage-control:hover:not(:disabled) {
+    border-color: var(--creation-stage-accent);
+    background: var(--creation-stage-surface-strong);
+}
+
+.creation-stage-control:disabled {
+    cursor: not-allowed;
+    opacity: var(--opa-medium);
+}
+
+.creation-stage-control:focus-visible,
+.creation-stage-caption button:focus-visible,
+.creation-stage-scenes button:focus-visible,
+.creation-stage-library-button:focus-visible,
+.creation-stage-drawer-heading button:focus-visible {
+    outline: var(--stroke-2) solid var(--control-focus-ring);
+    outline-offset: var(--space-half);
+}
+
+.creation-stage-control svg {
+    width: var(--space-4);
+    height: var(--space-4);
+    stroke-width: 1.75;
+}
+
+.creation-stage-hero {
+    position: absolute;
+    top: clamp(60px, 9dvh, 104px);
+    left: clamp(40px, 4.6vw, 78px);
+    width: min(590px, 46vw);
+    color: var(--creation-stage-text);
+}
+
+.creation-stage-kicker {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    margin: 0 0 var(--space-3);
+    color: var(--creation-stage-accent);
+    font-size: var(--fs-caption);
+    font-weight: 720;
+    letter-spacing: .06em;
+}
+
+.creation-stage-kicker svg {
+    width: var(--space-4);
+    height: var(--space-4);
+    stroke-width: 1.75;
+}
+
+.creation-stage-hero h1 {
+    max-width: 590px;
+    margin: 0;
+    color: inherit;
+    font-size: clamp(42px, 4vw, 66px);
+    font-weight: 760;
+    letter-spacing: -.055em;
+    line-height: 1.04;
+    text-wrap: balance;
+}
+
+.creation-stage-hero > p:last-child {
+    margin: var(--space-4) 0 0;
+    color: var(--creation-stage-muted);
+    font-size: var(--fs-body-lg);
+    line-height: 1.65;
+}
+
+.creation-stage-caption {
+    position: absolute;
+    top: 39%;
+    right: clamp(36px, 4vw, 72px);
+    width: 220px;
+    border-left: var(--stroke-1) solid color-mix(in srgb, var(--creation-stage-text) 28%, transparent);
+    color: var(--creation-stage-caption);
+    padding-left: var(--space-5);
+    text-shadow: 0 2px 18px color-mix(in srgb, var(--color-neutral-950) 44%, transparent);
+}
+
+html:not(.dark) .creation-stage-caption {
+    text-shadow: 0 2px 18px color-mix(in srgb, var(--color-neutral-0) 36%, transparent);
+}
+
+.creation-stage-caption > span {
+    display: inline-flex;
+    min-height: var(--space-6);
+    align-items: center;
+    border: var(--stroke-1) solid currentColor;
+    border-radius: var(--r-sm);
+    color: var(--creation-stage-muted);
+    padding: 0 var(--space-2);
+    font-size: var(--fs-tiny);
+    font-weight: 700;
+}
+
+.creation-stage-caption > span.is-preview {
+    color: var(--creation-stage-accent);
+}
+
+.creation-stage-caption h2 {
+    margin: var(--space-3) 0 var(--space-1);
+    color: inherit;
+    font-size: 24px;
+    font-weight: 700;
+    line-height: 1.2;
+}
+
+.creation-stage-caption p {
+    margin: 0 0 var(--space-4);
+    color: var(--creation-stage-muted);
+    font-size: var(--fs-caption);
+}
+
+.creation-stage-caption button {
+    min-height: var(--space-9);
+    border-bottom: var(--stroke-1) solid currentColor;
+    background: transparent;
+    color: inherit;
+    padding: 0;
+    font-size: var(--fs-caption);
+    font-weight: 650;
+}
+
+.creation-stage-zone {
+    position: absolute;
+    bottom: var(--space-6);
+    left: clamp(40px, 4.6vw, 78px);
+    width: min(840px, calc(100% - 420px));
+}
+
+.creation-stage-scenes {
+    display: grid;
+    min-height: 64px;
+    grid-template-columns: 84px repeat(5, minmax(0, 1fr));
+    align-items: center;
+    gap: var(--space-1);
+    margin-bottom: var(--space-2);
+    border: var(--stroke-1) solid var(--creation-stage-border);
+    border-radius: var(--r-lg);
+    background: var(--creation-stage-surface);
+    padding: var(--space-1);
+    backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+}
+
+.creation-stage-scenes-label {
+    color: color-mix(in srgb, var(--creation-stage-text) 46%, transparent);
+    padding-left: var(--space-2);
+    font-size: var(--fs-tiny);
+}
+
+.creation-stage-scenes button {
+    display: grid;
+    min-width: 0;
+    height: 50px;
+    grid-template-columns: 42px minmax(0, 1fr);
+    align-items: center;
+    gap: var(--space-2);
+    border: var(--stroke-1) solid transparent;
+    border-radius: var(--r-sm);
+    background: transparent;
+    color: var(--creation-stage-muted);
+    padding: var(--space-1);
+    text-align: left;
+    transition: background-color var(--motion-state) ease-out, border-color var(--motion-state) ease-out, color var(--motion-state) ease-out;
+}
+
+.creation-stage-scenes button:hover {
+    background: var(--creation-stage-surface-hover);
+    color: var(--creation-stage-text);
+}
+
+.creation-stage-scenes button.is-active {
+    border-color: var(--creation-stage-accent);
+    background: color-mix(in srgb, var(--creation-stage-accent) 13%, transparent);
+    color: var(--creation-stage-text);
+}
+
+.creation-stage-scenes img {
+    width: 42px;
+    height: 42px;
+    border-radius: var(--r-xs);
+    object-fit: cover;
+}
+
+.creation-stage-scenes button > span {
+    overflow: hidden;
+    font-size: var(--fs-label);
+    font-weight: 650;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.creation-stage-console {
+    overflow: visible;
+    border: var(--stroke-1) solid var(--creation-stage-border);
+    border-radius: var(--r-lg);
+    background: var(--creation-stage-surface);
+    backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+}
+
+.creation-stage-console-heading {
+    display: flex;
+    min-height: 42px;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    border-bottom: var(--stroke-1) solid var(--creation-stage-border);
+    color: var(--creation-stage-muted);
+    padding: 0 var(--space-4);
+    font-size: var(--fs-label);
+}
+
+.creation-stage-console-heading strong {
+    overflow: hidden;
+    color: var(--creation-stage-text);
+    font-size: inherit;
+    font-weight: 620;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.creation-stage-composer .creation-empty-composer {
+    width: 100%;
+}
+
+.creation-stage-composer .creation-chat-composer {
+    overflow: visible;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    backdrop-filter: none;
+}
+
+.creation-stage-composer .creation-chat-composer:focus-within {
+    box-shadow: none;
+}
+
+.creation-stage-composer .creation-chat-writing-surface,
+.creation-stage-composer .creation-chat-composer.is-empty .creation-chat-writing-surface {
+    min-height: 78px;
+    grid-template-columns: 52px minmax(0, 1fr);
+    gap: var(--space-2);
+    padding: var(--space-3) var(--space-4) var(--space-1);
+}
+
+.creation-stage-composer .creation-chat-reference.is-paper {
+    width: var(--space-8);
+    height: var(--space-8);
+    border: 0;
+    border-radius: var(--r-sm);
+    background: transparent;
+    color: var(--creation-stage-muted);
+    transform: none;
+}
+
+.creation-stage-composer .creation-chat-reference.is-paper span {
+    display: none;
+}
+
+.creation-stage-composer .creation-chat-reference.is-paper:hover:not(:disabled) {
+    background: var(--creation-stage-surface-hover);
+    color: var(--creation-stage-text);
+    transform: none;
+}
+
+.creation-stage-composer .creation-chat-reference-media {
+    width: 50px;
+    height: 50px;
+    overflow: hidden;
+}
+
+.creation-stage-composer .creation-chat-mention-container,
+.creation-stage-composer .creation-chat-mention-editor,
+.creation-stage-composer .creation-chat-editor textarea {
+    min-height: 58px;
+    max-height: 104px;
+    color: var(--creation-stage-text) !important;
+}
+
+.creation-stage-composer .creation-chat-editor textarea::placeholder,
+.creation-stage-composer .creation-chat-mention-editor::placeholder {
+    color: var(--creation-stage-muted);
+}
+
+.creation-stage-composer .creation-chat-dock {
+    min-height: 50px;
+    border-top: var(--stroke-1) solid var(--creation-stage-border);
+    padding: var(--space-1) var(--space-2) var(--space-2) var(--space-3);
+}
+
+.creation-stage-composer .creation-chat-control,
+.creation-stage-composer .creation-model-picker.canvas-composer-model-picker {
+    color: var(--creation-stage-muted) !important;
+}
+
+.creation-stage-composer .creation-chat-control:hover,
+.creation-stage-composer .creation-chat-control[aria-expanded="true"],
+.creation-stage-composer .creation-model-picker.canvas-composer-model-picker:hover,
+.creation-stage-composer .creation-model-picker.canvas-composer-model-picker[aria-expanded="true"],
+.creation-stage-composer .creation-chat-control.is-mode {
+    background: var(--creation-stage-surface-hover) !important;
+    color: var(--creation-stage-text) !important;
+}
+
+.creation-stage-drawer-backdrop {
+    position: absolute;
+    z-index: 39;
+    inset: 0;
+    border: 0;
+    background: color-mix(in srgb, var(--color-neutral-950) 28%, transparent);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--motion-state) ease-out;
+}
+
+.creation-stage-drawer-backdrop.is-open {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.creation-stage-drawer {
+    position: absolute;
+    z-index: 40;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(360px, 92vw);
+    border-left: var(--stroke-1) solid var(--creation-stage-border-strong);
+    background: var(--creation-stage-surface-strong);
+    color: var(--creation-stage-text);
+    padding: var(--space-6);
+    box-shadow: var(--shadow-xl);
+    transform: translateX(102%);
+    transition: transform var(--motion-state) var(--motion-ease-out);
+}
+
+.creation-stage-drawer.is-open {
+    transform: translateX(0);
+}
+
+.creation-stage-drawer-heading {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--space-4);
+}
+
+.creation-stage-drawer-heading span {
+    color: var(--creation-stage-muted);
+    font-size: var(--fs-tiny);
+}
+
+.creation-stage-drawer-heading h2 {
+    margin: var(--space-1) 0 0;
+    font-size: 24px;
+}
+
+.creation-stage-drawer-heading button {
+    display: grid;
+    width: var(--space-9);
+    height: var(--space-9);
+    place-items: center;
+    border-radius: var(--r-sm);
+    background: var(--creation-stage-surface-hover);
+    color: var(--creation-stage-muted);
+}
+
+.creation-stage-drawer-heading svg {
+    width: var(--space-4);
+    height: var(--space-4);
+}
+
+.creation-stage-drawer > p {
+    margin: var(--space-7) 0;
+    color: var(--creation-stage-muted);
+    font-size: var(--fs-caption);
+    line-height: 1.7;
+}
+
+.creation-stage-drawer dl {
+    display: grid;
+    gap: var(--space-2);
+    margin: 0;
+}
+
+.creation-stage-drawer dl > div {
+    display: grid;
+    gap: var(--space-1);
+    border-radius: var(--r-sm);
+    color: var(--creation-stage-muted);
+    padding: var(--space-3) var(--space-4);
+}
+
+.creation-stage-drawer dl > div.is-current {
+    background: color-mix(in srgb, var(--creation-stage-accent) 13%, transparent);
+    color: var(--creation-stage-text);
+}
+
+.creation-stage-drawer dt {
+    font-size: var(--fs-caption);
+    font-weight: 650;
+}
+
+.creation-stage-drawer dd {
+    margin: 0;
+    font-size: var(--fs-tiny);
+}
+
+.creation-stage-library-button {
+    display: inline-flex;
+    min-height: var(--space-10);
+    align-items: center;
+    gap: var(--space-2);
+    margin-top: var(--space-5);
+    border-radius: var(--r-sm);
+    background: var(--creation-stage-surface-hover);
+    color: var(--creation-stage-text);
+    padding: 0 var(--space-3);
+    font-size: var(--fs-label);
+    font-weight: 650;
+}
+
+.creation-stage-library-button svg {
+    width: var(--space-4);
+    height: var(--space-4);
+}
+
+@media (max-width: 1360px), (max-height: 790px) {
+    .creation-stage-hero {
+        top: 58px;
+        left: 42px;
+        width: 520px;
+    }
+
+    .creation-stage-hero h1 {
+        font-size: 44px;
+    }
+
+    .creation-stage-zone {
+        bottom: var(--space-5);
+        left: 42px;
+        width: min(760px, calc(100% - 350px));
+    }
+
+    .creation-stage-caption {
+        right: 34px;
+        width: 204px;
+    }
+
+    .creation-stage-scenes {
+        grid-template-columns: 74px repeat(5, minmax(0, 1fr));
+    }
+
+    .creation-stage-scenes button {
+        grid-template-columns: 34px minmax(0, 1fr);
+    }
+
+    .creation-stage-scenes img {
+        width: 34px;
+        height: 34px;
+    }
+}
+
+@media (max-width: 1100px) {
+    .creation-stage-zone {
+        width: calc(100% - 270px);
+    }
+
+    .creation-stage-caption {
+        right: var(--space-6);
+        width: 174px;
+    }
+
+    .creation-stage-scenes button {
+        grid-template-columns: 1fr;
+        place-items: center;
+    }
+
+    .creation-stage-scenes img {
+        display: none;
+    }
+
+    .creation-stage-composer .creation-chat-control > span {
+        display: none;
+    }
+}
+
+@media (max-width: 800px) {
+    .creation-home .creation-empty-workspace.creation-empty-workspace-redesign {
+        overflow-y: auto;
+    }
+
+    .creation-landing {
+        height: auto;
+        min-height: 100%;
+        overflow: visible;
+        padding: var(--space-2);
+    }
+
+    .creation-stage {
+        min-height: 920px;
+    }
+
+    .creation-stage-controls {
+        top: var(--space-3);
+        right: var(--space-3);
+    }
+
+    .creation-stage-control span {
+        display: none;
+    }
+
+    .creation-stage-control {
+        width: var(--space-10);
+        padding: 0;
+    }
+
+    .creation-stage-hero {
+        top: 82px;
+        left: var(--space-5);
+        width: calc(100% - var(--space-10));
+    }
+
+    .creation-stage-hero h1 {
+        font-size: 40px;
+    }
+
+    .creation-stage-caption {
+        top: 330px;
+        right: var(--space-5);
+        left: var(--space-5);
+        width: auto;
+    }
+
+    .creation-stage-zone {
+        right: var(--space-3);
+        bottom: var(--space-4);
+        left: var(--space-3);
+        width: auto;
+    }
+
+    .creation-stage-scenes {
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+    }
+
+    .creation-stage-scenes-label {
+        display: none;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .creation-stage-media,
+    .creation-stage-control,
+    .creation-stage-scenes button,
+    .creation-stage-drawer,
+    .creation-stage-drawer-backdrop {
+        transition: none;
+    }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+    .creation-stage-control,
+    .creation-stage-scenes,
+    .creation-stage-console {
+        background: var(--creation-stage-surface-strong);
+        backdrop-filter: none;
+    }
+}

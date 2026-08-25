@@ -1,0 +1,18 @@
+services:
+  backend:
+    image: open-ai-canvas-backend:server
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+      args:
+        GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
+
+  web:
+    image: open-ai-canvas-web:server
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VITE_TLDRAW_LICENSE_KEY: ${VITE_TLDRAW_LICENSE_KEY:-}
+        VITE_APP_BASE_PATH: ${VITE_APP_BASE_PATH:-/}
+        VITE_CANVAS_BACKEND_URL: ${VITE_CANVAS_BACKEND_URL:-}

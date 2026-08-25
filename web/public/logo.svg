@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="610" height="128" viewBox="0 0 610 128" role="img" aria-labelledby="title desc">
+  <title id="title">北斗 KAI影 - 星斗落墨</title>
+  <desc id="desc">北斗题字与七星轨迹落在 KAI影墨月镜头之前，朱砂主星与镜头圆点彼此呼应。</desc>
+  <defs>
+    <linearGradient id="ink" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#090806"/>
+      <stop offset=".52" stop-color="#2c2821"/>
+      <stop offset="1" stop-color="#080705"/>
+    </linearGradient>
+    <linearGradient id="red" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#d05a3f"/>
+      <stop offset="1" stop-color="#922e23"/>
+    </linearGradient>
+    <filter id="rough" x="-12%" y="-12%" width="124%" height="124%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.017 0.095" numOctaves="2" seed="43" result="noise"/>
+      <feDisplacementMap in="SourceGraphic" in2="noise" scale="1.2"/>
+    </filter>
+    <filter id="wash" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="1.5"/>
+    </filter>
+    <g id="kai">
+      <g transform="matrix(1.674419 0 0 1.52381 0 -118.857143)">
+        <g transform="matrix(1.006944 0 0 1 0 0)">
+          <g transform="matrix(0.593103 0 0 0.65625 0 78)">
+            <path d="M27.998 40C25.79 40 24 41.79 24 43.998V48c0 2.122-.843 4.157-2.343 5.657A7.996 7.996 0 0 1 16 56C11.582 56 8 52.418 8 48V16c0-2.122.843-4.157 2.343-5.657A7.996 7.996 0 0 1 16 8c4.418 0 8 3.582 8 8v4c0 2.209 1.791 4 4 4 2.21 0 4-1.79 4-3.998V16c0-4.418 3.582-8 8-8h8c4.418 0 8 3.582 8 8s-3.582 8-8 8-8 3.582-8 8 3.582 8 8 8 8 3.582 8 8-3.582 8-8 8h-8c-4.418 0-8-3.582-8-8v-4c0-2.209-1.791-4-4-4z"/>
+          </g>
+          <g transform="matrix(0.395402 0 0 0.4375 -10.28046 90.25)">
+            <path fill-rule="evenodd" d="M158 32c-6.627 0-12 5.373-12 12s-5.373 12-12 12-12-5.373-12-12V13.997A6.003 6.003 0 0 1 127.997 8h.006A5.997 5.997 0 0 0 134 2.003V-4c0-6.627 5.373-12 12-12h24c6.627 0 12 5.373 12 12v6a6 6 0 0 0 6 6 6 6 0 0 1 6 6v30c0 6.627-5.373 12-12 12s-12-5.373-12-12-5.373-12-12-12zm-6-24a6 6 0 0 0 0 12h12a6 6 0 0 0 0-12z"/>
+          </g>
+          <g transform="matrix(0.474483 0 0 0.42 -41.754483 89.55)">
+            <path d="M248 60c-2.652 0-5.196-1.317-7.071-3.661S238 50.815 238 47.5v-50c0-3.315 1.054-6.495 2.929-8.839S245.348-15 248-15s5.196 1.317 7.071 3.661S258-5.815 258-2.5v50c0 3.315-1.054 6.495-2.929 8.839S250.652 60 248 60z"/>
+          </g>
+        </g>
+      </g>
+    </g>
+    <g id="ying" fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M0 0c11-1.8 24-1.4 36 .2M1.5 1c-1.1 8.6-.8 17.3-.5 26M36 1c.8 8.8.5 17.3-.2 26M3 13.4c10.4-1 20.8-.8 30.9-.1M2 26.8c10.2-1 22.5-.8 33.5.1M19 31.2c.3 1.4.2 2.7-.3 4M1.5 37.4c11-1.9 24.4-2 37.2-.1M7.5 42.2c7.1-1 16.8-.9 24.8.2l-1.2 10c-7.3-1.2-15.5-1.2-22.6-.1zM19.3 53.2c.2 5.4-.2 11.2-1 17M10.9 56.5C8.5 61.4 5.2 65.4.8 68.7M27 56.7c3.9 3.4 7.2 7.4 9.7 11.7M68.4 2.8c-4.7 7.3-11 13.3-18.8 18M74.1 22.6c-5.8 8.8-13.5 16.1-23.2 21.7M79.1 42.2C72 53.4 62.6 62.8 50.7 70.4"/>
+    </g>
+    <!-- “北斗”已经转为固定轮廓，避免不同系统替换字体后改变品牌字形。 -->
+    <g id="beidou">
+      <path transform="translate(15 107) scale(.35 -.35)" d="M151 99Q172 110 185.5 122.5Q199 135 198 141.5Q197 148 204 145Q211 142 217.5 134Q224 126 216 123Q208 120 193 113L150 92L150 58Q150 38 158.5 31Q167 24 189 25.5Q211 27 217.5 31.5Q224 36 229 62Q233 80 233.5 61.5Q234 43 235 38.5Q236 34 238.5 27Q241 20 229.5 15Q218 10 187.5 10.5Q157 11 147.5 22.5Q138 34 138 59Q138 84 139 107Q140 130 140.5 154Q141 178 135.5 188.5Q130 199 149 191Q163 186 160 178Q157 170 154.5 149Q152 128 151 99ZM94 63Q53 38 47.5 30.5Q42 23 33.5 28.5Q25 34 23.5 37.5Q22 41 28.5 42Q35 43 51.5 50Q68 57 94 71L94 113Q60 103 52 100Q44 97 35.5 106Q27 115 39 113.5Q51 112 93 121Q93 146 92 157.5Q91 169 87 176.5Q83 184 102 177Q111 173 109.5 168Q108 163 106.5 144Q105 125 105.5 98.5Q106 72 105.5 44.5Q105 17 103 6.5Q101-4 98-4Q96-4 91.5 5.5Q87 15 89.5 22Q92 29 94 63Z"/>
+      <path transform="translate(100 107) scale(.35 -.35)" d="M154 96Q186 99 201.5 103Q217 107 227 100Q237 93 236 89.5Q235 86 223 87Q211 88 193 87Q175 86 154 84Q154 49 153 15.5Q152-18 146-26.5Q140-35 139 2.5Q138 40 139 83Q74 74 59 68.5Q44 63 33 71Q22 79 36 79.5Q50 80 72.5 83.5Q95 87 139 94Q139 133 138 161Q137 189 131.5 197.5Q126 206 135.5 204Q145 202 153 198.5Q161 195 158 190.5Q155 186 154.5 160Q154 134 154 96ZM105 151Q83 169 87.5 171Q92 173 99.5 172Q107 171 116 166.5Q125 162 125 151Q125 140 105 151ZM87 112Q76 121 75 124.5Q74 128 83 128Q93 128 102 124.5Q111 121 111 110Q111 99 87 112Z"/>
+    </g>
+  </defs>
+
+  <g aria-hidden="true">
+    <path d="M22 37L49 22L76 32L103 20L130 31L158 24L188 38" fill="none" stroke="#4c453b" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" opacity=".48"/>
+    <g fill="#171411" opacity=".66">
+      <circle cx="22" cy="37" r="2"/><circle cx="49" cy="22" r="2.6"/><circle cx="76" cy="32" r="1.9"/><circle cx="103" cy="20" r="2.3"/><circle cx="130" cy="31" r="1.8"/><circle cx="158" cy="24" r="2.5"/>
+    </g>
+    <circle cx="188" cy="38" r="7" fill="#a73a2b" opacity=".1" filter="url(#wash)"/>
+    <circle cx="188" cy="38" r="4.4" fill="url(#red)" filter="url(#rough)"/>
+    <use href="#beidou" fill="url(#ink)" opacity=".16" filter="url(#wash)"/>
+    <use href="#beidou" fill="url(#ink)" filter="url(#rough)"/>
+  </g>
+
+  <g transform="translate(230)">
+  <g filter="url(#rough)">
+    <use href="#kai" transform="translate(11 26) scale(1.18)" fill="url(#ink)"/>
+    <path d="M114 53v12l10-6z" fill="url(#red)"/>
+  </g>
+  <path d="M18 106c48 2 105 1 163-1 20-.7 35-3 48-7" fill="none" stroke="#171411" stroke-width="4.6" stroke-linecap="round" opacity=".8" filter="url(#rough)"/>
+
+  <!-- The outer circle is both an ink-painted moon and a camera lens. -->
+  <circle cx="275" cy="63" r="45" fill="#463f34" opacity=".055" filter="url(#wash)"/>
+  <g fill="none" stroke="url(#ink)" stroke-linecap="round" filter="url(#rough)">
+    <path d="M235 27c17-17 45-23 67-12 27 13 38 45 25 70-6 12-15 21-27 27" stroke-width="8.4" opacity=".88"/>
+    <path d="M292 114c-21 8-44 1-57-16" stroke-width="4" opacity=".65"/>
+    <path d="M326 46c4 13 3 26-2 37" stroke-width="2" opacity=".35"/>
+  </g>
+  <g fill="none" stroke="#4c453b" stroke-width="1.6" stroke-linecap="round" opacity=".24">
+    <path d="M251 40c13-8 30-8 43 0M302 48c7 12 7 26 0 38M294 94c-12 8-29 9-42 1"/>
+  </g>
+  <circle cx="305" cy="29" r="8.4" fill="url(#red)" opacity=".9" filter="url(#rough)"/>
+  <circle cx="305" cy="29" r="11.5" fill="#a73a2b" opacity=".12" filter="url(#wash)"/>
+  <use href="#ying" transform="translate(244 31) scale(.76)" fill="none" stroke="url(#ink)" stroke-width="6.1" filter="url(#rough)"/>
+
+  <!-- Sparse focus brackets keep the lens metaphor visible without looking technical. -->
+  <g fill="none" stroke="#a73a2b" stroke-width="2.2" stroke-linecap="round" opacity=".7">
+    <path d="M222 49v-9h9M319 90v9h-9"/>
+  </g>
+  <g fill="#171411" opacity=".28">
+    <circle cx="207" cy="101" r=".8"/>
+    <circle cx="216" cy="97" r="1.2"/>
+    <circle cx="337" cy="84" r=".7"/>
+  </g>
+  </g>
+</svg>

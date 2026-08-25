@@ -1,0 +1,105 @@
+/* 真实认证流程的异常、禁用和加载态，放在视觉规则之后保证可见。 */
+.auth-landing .hero.is-register,
+.auth-landing .hero.is-register .hero-grid {
+  min-height: max(100svh, 1080px);
+}
+
+.auth-landing .auth-form button:disabled,
+.auth-landing .auth-form input:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.auth-landing .auth-form-register {
+  align-items: end;
+}
+
+.auth-landing .auth-form-register .auth-field-wide,
+.auth-landing .auth-form-register .auth-notice,
+.auth-landing .auth-form-register .form-status {
+  grid-column: 1 / -1;
+}
+
+.auth-landing .auth-notice {
+  display: flex;
+  min-height: 42px;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-soft);
+  color: var(--text-soft);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.auth-landing .auth-notice.is-warning {
+  border-color: color-mix(in srgb, #d7a257 34%, var(--line));
+}
+
+.auth-landing .auth-code-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 116px;
+  gap: 8px;
+}
+
+.auth-landing .auth-code-row .button {
+  min-height: 54px;
+  padding-inline: 12px;
+}
+
+.auth-landing .auth-form-register .auth-submit,
+.auth-landing .auth-form-register .auth-provider {
+  min-height: 52px;
+}
+
+.auth-landing .auth-form-register .form-status {
+  margin-top: -2px;
+}
+
+.auth-landing .auth-loading-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.auth-landing .auth-loading-label::before {
+  width: 12px;
+  height: 12px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  content: "";
+  animation: kai-auth-loading-spin 700ms linear infinite;
+}
+
+@keyframes kai-auth-loading-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (max-width: 1100px) {
+  .auth-landing .hero.is-register,
+  .auth-landing .hero.is-register .hero-grid {
+    min-height: 0;
+  }
+}
+
+@media (max-width: 760px) {
+  .auth-landing .auth-form-register,
+  .auth-landing .auth-code-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .auth-landing .auth-form-register > *,
+  .auth-landing .auth-form-register .auth-field-wide,
+  .auth-landing .auth-form-register .auth-notice,
+  .auth-landing .auth-form-register .form-status {
+    grid-column: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .auth-landing .auth-loading-label::before,
+  .auth-landing .auth-submit-spinner { animation: none; }
+}
