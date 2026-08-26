@@ -11,7 +11,7 @@ const store = localforage.createInstance({ name: "infinite-canvas", storeName: "
 const objectUrls = new Map<string, string>();
 
 export async function uploadMediaFile(input: string | Blob, prefix = "file"): Promise<UploadedFile> {
-    const blob = typeof input === "string" ? await (await fetch(input)).blob() : input;
+    const blob = typeof input === "string" ? await fetchBlob(input, "媒体文件") : input;
     const previewUrl = URL.createObjectURL(blob);
     const meta: { width?: number; height?: number; durationMs?: number } = blob.type.startsWith("video/") ? await readVideoMeta(previewUrl) : blob.type.startsWith("audio/") ? await readAudioMeta(previewUrl) : {};
     try {
@@ -19,7 +19,15 @@ export async function uploadMediaFile(input: string | Blob, prefix = "file"): Pr
         const resource = await uploadResourceFile(blob, kind, { ...meta, fileName: input instanceof File ? input.name : undefined });
         await primeResourceBlobCache(resourceStorageKey(resource.id), blob).catch(() => "");
         URL.revokeObjectURL(previewUrl);
-        return { url: resource.publicUrl || resourceFileUrl(resource.id), storageKey: resourceStorageKey(resource.id), bytes: resource.size || blob.size, mimeType: resource.mimeType || blob.type || "application/octet-stream", width: resource.width || meta.width, height: resource.height || meta.height, durationMs: resource.durationMs || meta.durationMs };
+        return {
+            url: resource.publicUrl || resourceFileUrl(resource.id),
+            storageKey: resourceStorageKey(resource.id),
+            bytes: resource.size || blob.size,
+            mimeType: resource.mimeType || blob.type || "application/octet-stream",
+            width: resource.width || meta.width,
+            height: resource.height || meta.height,
+            durationMs: resource.durationMs || meta.durationMs,
+        };
     } catch {
         // OSS is optional during local/self-hosted setup. Keep the existing local fallback.
     }
@@ -54,6 +62,8 @@ export async function getMediaBlob(storageKey: string) {
 export async function setMediaBlob(storageKey: string, blob: Blob) {
     if (resourceIdFromStorageKey(storageKey)) return primeResourceBlobCache(storageKey, blob);
     await store.setItem(storageKey, blob);
+    const previousUrl = objectUrls.get(storageKey);
+    if (previousUrl) URL.revokeObjectURL(previousUrl);
     const url = URL.createObjectURL(blob);
     objectUrls.set(storageKey, url);
     return url;
@@ -79,7 +89,7 @@ export async function cleanupUnusedMedia(usedData: unknown, scope = getActiveUse
         const parts = key.split(":");
         if (parts.length >= 3 && parts[1] === currentScope && !usedKeys.has(key)) unused.push(key);
     });
-    await Promise.all(unused.map((key) => store.removeItem(key)));
+    await deleteStoredMedia(unused);
 }
 
 export function collectMediaStorageKeys(value: unknown, keys = new Set<string>()) {
@@ -107,4 +117,10 @@ function readAudioMeta(url: string) {
         audio.onerror = done;
         audio.src = url;
     });
+}
+
+async function fetchBlob(url: string, label: string) {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`${label}读取失败（HTTP ${response.status}）`);
+    return response.blob();
 }

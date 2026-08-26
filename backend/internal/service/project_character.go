@@ -145,8 +145,12 @@ func (s *Service) CreateProjectCharacter(userID string, projectID string, req Cr
 		return ProjectCharacterDetail{}, err
 	}
 	link := model.ProjectAssetLink{ID: newID(), ProjectID: projectID, AssetID: assetID, FolderID: folderID, Position: position, CreatedAt: now}
-	if err := s.repo.CreateProjectCharacter(projectID, &asset, &version, &link); err != nil {
-		return ProjectCharacterDetail{}, err
+	resourceIDs, err := referencedResourceIDs(asset.PayloadJSON, version.DefinitionJSON)
+	if err != nil {
+		return ProjectCharacterDetail{}, BadAuthRequest("角色资源引用格式无效")
+	}
+	if err := s.repo.CreateProjectCharacter(projectID, &asset, &version, &link, resourceIDs); err != nil {
+		return ProjectCharacterDetail{}, resourceReferenceWriteError(err)
 	}
 	return s.projectCharacterDetail(userID, projectID, &asset)
 }
@@ -354,8 +358,12 @@ func (s *Service) createNextCharacterVersion(projectID string, asset *model.Asse
 	if err != nil {
 		return model.AssetVersion{}, err
 	}
-	if err := s.repo.SaveCharacterVersion(projectID, &nextAsset, &next, representations, voice); err != nil {
-		return model.AssetVersion{}, err
+	resourceIDs, err := referencedResourceIDsForRepresentations(representations, nextAsset.PayloadJSON, next.DefinitionJSON)
+	if err != nil {
+		return model.AssetVersion{}, BadAuthRequest("角色版本资源引用格式无效")
+	}
+	if err := s.repo.SaveCharacterVersion(projectID, &nextAsset, &next, representations, voice, resourceIDs); err != nil {
+		return model.AssetVersion{}, resourceReferenceWriteError(err)
 	}
 	*asset = nextAsset
 	return next, nil

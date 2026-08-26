@@ -16,6 +16,8 @@ services:
       CANVAS_DATABASE_DRIVER: sqlite
       CANVAS_REGISTRATION_ENABLED: "false"
       CANVAS_CORS_ORIGINS: https://simon.kai.com
+      # 后端仅暴露在 Compose 网络内；只信任 Docker bridge 段，不信任公网来源头。
+      CANVAS_TRUSTED_PROXIES: ${CANVAS_TRUSTED_PROXIES:-172.16.0.0/12}
       CANVAS_DESKTOP_LOCAL_CHANNELS_ENABLED: "false"
       CANVAS_ALLOW_PRIVATE_UPSTREAMS: "false"
       CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS: ""

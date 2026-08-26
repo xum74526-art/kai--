@@ -38,6 +38,7 @@ import (
 
 const providerResourceURLTTL = 4 * time.Hour
 const directResourceURLTTL = 5 * time.Minute
+const resourceMimeSniffBytes = 64 * 1024
 
 var errInvalidGeneratedDataURL = errors.New("生成内容 data URL 无效")
 
@@ -83,6 +84,11 @@ func (s *Service) DirectResourceURL(userID string, id string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// 可执行文档不能绕过同源下载出口直连 OSS/CDN，否则错误的对象元数据
+	// 可能让 HTML、SVG 或 XML 在应用域名下执行。正常图片、音视频仍保持直连。
+	if !ResourceCanRenderInline(resource) {
+		return "", BadAuthRequest("仅图片、音频和视频资源支持直连地址")
+	}
 	return s.directResourceURL(resource, time.Now().Add(directResourceURLTTL))
 }
 
@@ -124,6 +130,12 @@ func (s *Service) prepareResourceDelivery(userID string, resource *model.Resourc
 	}
 	if resource.Status != model.ResourceStatusReady {
 		return nil, BadAuthRequest("资源尚未上传完成")
+	}
+	// 非媒体附件必须经过应用出口统一加 attachment、CSP 和 nosniff，不能被
+	// ForceDirect 或 CDN 分支绕过。这样不会改变图片、音频和视频的播放路径。
+	if !ResourceCanRenderInline(resource) {
+		options.ForceDirect = false
+		options.ForceProxy = true
 	}
 	if resource.Provider != "local" && !options.ForceProxy {
 		setting, err := s.ossSettingForResource(userID, resource)
@@ -256,20 +268,109 @@ func (s *Service) UploadResource(userID string, header *multipart.FileHeader, ki
 }
 
 func detectUploadedMimeType(file multipart.File, fileName string, declared string) string {
-	declared = strings.TrimSpace(strings.Split(declared, ";")[0])
+	buffer, _ := io.ReadAll(io.LimitReader(file, resourceMimeSniffBytes))
+	_, _ = file.Seek(0, io.SeekStart)
+	return detectResourceMimeType(buffer, fileName, declared)
+}
+
+func detectResourceMimeType(sample []byte, fileName string, declared string) string {
+	declared = normalizeMimeType(declared)
+	detected := normalizeMimeType(http.DetectContentType(sample))
+	extensionType := normalizeMimeType(mime.TypeByExtension(filepath.Ext(fileName)))
+
+	// 浏览器提交的 Content-Type 可以伪造。主动内容即使声明成 video/mp4，
+	// 也必须按实际内容记录，后续下载出口才会强制 attachment + sandbox。
+	if active := detectActiveDocumentMime(sample, declared, extensionType); active != "" {
+		return active
+	}
+	if detected != "" && detected != "application/octet-stream" && detected != "text/plain" {
+		return detected
+	}
+	// 一段超长空白后再放 HTML/SVG 可以绕过短样本嗅探；纯空白样本不得回退到客户端伪造的媒体类型。
+	if len(sample) > 0 && len(bytes.TrimSpace(sample)) == 0 {
+		return "application/octet-stream"
+	}
+	if detected == "text/plain" {
+		// 纯文本不能因为客户端声明成 image/video/audio 就进入 CDN 直链；
+		// 真正无法识别的二进制媒体仍会落到下面的 application/octet-stream 回退。
+		return detected
+	}
+	// Go 对部分正常音视频只能识别成 application/octet-stream；这时保留
+	// 客户端/扩展名提供的媒体 MIME，避免影响既有预览和 Range 播放。
 	if declared != "" && declared != "application/octet-stream" {
 		return declared
 	}
-	buffer := make([]byte, 512)
-	read, _ := file.Read(buffer)
-	_, _ = file.Seek(0, io.SeekStart)
-	if detected := http.DetectContentType(buffer[:read]); detected != "" && detected != "application/octet-stream" {
-		return strings.TrimSpace(strings.Split(detected, ";")[0])
+	if extensionType != "" && extensionType != "application/octet-stream" {
+		return extensionType
 	}
-	if fromExtension := mime.TypeByExtension(filepath.Ext(fileName)); fromExtension != "" {
-		return strings.TrimSpace(strings.Split(fromExtension, ";")[0])
+	if detected != "" {
+		return detected
 	}
 	return "application/octet-stream"
+}
+
+func detectActiveDocumentMime(sample []byte, declared string, extensionType string) string {
+	for _, value := range []string{declared, extensionType} {
+		if isActiveDocumentMime(value) {
+			return value
+		}
+	}
+	detected := normalizeMimeType(http.DetectContentType(sample))
+	if isActiveDocumentMime(detected) {
+		return detected
+	}
+	trimmed := strings.TrimSpace(strings.TrimPrefix(string(sample), "\ufeff"))
+	lower := strings.ToLower(trimmed)
+	if strings.Contains(lower, "<svg") {
+		return "image/svg+xml"
+	}
+	if strings.Contains(lower, "<!doctype html") || strings.Contains(lower, "<html") || strings.Contains(lower, "<script") {
+		return "text/html"
+	}
+	if !strings.HasPrefix(trimmed, "<") {
+		return ""
+	}
+	return "application/xml"
+}
+
+func normalizeMimeType(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if parsed, _, err := mime.ParseMediaType(value); err == nil {
+		return strings.ToLower(strings.TrimSpace(parsed))
+	}
+	if index := strings.IndexByte(value, ';'); index >= 0 {
+		value = value[:index]
+	}
+	return strings.TrimSpace(value)
+}
+
+func isActiveDocumentMime(value string) bool {
+	value = normalizeMimeType(value)
+	return value == "text/html" || value == "application/xhtml+xml" || value == "image/svg+xml" ||
+		value == "application/xml" || value == "text/xml" || value == "application/javascript" ||
+		value == "text/javascript"
+}
+
+// ResourceCanRenderInline 只允许 MIME 与业务类型一致的被动媒体内联。
+// SVG/XML/HTML 等即使 kind 被伪造成 image，也必须走附件下载。
+func ResourceCanRenderInline(resource *model.Resource) bool {
+	if resource == nil {
+		return false
+	}
+	mimeType := normalizeMimeType(resource.MimeType)
+	if mimeType == "" || isActiveDocumentMime(mimeType) {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(resource.Kind)) {
+	case "image":
+		return strings.HasPrefix(mimeType, "image/")
+	case "audio":
+		return strings.HasPrefix(mimeType, "audio/") || mimeType == "application/ogg"
+	case "video":
+		return strings.HasPrefix(mimeType, "video/") || mimeType == "application/ogg"
+	default:
+		return false
+	}
 }
 
 func (s *Service) ImportResourceURL(userID string, rawURL string, kind string, width int, height int, durationMs int64) (*model.Resource, error) {
@@ -613,15 +714,12 @@ func downloadRemoteResource(rawURL string, maxBytes int64) (remoteResourcePayloa
 	if int64(len(data)) >= maxBytes {
 		return remoteResourcePayload{}, BadAuthRequest(fmt.Sprintf("远程资源必须小于 %s", formatStorageLimit(maxBytes)))
 	}
-	mimeType := strings.TrimSpace(resp.Header.Get("Content-Type"))
-	if idx := strings.Index(mimeType, ";"); idx >= 0 {
-		mimeType = strings.TrimSpace(mimeType[:idx])
-	}
-	if mimeType == "" || mimeType == "application/octet-stream" {
-		mimeType = http.DetectContentType(data)
-	}
 	fileName := path.Base(parsed.Path)
 	if fileName == "" || fileName == "." || !strings.Contains(fileName, ".") {
+		fileName = "resource.bin"
+	}
+	mimeType := detectResourceMimeType(data, fileName, resp.Header.Get("Content-Type"))
+	if filepath.Ext(fileName) == ".bin" {
 		fileName = "resource." + extensionFromMimeType(mimeType)
 	}
 	return remoteResourcePayload{url: parsed.String(), endpoint: parsed.Host, fileName: fileName, mimeType: mimeType, data: data}, nil

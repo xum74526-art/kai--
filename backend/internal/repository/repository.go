@@ -29,6 +29,8 @@ var ErrProjectAssetFolderNotEmpty = errors.New("project asset folder is not empt
 
 var ErrProjectHasActiveTasks = errors.New("project has active tasks")
 
+var ErrUserLoginStateChanged = errors.New("user login state changed")
+
 type Repository struct {
 	db *gorm.DB
 }
@@ -178,6 +180,30 @@ func (r *Repository) User(id string) (*model.User, error) {
 		return nil, err
 	}
 	return &user, nil
+}
+
+// CompleteUserLogin 只写登录时间，并以数据库中的最新用户状态作为会话依据。
+// expectedPasswordHash 非空时还会拒绝管理员并发改密后的旧密码登录结果。
+func (r *Repository) CompleteUserLogin(userID string, expectedPasswordHash string, loggedInAt time.Time) (*model.User, error) {
+	query := r.db.Model(&model.User{}).Where("id = ? AND status = ?", userID, model.UserStatusActive)
+	if expectedPasswordHash != "" {
+		query = query.Where("password_hash = ?", expectedPasswordHash)
+	}
+	result := query.Updates(map[string]any{"last_login_at": loggedInAt, "updated_at": loggedInAt})
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	if result.RowsAffected != 1 {
+		return nil, ErrUserLoginStateChanged
+	}
+	user, err := r.User(userID)
+	if err != nil {
+		return nil, err
+	}
+	if user.Status != model.UserStatusActive || (expectedPasswordHash != "" && user.PasswordHash != expectedPasswordHash) {
+		return nil, ErrUserLoginStateChanged
+	}
+	return user, nil
 }
 
 func (r *Repository) UserByAccount(account string) (*model.User, error) {
@@ -469,8 +495,11 @@ func (r *Repository) UpdateTaskProgress(id string, stage string, progress int) e
 	}).Error
 }
 
-func (r *Repository) SaveTaskCompletion(task *model.Task, expected model.TaskStatus, session *model.Session, message *model.Message, results []model.Result) error {
+func (r *Repository) SaveTaskCompletion(task *model.Task, expected model.TaskStatus, session *model.Session, message *model.Message, results []model.Result, resourceIDBatches ...[]string) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := r.lockReadyResourceReferences(tx, task.UserID, optionalResourceIDs(resourceIDBatches)); err != nil {
+			return err
+		}
 		updated := tx.Model(&model.Task{}).
 			Where("id = ? AND status = ?", task.ID, expected).
 			Select("*").Omit("id", "created_at").Updates(task)
@@ -906,7 +935,7 @@ func (r *Repository) Resources(userID string, limit int) ([]model.Resource, erro
 	if limit <= 0 || limit > 500 {
 		limit = 200
 	}
-	err := r.db.Order("created_at desc").Limit(limit).Find(&resources, "user_id = ?", userID).Error
+	err := r.db.Where("user_id = ? AND status <> ?", userID, model.ResourceStatusDeleted).Order("created_at desc").Limit(limit).Find(&resources).Error
 	return resources, err
 }
 
@@ -930,22 +959,30 @@ func (r *Repository) AssetForUser(userID string, id string) (*model.Asset, error
 	return &asset, nil
 }
 
-func (r *Repository) UpsertAsset(asset *model.Asset) error {
-	result := r.db.Model(&model.Asset{}).
-		Where("id = ? AND user_id = ?", asset.ID, asset.UserID).
-		Updates(map[string]any{"kind": asset.Kind, "category": asset.Category, "status": asset.Status, "primary_version_id": asset.PrimaryVersionID, "title": asset.Title, "payload_json": asset.PayloadJSON, "updated_at": asset.UpdatedAt})
-	if result.Error != nil || result.RowsAffected > 0 {
-		return result.Error
-	}
-	return r.db.Create(asset).Error
+func (r *Repository) UpsertAsset(asset *model.Asset, resourceIDBatches ...[]string) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := r.lockReadyResourceReferences(tx, asset.UserID, optionalResourceIDs(resourceIDBatches)); err != nil {
+			return err
+		}
+		result := tx.Model(&model.Asset{}).
+			Where("id = ? AND user_id = ?", asset.ID, asset.UserID).
+			Updates(map[string]any{"kind": asset.Kind, "category": asset.Category, "status": asset.Status, "primary_version_id": asset.PrimaryVersionID, "title": asset.Title, "payload_json": asset.PayloadJSON, "updated_at": asset.UpdatedAt})
+		if result.Error != nil || result.RowsAffected > 0 {
+			return result.Error
+		}
+		return tx.Create(asset).Error
+	})
 }
 
 func (r *Repository) DeleteAsset(userID string, id string) error {
 	return r.DeleteAssetAndResources(userID, id, nil)
 }
 
-func (r *Repository) ReplaceAssets(userID string, assets []model.Asset) error {
+func (r *Repository) ReplaceAssets(userID string, assets []model.Asset, resourceIDBatches ...[]string) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := r.lockReadyResourceReferences(tx, userID, optionalResourceIDs(resourceIDBatches)); err != nil {
+			return err
+		}
 		if err := tx.Delete(&model.Asset{}, "user_id = ?", userID).Error; err != nil {
 			return err
 		}
@@ -976,14 +1013,24 @@ func (r *Repository) CanvasProjectForUser(userID string, id string) (*model.Canv
 	return &project, nil
 }
 
-func (r *Repository) UpsertCanvasProject(project *model.CanvasProject) error {
-	result := r.db.Model(&model.CanvasProject{}).
-		Where("id = ? AND user_id = ?", project.ID, project.UserID).
-		Updates(map[string]any{"project_id": project.ProjectID, "title": project.Title, "payload_json": project.PayloadJSON, "updated_at": project.UpdatedAt})
-	if result.Error != nil || result.RowsAffected > 0 {
-		return result.Error
-	}
-	return r.db.Create(project).Error
+func (r *Repository) UpsertCanvasProject(project *model.CanvasProject, resourceIDBatches ...[]string) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := r.lockReadyResourceReferences(tx, project.UserID, optionalResourceIDs(resourceIDBatches)); err != nil {
+			return err
+		}
+		if projectID := strings.TrimSpace(project.ProjectID); projectID != "" {
+			if err := r.lockCanvasParentProject(tx, project.UserID, projectID); err != nil {
+				return err
+			}
+		}
+		result := tx.Model(&model.CanvasProject{}).
+			Where("id = ? AND user_id = ?", project.ID, project.UserID).
+			Updates(map[string]any{"project_id": project.ProjectID, "title": project.Title, "payload_json": project.PayloadJSON, "updated_at": project.UpdatedAt})
+		if result.Error != nil || result.RowsAffected > 0 {
+			return result.Error
+		}
+		return tx.Create(project).Error
+	})
 }
 
 func (r *Repository) DeleteCanvasProject(userID string, id string) error {
@@ -1017,20 +1064,33 @@ func (r *Repository) ProjectForUser(userID string, id string) (*model.Project, e
 	return &project, nil
 }
 
-func (r *Repository) CreateProject(project *model.Project) error {
-	return r.db.Create(project).Error
+func (r *Repository) CreateProject(project *model.Project, resourceIDBatches ...[]string) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := r.lockReadyResourceReferences(tx, project.UserID, optionalResourceIDs(resourceIDBatches)); err != nil {
+			return err
+		}
+		return tx.Create(project).Error
+	})
 }
 
-func (r *Repository) UpdateProject(project *model.Project) error {
-	return r.db.Model(&model.Project{}).Where("id = ? AND user_id = ?", project.ID, project.UserID).Updates(map[string]any{
-		"name": project.Name, "type": project.Type, "aspect_ratio": project.AspectRatio, "source_type": project.SourceType,
-		"description": project.Description, "style_preset_id": project.StylePresetID, "style_profile_json": project.StyleProfileJSON,
-		"status": project.Status, "revision": project.Revision, "updated_at": project.UpdatedAt,
-	}).Error
+func (r *Repository) UpdateProject(project *model.Project, resourceIDBatches ...[]string) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := r.lockReadyResourceReferences(tx, project.UserID, optionalResourceIDs(resourceIDBatches)); err != nil {
+			return err
+		}
+		return tx.Model(&model.Project{}).Where("id = ? AND user_id = ?", project.ID, project.UserID).Updates(map[string]any{
+			"name": project.Name, "type": project.Type, "aspect_ratio": project.AspectRatio, "source_type": project.SourceType,
+			"description": project.Description, "style_preset_id": project.StylePresetID, "style_profile_json": project.StyleProfileJSON,
+			"status": project.Status, "revision": project.Revision, "updated_at": project.UpdatedAt,
+		}).Error
+	})
 }
 
 func (r *Repository) DeleteProject(userID string, id string, canvasUpdates []model.CanvasProject) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := r.lockProjectForDeletion(tx, userID, id); err != nil {
+			return err
+		}
 		var canvasIDs []string
 		if err := tx.Model(&model.CanvasProject{}).
 			Where("user_id = ? AND project_id = ?", userID, id).
@@ -1394,9 +1454,12 @@ func (r *Repository) DeleteProjectAssetFolder(projectID string, folderID string)
 }
 
 // LinkProjectAsset 将首版本、素材领域字段、项目引用和修订号原子提交，避免产生半关联资产。
-func (r *Repository) LinkProjectAsset(asset *model.Asset, version *model.AssetVersion, link *model.ProjectAssetLink) (bool, error) {
+func (r *Repository) LinkProjectAsset(asset *model.Asset, version *model.AssetVersion, link *model.ProjectAssetLink, resourceIDBatches ...[]string) (bool, error) {
 	createdLink := false
 	err := r.db.Transaction(func(tx *gorm.DB) error {
+		if err := r.lockReadyResourceReferences(tx, asset.UserID, optionalResourceIDs(resourceIDBatches)); err != nil {
+			return err
+		}
 		created := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "project_id"}, {Name: "asset_id"}}, DoNothing: true}).Create(link)
 		if created.Error != nil {
 			return created.Error
@@ -1507,8 +1570,17 @@ func (r *Repository) AssetVersionForProject(projectID string, versionID string) 
 	return &version, nil
 }
 
-func (r *Repository) CreateAssetVersion(version *model.AssetVersion) error {
-	return r.db.Create(version).Error
+func (r *Repository) CreateAssetVersion(version *model.AssetVersion, resourceIDBatches ...[]string) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		userID, err := resourceOwnerForAsset(tx, version.AssetID)
+		if err != nil {
+			return err
+		}
+		if err := r.lockReadyResourceReferences(tx, userID, optionalResourceIDs(resourceIDBatches)); err != nil {
+			return err
+		}
+		return tx.Create(version).Error
+	})
 }
 
 func (r *Repository) ProjectShots(projectID string) ([]model.Shot, error) {
@@ -1585,16 +1657,28 @@ func (r *Repository) ProjectAssetCandidate(projectID string, candidateID string)
 	return &candidate, nil
 }
 
-func (r *Repository) CreateProjectAssetCandidates(candidates []model.ProjectAssetCandidate) error {
+func (r *Repository) CreateProjectAssetCandidates(candidates []model.ProjectAssetCandidate, resourceIDBatches ...[]string) error {
 	if len(candidates) == 0 {
 		return nil
 	}
-	return r.db.Create(&candidates).Error
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		userID, err := resourceOwnerForProject(tx, candidates[0].ProjectID)
+		if err != nil {
+			return err
+		}
+		if err := r.lockReadyResourceReferences(tx, userID, optionalResourceIDs(resourceIDBatches)); err != nil {
+			return err
+		}
+		return tx.Create(&candidates).Error
+	})
 }
 
 // ConfirmProjectAssetCandidate 将正式资产身份、首版本、项目引用和候选状态放在同一事务中，避免出现半确认数据。
-func (r *Repository) ConfirmProjectAssetCandidate(candidate *model.ProjectAssetCandidate, asset *model.Asset, version *model.AssetVersion, link *model.ProjectAssetLink, createAsset bool) error {
+func (r *Repository) ConfirmProjectAssetCandidate(candidate *model.ProjectAssetCandidate, asset *model.Asset, version *model.AssetVersion, link *model.ProjectAssetLink, createAsset bool, resourceIDBatches ...[]string) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := r.lockReadyResourceReferences(tx, asset.UserID, optionalResourceIDs(resourceIDBatches)); err != nil {
+			return err
+		}
 		if createAsset {
 			if err := tx.Create(asset).Error; err != nil {
 				return err
@@ -1670,8 +1754,15 @@ func (r *Repository) NextWorkflowStep(instanceID string, position int) (*model.W
 	return &step, nil
 }
 
-func (r *Repository) CreateWorkflowInstance(instance *model.WorkflowInstance, steps []model.WorkflowStepInstance) error {
+func (r *Repository) CreateWorkflowInstance(instance *model.WorkflowInstance, steps []model.WorkflowStepInstance, resourceIDBatches ...[]string) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
+		userID, err := resourceOwnerForProject(tx, instance.ProjectID)
+		if err != nil {
+			return err
+		}
+		if err := r.lockReadyResourceReferences(tx, userID, optionalResourceIDs(resourceIDBatches)); err != nil {
+			return err
+		}
 		if err := tx.Create(instance).Error; err != nil {
 			return err
 		}
@@ -1691,13 +1782,29 @@ func (r *Repository) WorkflowStepForProject(projectID string, stepID string) (*m
 	return &step, nil
 }
 
-func (r *Repository) UpdateWorkflowStep(step *model.WorkflowStepInstance) error {
-	return r.db.Model(&model.WorkflowStepInstance{}).Where("id = ? AND workflow_instance_id = ?", step.ID, step.WorkflowInstanceID).Updates(map[string]any{"status": step.Status, "output_json": step.OutputJSON, "error": step.Error, "started_at": step.StartedAt, "completed_at": step.CompletedAt, "updated_at": step.UpdatedAt}).Error
+func (r *Repository) UpdateWorkflowStep(step *model.WorkflowStepInstance, resourceIDBatches ...[]string) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		userID, err := resourceOwnerForWorkflowInstance(tx, step.WorkflowInstanceID)
+		if err != nil {
+			return err
+		}
+		if err := r.lockReadyResourceReferences(tx, userID, optionalResourceIDs(resourceIDBatches)); err != nil {
+			return err
+		}
+		return tx.Model(&model.WorkflowStepInstance{}).Where("id = ? AND workflow_instance_id = ?", step.ID, step.WorkflowInstanceID).Updates(map[string]any{"status": step.Status, "output_json": step.OutputJSON, "error": step.Error, "started_at": step.StartedAt, "completed_at": step.CompletedAt, "updated_at": step.UpdatedAt}).Error
+	})
 }
 
 // UpdateWorkflowProgress 原子保存当前步骤、下一步骤和实例状态，确保刷新后流程依赖仍可恢复。
-func (r *Repository) UpdateWorkflowProgress(step *model.WorkflowStepInstance, next *model.WorkflowStepInstance, instance *model.WorkflowInstance, projectID string) error {
+func (r *Repository) UpdateWorkflowProgress(step *model.WorkflowStepInstance, next *model.WorkflowStepInstance, instance *model.WorkflowInstance, projectID string, resourceIDBatches ...[]string) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
+		userID, err := resourceOwnerForProject(tx, projectID)
+		if err != nil {
+			return err
+		}
+		if err := r.lockReadyResourceReferences(tx, userID, optionalResourceIDs(resourceIDBatches)); err != nil {
+			return err
+		}
 		if err := tx.Model(&model.WorkflowStepInstance{}).Where("id = ? AND workflow_instance_id = ?", step.ID, step.WorkflowInstanceID).Updates(map[string]any{
 			"status": step.Status, "output_json": step.OutputJSON, "error": step.Error, "started_at": step.StartedAt,
 			"completed_at": step.CompletedAt, "updated_at": step.UpdatedAt,
@@ -1720,8 +1827,15 @@ func (r *Repository) UpdateWorkflowProgress(step *model.WorkflowStepInstance, ne
 }
 
 // RegisterWorkflowTaskOutput 将成功任务、流程步骤和产物表示写入同一事务，重复回填使用任务与用途唯一键幂等。
-func (r *Repository) RegisterWorkflowTaskOutput(step *model.WorkflowStepInstance, next *model.WorkflowStepInstance, instance *model.WorkflowInstance, projectID string, link *model.WorkflowStepTask, representation *model.AssetRepresentation) error {
+func (r *Repository) RegisterWorkflowTaskOutput(step *model.WorkflowStepInstance, next *model.WorkflowStepInstance, instance *model.WorkflowInstance, projectID string, link *model.WorkflowStepTask, representation *model.AssetRepresentation, resourceIDBatches ...[]string) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
+		userID, err := resourceOwnerForProject(tx, projectID)
+		if err != nil {
+			return err
+		}
+		if err := r.lockReadyResourceReferences(tx, userID, optionalResourceIDs(resourceIDBatches)); err != nil {
+			return err
+		}
 		if err := tx.Where("workflow_step_id = ? AND task_id = ?", link.WorkflowStepID, link.TaskID).FirstOrCreate(link).Error; err != nil {
 			return err
 		}
@@ -1787,8 +1901,11 @@ func (r *Repository) DeleteCanvasShare(userID string, projectID string) error {
 	return r.db.Delete(&model.CanvasShare{}, "user_id = ? AND project_id = ?", userID, projectID).Error
 }
 
-func (r *Repository) ReplaceCanvasProjects(userID string, projects []model.CanvasProject) error {
+func (r *Repository) ReplaceCanvasProjects(userID string, projects []model.CanvasProject, resourceIDBatches ...[]string) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := r.lockReadyResourceReferences(tx, userID, optionalResourceIDs(resourceIDBatches)); err != nil {
+			return err
+		}
 		if err := tx.Delete(&model.CanvasProject{}, "user_id = ?", userID).Error; err != nil {
 			return err
 		}

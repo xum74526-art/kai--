@@ -34,7 +34,7 @@ export async function uploadImage(input: string | Blob): Promise<UploadedImage> 
             // Keep the browser-side path as a fallback for CORS-enabled HTTPS images.
         }
     }
-    const blob = typeof input === "string" ? await (await fetch(input)).blob() : input;
+    const blob = typeof input === "string" ? await fetchImageBlob(input) : input;
     const previewUrl = URL.createObjectURL(blob);
     const meta = await readImageMeta(previewUrl);
     try {
@@ -92,6 +92,8 @@ export async function getImageBlob(storageKey: string) {
 export async function setImageBlob(storageKey: string, blob: Blob) {
     if (resourceIdFromStorageKey(storageKey)) return primeResourceBlobCache(storageKey, blob);
     await store.setItem(storageKey, blob);
+    const previousUrl = objectUrls.get(storageKey);
+    if (previousUrl) URL.revokeObjectURL(previousUrl);
     const url = URL.createObjectURL(blob);
     objectUrls.set(storageKey, url);
     return url;
@@ -105,8 +107,8 @@ export async function imageToDataUrl(image: { url?: string; dataUrl?: string; st
     const url = image.dataUrl || (await resolveImageUrl(image.storageKey, image.url || ""));
     if (!url) return url;
     if (url.startsWith("data:image/")) return url;
-    if (url.startsWith("data:")) return blobToDataUrl(await normalizeImageBlob(await (await fetch(url)).blob(), image.name));
-    const blob = await (await fetch(url, { credentials: isResourceUrl(url) ? "include" : "same-origin" })).blob();
+    if (url.startsWith("data:")) return blobToDataUrl(await normalizeImageBlob(await fetchImageBlob(url), image.name));
+    const blob = await fetchImageBlob(url, { credentials: isResourceUrl(url) ? "include" : "same-origin" });
     return blobToDataUrl(await normalizeImageBlob(blob, image.name || url));
 }
 
@@ -173,4 +175,10 @@ function imageMimeTypeFromName(value: string) {
     if (path.endsWith(".gif")) return "image/gif";
     if (path.endsWith(".bmp")) return "image/bmp";
     return "";
+}
+
+async function fetchImageBlob(url: string, init?: RequestInit) {
+    const response = await fetch(url, init);
+    if (!response.ok) throw new Error(`图片读取失败（HTTP ${response.status}）`);
+    return response.blob();
 }

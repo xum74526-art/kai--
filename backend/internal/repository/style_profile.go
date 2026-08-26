@@ -28,15 +28,25 @@ func (r *Repository) StyleProfileForUser(userID string, id string) (*model.Style
 	return &profile, nil
 }
 
-func (r *Repository) CreateStyleProfile(profile *model.StyleProfile) error {
-	return r.db.Create(profile).Error
+func (r *Repository) CreateStyleProfile(profile *model.StyleProfile, resourceIDBatches ...[]string) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := r.lockReadyResourceReferences(tx, profile.UserID, optionalResourceIDs(resourceIDBatches)); err != nil {
+			return err
+		}
+		return tx.Create(profile).Error
+	})
 }
 
-func (r *Repository) UpdateStyleProfile(profile *model.StyleProfile) error {
-	return r.db.Model(&model.StyleProfile{}).Where("id = ? AND user_id = ?", profile.ID, profile.UserID).Updates(map[string]any{
-		"name": profile.Name, "description": profile.Description, "cover_url": profile.CoverURL,
-		"tags_json": profile.TagsJSON, "profile_json": profile.ProfileJSON, "revision": profile.Revision, "updated_at": profile.UpdatedAt,
-	}).Error
+func (r *Repository) UpdateStyleProfile(profile *model.StyleProfile, resourceIDBatches ...[]string) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := r.lockReadyResourceReferences(tx, profile.UserID, optionalResourceIDs(resourceIDBatches)); err != nil {
+			return err
+		}
+		return tx.Model(&model.StyleProfile{}).Where("id = ? AND user_id = ?", profile.ID, profile.UserID).Updates(map[string]any{
+			"name": profile.Name, "description": profile.Description, "cover_url": profile.CoverURL,
+			"tags_json": profile.TagsJSON, "profile_json": profile.ProfileJSON, "revision": profile.Revision, "updated_at": profile.UpdatedAt,
+		}).Error
+	})
 }
 
 func (r *Repository) SetStyleProfileFavorite(userID string, id string, favorite bool) error {

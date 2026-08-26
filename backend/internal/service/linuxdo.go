@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"infinite-canvas/backend/internal/model"
+	"infinite-canvas/backend/internal/repository"
 
 	"gorm.io/gorm"
 )
@@ -213,6 +214,7 @@ func (s *Service) CompleteLinuxDOLogin(stateValue string, code string) (*LinuxDO
 	avatarURL := profileString(profile, setting.AvatarField)
 	identity, err := s.repo.UserIdentity("linuxdo", subject)
 	var user *model.User
+	isNewUser := false
 	if err == nil {
 		user, err = s.repo.User(identity.UserID)
 		if err != nil {
@@ -236,30 +238,64 @@ func (s *Service) CompleteLinuxDOLogin(stateValue string, code string) (*LinuxDO
 		if err != nil {
 			return nil, err
 		}
-		if err := s.repo.CreateOAuthUser(user, identity); err != nil {
-			return nil, err
-		}
+		isNewUser = true
 	} else {
 		return nil, err
 	}
-	if user.Status != model.UserStatusActive {
-		return nil, Forbidden("该账号已被禁用")
-	}
-	if err := s.ensureSignupBonus(user.ID); err != nil {
-		return nil, err
-	}
-	now := time.Now()
-	user.LastLoginAt = &now
-	user.UpdatedAt = now
-	if err := s.repo.Save(user); err != nil {
-		return nil, err
-	}
-	s.recordActivity(user.ID, "login", 1)
-	session, err := s.createAuthSession(user)
+	session, err := s.completeLinuxDOAuthSession(user, identity, isNewUser)
 	if err != nil {
 		return nil, err
 	}
 	return &LinuxDOCallbackResult{Session: session, Next: safeOAuthNext(state.NextPath)}, nil
+}
+
+func (s *Service) completeLinuxDOAuthSession(user *model.User, identity *model.UserIdentity, isNewUser bool) (*AuthSessionResult, error) {
+	if user == nil || identity == nil || identity.UserID != user.ID {
+		return nil, errors.New("Linux.do 用户身份数据不完整")
+	}
+	if user.Status != model.UserStatusActive {
+		return nil, Forbidden("该账号已被禁用")
+	}
+	now := time.Now()
+	token := randomToken()
+	session := model.AuthSession{
+		ID: newID(), UserID: user.ID, TokenHash: hashToken(token),
+		ExpiresAt: now.Add(sessionMaxAge), CreatedAt: now, UpdatedAt: now,
+	}
+	if isNewUser {
+		account, signupLedger, err := s.signupBootstrapRecords(user.ID, now)
+		if err != nil {
+			return nil, err
+		}
+		user.LastLoginAt = &now
+		user.CreatedAt = now
+		user.UpdatedAt = now
+		identity.CreatedAt = now
+		identity.UpdatedAt = now
+		if err := s.repo.CreateOAuthUserWithSession(user, identity, &account, signupLedger, &session); err != nil {
+			return nil, err
+		}
+	} else {
+		if err := s.ensureSignupBonus(user.ID); err != nil {
+			return nil, err
+		}
+		updated, err := s.repo.CompleteUserLoginWithSession(user.ID, "", now, &session)
+		if errors.Is(err, repository.ErrUserLoginStateChanged) {
+			return nil, Forbidden("账号状态已变更，请重新登录")
+		}
+		if err != nil {
+			return nil, err
+		}
+		user = updated
+	}
+	s.recordActivity(user.ID, "login", 1)
+	return &AuthSessionResult{
+		User: AuthUser{
+			User: *user, AvatarURL: identity.AvatarURL, IdentityProvider: identity.Provider,
+			IdentityID: identity.Subject, IdentityUsername: identity.ProviderUsername,
+		},
+		Session: session.ID + "." + token, MaxAgeSecs: int(sessionMaxAge.Seconds()),
+	}, nil
 }
 
 func (s *Service) createLinuxDOUser(subject string, providerUsername string, displayName string, email string, avatarURL string) (*model.User, *model.UserIdentity, error) {

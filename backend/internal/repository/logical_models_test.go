@@ -137,7 +137,7 @@ func TestCreateTaskRejectsArchivedLogicalModel(t *testing.T) {
 		t.Fatal(err)
 	}
 	task := &model.Task{ID: "TASK_ARCHIVED_MODEL", UserID: "USER_1", LogicalModelID: item.ID, LogicalModelRevisionID: item.ActiveRevisionID, Status: model.TaskStatusQueued, CreatedAt: time.Now(), UpdatedAt: time.Now()}
-	if err := repo.CreateTaskWithActiveLimit(task, 5); !errors.Is(err, ErrLogicalModelUnavailable) {
+	if err := repo.CreateTaskWithActiveLimit(task, 5, TaskProjectRequirement{}); !errors.Is(err, ErrLogicalModelUnavailable) {
 		t.Fatalf("CreateTaskWithActiveLimit() error = %v, want ErrLogicalModelUnavailable", err)
 	}
 }

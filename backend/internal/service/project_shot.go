@@ -186,8 +186,16 @@ func (s *Service) CreateProjectAssetCandidates(userID string, projectID string, 
 		}
 		candidates = append(candidates, model.ProjectAssetCandidate{ID: newID(), ProjectID: projectID, UnitID: strings.TrimSpace(input.UnitID), ShotID: strings.TrimSpace(input.ShotID), Name: name, Category: category, Status: "pending_confirmation", DetailsJSON: detailsJSON, CreatedAt: now, UpdatedAt: now})
 	}
-	if err := s.repo.CreateProjectAssetCandidates(candidates); err != nil {
-		return nil, err
+	referenceDocuments := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		referenceDocuments = append(referenceDocuments, candidate.DetailsJSON)
+	}
+	resourceIDs, err := referencedResourceIDs(referenceDocuments...)
+	if err != nil {
+		return nil, BadAuthRequest("候选素材资源引用格式无效")
+	}
+	if err := s.repo.CreateProjectAssetCandidates(candidates, resourceIDs); err != nil {
+		return nil, resourceReferenceWriteError(err)
 	}
 	if err := s.repo.BumpProjectRevision(projectID); err != nil {
 		return nil, err

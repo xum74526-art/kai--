@@ -1,4 +1,4 @@
-import { Dropdown, Input } from "antd";
+import { App, Dropdown, Input } from "antd";
 import { Download, MoreHorizontal, Pencil, Trash2 } from "lucide-react";
 import type { KeyboardEvent } from "react";
 
@@ -16,6 +16,7 @@ type CanvasFolderCardProps = {
 
 /** 画布库中的文件夹封面：单一卡片表面承载预览和信息，避免相邻卡片互相侵入。 */
 export function CanvasFolderCard({ project, projectName, onClick }: CanvasFolderCardProps) {
+    const { message } = App.useApp();
     const renameProject = useCanvasStore((state) => state.renameProject);
     const selectedIds = useCanvasUiStore((state) => state.selectedProjectIds);
     const editingId = useCanvasUiStore((state) => state.editingProjectId);
@@ -31,6 +32,13 @@ export function CanvasFolderCard({ project, projectName, onClick }: CanvasFolder
     const saveTitle = () => {
         renameProject(project.id, editingTitle);
         stopEditing();
+    };
+    const exportProject = async () => {
+        try {
+            await exportCanvasProjects([project], project.title || "北斗 KAI影画布");
+        } catch (error) {
+            message.error(error instanceof Error ? `画布导出失败：${error.message}` : "画布导出失败");
+        }
     };
 
     const handleOpenKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
@@ -68,23 +76,26 @@ export function CanvasFolderCard({ project, projectName, onClick }: CanvasFolder
                     </div>
                     <div className="canvas-folder-meta">
                         <span className="canvas-folder-meta-item">{projectName ? `所属项目：${projectName}` : "自由画布"}</span>
-                        <span className="canvas-folder-meta-separator" aria-hidden="true">·</span>
+                        <span className="canvas-folder-meta-separator" aria-hidden="true">
+                            ·
+                        </span>
                         <span className="canvas-folder-meta-item">{project.nodes.length} 节点</span>
                     </div>
                     <div className="canvas-folder-dates">
-                        <span><small>创建时间</small><time dateTime={project.createdAt}>{formatCanvasDate(project.createdAt)}</time></span>
-                        <span><small>最后更新</small><time dateTime={project.updatedAt}>{formatCanvasDate(project.updatedAt)}</time></span>
+                        <span>
+                            <small>创建时间</small>
+                            <time dateTime={project.createdAt}>{formatCanvasDate(project.createdAt)}</time>
+                        </span>
+                        <span>
+                            <small>最后更新</small>
+                            <time dateTime={project.updatedAt}>{formatCanvasDate(project.updatedAt)}</time>
+                        </span>
                     </div>
                 </div>
             </div>
 
             <span className={cn("canvas-folder-select", selected && "is-visible")} onClick={(event) => event.stopPropagation()}>
-                <input
-                    type="checkbox"
-                    checked={selected}
-                    onChange={(event) => toggleSelected(project.id, event.target.checked)}
-                    aria-label={`选择 ${project.title}`}
-                />
+                <input type="checkbox" checked={selected} onChange={(event) => toggleSelected(project.id, event.target.checked)} aria-label={`选择 ${project.title}`} />
             </span>
 
             <div className="canvas-folder-actions" onClick={(event) => event.stopPropagation()}>
@@ -109,7 +120,7 @@ export function CanvasFolderCard({ project, projectName, onClick }: CanvasFolder
                     menu={{
                         onClick: ({ domEvent }) => domEvent.stopPropagation(),
                         items: [
-                            { key: "export", icon: <Download className="size-3.5" />, label: "导出画布", onClick: () => void exportCanvasProjects([project], project.title || "北斗 KAI影画布") },
+                            { key: "export", icon: <Download className="size-3.5" />, label: "导出画布", onClick: () => void exportProject() },
                             { type: "divider" },
                             { key: "delete", danger: true, icon: <Trash2 className="size-3.5" />, label: "删除", onClick: () => setDeleteIds([project.id]) },
                         ],

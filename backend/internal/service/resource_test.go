@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -669,6 +671,94 @@ func TestNormalizeSingleByteRange(t *testing.T) {
 		if actual := normalizeSingleByteRange(input); actual != expected {
 			t.Fatalf("normalizeSingleByteRange(%q) = %q, want %q", input, actual, expected)
 		}
+	}
+}
+
+func TestDetectResourceMimeTypeDoesNotTrustActiveContentDeclaredAsMedia(t *testing.T) {
+	tests := []struct {
+		name     string
+		payload  string
+		fileName string
+		declared string
+		want     string
+	}{
+		{name: "html", payload: "<!doctype html><script>alert(1)</script>", fileName: "clip.mp4", declared: "video/mp4", want: "text/html"},
+		{name: "svg", payload: `<svg xmlns="http://www.w3.org/2000/svg"><script/></svg>`, fileName: "image.png", declared: "image/png", want: "image/svg+xml"},
+		{name: "padded html", payload: strings.Repeat(" ", 4096) + "<!doctype html><script>alert(1)</script>", fileName: "clip.mp4", declared: "video/mp4", want: "text/html"},
+		{name: "empty sniff window", payload: strings.Repeat(" ", resourceMimeSniffBytes), fileName: "clip.mp4", declared: "video/mp4", want: "application/octet-stream"},
+		{name: "plain text cannot impersonate video", payload: "not-enough-bytes-to-sniff", fileName: "clip.mp4", declared: "video/mp4", want: "text/plain"},
+		{name: "unknown binary video fallback", payload: "\x00\x01\x02\x03\x04\x05", fileName: "clip.mp4", declared: "video/mp4", want: "video/mp4"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := detectResourceMimeType([]byte(test.payload), test.fileName, test.declared); got != test.want {
+				t.Fatalf("detectResourceMimeType() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestDetectUploadedMimeTypeScansBeyondBrowserSniffWindow(t *testing.T) {
+	filePath := filepath.Join(t.TempDir(), "clip.mp4")
+	payload := []byte(strings.Repeat(" ", 4096) + "<!doctype html><script>alert(1)</script>")
+	if err := os.WriteFile(filePath, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Open(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	if got := detectUploadedMimeType(file, "clip.mp4", "video/mp4"); got != "text/html" {
+		t.Fatalf("detectUploadedMimeType() = %q, want text/html", got)
+	}
+}
+
+func TestResourceCanRenderInlineRequiresMatchingPassiveMedia(t *testing.T) {
+	tests := []struct {
+		resource model.Resource
+		want     bool
+	}{
+		{resource: model.Resource{Kind: "image", MimeType: "image/png"}, want: true},
+		{resource: model.Resource{Kind: "video", MimeType: "video/mp4"}, want: true},
+		{resource: model.Resource{Kind: "audio", MimeType: "audio/mpeg"}, want: true},
+		{resource: model.Resource{Kind: "image", MimeType: "image/svg+xml"}, want: false},
+		{resource: model.Resource{Kind: "image", MimeType: "text/html"}, want: false},
+		{resource: model.Resource{Kind: "file", MimeType: "image/png"}, want: false},
+		{resource: model.Resource{Kind: "video", MimeType: "image/png"}, want: false},
+	}
+	for _, test := range tests {
+		if got := ResourceCanRenderInline(&test.resource); got != test.want {
+			t.Fatalf("ResourceCanRenderInline(%#v) = %v, want %v", test.resource, got, test.want)
+		}
+	}
+}
+
+func TestUnsafeResourceDeliveryCannotRedirectToCDN(t *testing.T) {
+	svc := newResourceTestService(t)
+	settingJSON, _ := json.Marshal(ossSettingValue{
+		Enabled: true, Provider: aliyunOSSProvider, Endpoint: "https://oss-cn-test.aliyuncs.com", CDNBaseURL: "https://media.example.com",
+		Bucket: "private-bucket", AccessKeyID: "access-id", AccessKeySecret: "secret-value",
+	})
+	if err := svc.repo.SaveSystemSetting(&model.SystemSetting{Key: ossSettingKey, ValueJSON: string(settingJSON)}); err != nil {
+		t.Fatal(err)
+	}
+	resource := model.Resource{
+		ID: "resource-html", UserID: "user-1", Kind: "image", Status: model.ResourceStatusReady,
+		Provider: aliyunOSSProvider, ObjectKey: "users/user-1/image/page.html", MimeType: "text/html",
+	}
+	if err := svc.repo.CreateResource(&resource); err != nil {
+		t.Fatal(err)
+	}
+	delivery, err := svc.PrepareResourceDelivery("user-1", resource.ID, ResourceDeliveryOptions{ForceDirect: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if delivery.RedirectURL != "" || delivery.Resource == nil {
+		t.Fatalf("unsafe resource escaped proxy delivery: %#v", delivery)
+	}
+	if _, err := svc.DirectResourceURL("user-1", resource.ID); err == nil {
+		t.Fatal("unsafe resource received a direct URL")
 	}
 }
 

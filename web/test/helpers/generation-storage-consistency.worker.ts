@@ -4,7 +4,7 @@ import { getActiveUserScope, setActiveUserScope } from "../../src/lib/user-scope
 
 type InstanceHook = (storeName: string, key: string, value: unknown) => Promise<void> | void;
 
-type Scenario = "image-cleanup" | "scope-cleanup-switch" | "scope-cleanup-late-canvas-reference" | "video-commit-race" | "audio-commit-race";
+type Scenario = "image-cleanup" | "scope-cleanup-switch" | "scope-cleanup-late-canvas-reference" | "creation-conversation-cleanup" | "asset-import-rollback" | "video-commit-race" | "audio-commit-race";
 
 function installStorageHarness() {
     const originalCreateInstance = localforage.createInstance.bind(localforage);
@@ -121,6 +121,9 @@ function installStorageHarness() {
         hooks,
         scheduled,
         realSetTimeout,
+        storedKeyCount(storeName: string) {
+            return storeValues(storeName).size;
+        },
         restore() {
             localforage.createInstance = originalCreateInstance as typeof localforage.createInstance;
             localforage.getItem = originalGetItem;
@@ -305,6 +308,83 @@ async function runScopeCleanupAfterLateCanvasReference() {
     }
 }
 
+async function runAssetImportRollback() {
+    const previousScope = getActiveUserScope();
+    const harness = installStorageHarness();
+    try {
+        setActiveUserScope("asset-import-rollback");
+        const { createZip } = await import("../../src/lib/zip");
+        const { readAssetPackage } = await import("../../src/pages/assets/asset-transfer.ts?asset-import-rollback-worker");
+        const data = {
+            app: "infinite-canvas",
+            version: 1,
+            exportedAt: "2026-08-26T00:00:00.000Z",
+            assets: [
+                { id: "first", kind: "image", title: "first", coverUrl: "blob:first", tags: [], data: { storageKey: "image:old:first", dataUrl: "blob:first", mimeType: "image/png" } },
+                { id: "second", kind: "image", title: "second", coverUrl: "blob:second", tags: [], data: { storageKey: "image:old:second", dataUrl: "blob:second", mimeType: "image/png" } },
+            ],
+            files: [
+                { storageKey: "image:old:first", path: "files/first.png", mimeType: "image/png", bytes: 5 },
+                { storageKey: "image:old:second", path: "files/missing.png", mimeType: "image/png", bytes: 7 },
+            ],
+        };
+        const zip = await createZip([
+            { name: "assets.json", data: JSON.stringify(data) },
+            { name: "files/first.png", data: new Blob(["first"], { type: "image/png" }) },
+        ]);
+        let error = "";
+        try {
+            await readAssetPackage(new File([zip], "broken-assets.zip", { type: "application/zip" }));
+        } catch (reason) {
+            error = reason instanceof Error ? reason.message : String(reason);
+        }
+        return {
+            error,
+            imageFileCount: harness.storedKeyCount("image_files"),
+            mediaFileCount: harness.storedKeyCount("media_files"),
+        };
+    } finally {
+        setActiveUserScope(previousScope);
+        harness.restore();
+    }
+}
+
+async function runCreationConversationCleanup() {
+    const previousScope = getActiveUserScope();
+    const harness = installStorageHarness();
+    const scope = "creation-conversation-cleanup";
+    const referencedKey = `image:${scope}:conversation-attachment`;
+    const unusedKey = `image:${scope}:unused`;
+
+    try {
+        setActiveUserScope(scope);
+        const imageStorage = await import("../../src/services/image-storage.ts?creation-conversation-cleanup-worker");
+        const { saveCreationConversations } = await import("../../src/services/creation-conversation-store");
+        const { useAssetStore } = await import("../../src/stores/use-asset-store");
+        await import("../../src/stores/canvas/use-canvas-store");
+        await imageStorage.setImageBlob(referencedKey, new Blob(["conversation-reference"], { type: "image/png" }));
+        await imageStorage.setImageBlob(unusedKey, new Blob(["unused"], { type: "image/png" }));
+        await saveCreationConversations([
+            {
+                id: "conversation",
+                messages: [{ id: "message", role: "user" as const, attachments: [{ storageKey: referencedKey }] }],
+            },
+        ]);
+        useAssetStore.setState({ assets: [] });
+        useAssetStore.getState().cleanupImages({ assets: [] });
+        const cleanupRun = harness.scheduled.at(-1);
+        if (!cleanupRun) throw new Error("cleanup was not scheduled");
+        await cleanupRun;
+        return {
+            referencedPresent: (await imageStorage.getImageBlob(referencedKey)) instanceof Blob,
+            unusedPresent: (await imageStorage.getImageBlob(unusedKey)) instanceof Blob,
+        };
+    } finally {
+        setActiveUserScope(previousScope);
+        harness.restore();
+    }
+}
+
 async function runMediaCommitRace(mediaType: "video" | "audio") {
     const previousScope = getActiveUserScope();
     const harness = installStorageHarness();
@@ -401,7 +481,11 @@ self.onmessage = async (event: MessageEvent<Scenario>) => {
                   ? await runScopeCleanupAfterSwitch()
                   : event.data === "scope-cleanup-late-canvas-reference"
                     ? await runScopeCleanupAfterLateCanvasReference()
-                    : await runMediaCommitRace(event.data === "audio-commit-race" ? "audio" : "video");
+                    : event.data === "creation-conversation-cleanup"
+                      ? await runCreationConversationCleanup()
+                      : event.data === "asset-import-rollback"
+                        ? await runAssetImportRollback()
+                        : await runMediaCommitRace(event.data === "audio-commit-race" ? "audio" : "video");
         self.postMessage({ ok: true, result });
     } catch (error) {
         self.postMessage({ ok: false, error: error instanceof Error ? `${error.name}: ${error.message}` : String(error) });

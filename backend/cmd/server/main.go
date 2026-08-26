@@ -64,6 +64,9 @@ func main() {
 	svc.StartWorker()
 
 	r := gin.New()
+	if err := configureTrustedProxies(r, os.Getenv("CANVAS_TRUSTED_PROXIES")); err != nil {
+		log.Fatal(err)
+	}
 	r.Use(gin.LoggerWithFormatter(func(param gin.LogFormatterParams) string {
 		return fmt.Sprintf("%s - [%s] \"%s %s\" %d %s %s\n", param.ClientIP, param.TimeStamp.Format(time.RFC3339), param.Method, redactCanvasSharePath(param.Path), param.StatusCode, param.Latency, param.ErrorMessage)
 	}), gin.Recovery())
@@ -106,6 +109,26 @@ func main() {
 	if err := r.Run(addr); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func configureTrustedProxies(r *gin.Engine, raw string) error {
+	proxies := make([]string, 0)
+	for _, value := range strings.Split(raw, ",") {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		// 不能用全网段恢复 Gin 的旧默认行为；只允许部署者填写实际反向代理
+		// 的 IP/CIDR，避免客户端伪造 X-Forwarded-For 绕过登录与注册限流。
+		if value == "*" || value == "0.0.0.0/0" || value == "::/0" {
+			return fmt.Errorf("CANVAS_TRUSTED_PROXIES must contain exact proxy IPs or narrow CIDRs, got %q", value)
+		}
+		proxies = append(proxies, value)
+	}
+	if err := r.SetTrustedProxies(proxies); err != nil {
+		return fmt.Errorf("CANVAS_TRUSTED_PROXIES is invalid: %w", err)
+	}
+	return nil
 }
 
 func redactCanvasSharePath(path string) string {

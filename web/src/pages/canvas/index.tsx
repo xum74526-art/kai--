@@ -8,16 +8,17 @@ import { CollectionGrid, PageHeader, PaginationBar, WorkspacePage } from "@/comp
 import { WorkspaceLoadingState, WorkspaceState } from "@/components/layout/workspace-state";
 
 import { readZip } from "@/lib/zip";
-import { setMediaBlob } from "@/services/file-storage";
-import { setImageBlob } from "@/services/image-storage";
+import { deleteStoredMedia, setMediaBlob } from "@/services/file-storage";
+import { deleteStoredImages, setImageBlob } from "@/services/image-storage";
 import { CanvasCreateCard, CanvasProjectCard } from "@/components/canvas/canvas-project-card";
 import type { CanvasExportFile } from "@/types/canvas-export";
 import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { useCanvasUiStore } from "@/stores/canvas/use-canvas-ui-store";
 import { exportCanvasProjects } from "@/lib/canvas/canvas-export";
-import { saveCanvasDrawing, type CanvasDrawingRenderDraft } from "@/lib/canvas/canvas-drawing-storage";
-import { createCanvasProjectWithRemoteSync, saveRemoteUserDataNow } from "@/services/user-data-sync";
+import { removeCanvasDrawing, saveCanvasDrawing, type CanvasDrawingRenderDraft } from "@/lib/canvas/canvas-drawing-storage";
+import { createCanvasProjectWithRemoteSync, saveRemoteUserDataNow, withRemoteUserDataSyncPaused } from "@/services/user-data-sync";
 import { listProjects } from "@/services/api/projects";
+import { createImportedStorageKey, isImageStorageReference, remapImportedStorageReferences, type ImportedStorageReference } from "@/lib/imported-storage";
 
 export default function CanvasPage() {
     const { message } = App.useApp();
@@ -33,6 +34,7 @@ export default function CanvasPage() {
     const hydrated = useCanvasStore((state) => state.hydrated);
     const projects = useCanvasStore((state) => state.projects);
     const importProject = useCanvasStore((state) => state.importProject);
+    const deleteProjects = useCanvasStore((state) => state.deleteProjects);
     const selectedIds = useCanvasUiStore((state) => state.selectedProjectIds);
     const setDeleteIds = useCanvasUiStore((state) => state.setDeleteProjectIds);
     const updateProject = useCanvasStore((state) => state.updateProject);
@@ -83,25 +85,51 @@ export default function CanvasPage() {
             message.error(error instanceof Error ? `画布关系保存失败：${error.message}` : "画布关系保存失败");
         }
     };
+    const exportSelected = async () => {
+        try {
+            await exportCanvasProjects(selectedProjects, `KAI影画布-${selectedIds.length}个画布`);
+        } catch (error) {
+            message.error(error instanceof Error ? `画布导出失败：${error.message}` : "画布导出失败");
+        }
+    };
     const importCanvas = async (file?: File) => {
         if (!file) return;
-        try {
-            const zip = await readZip(file);
-            const projectFile = zip.get("projects.json");
-            if (!projectFile) throw new Error("missing projects.json");
-            const data = JSON.parse(await projectFile.text()) as CanvasExportFile;
-            await Promise.all(
-                data.projects.flatMap((project) =>
-                    project.files.map(async (item) => {
-                        const blob = zip.get(item.path);
-                        if (!blob) return;
-                        const typedBlob = blob.type ? blob : blob.slice(0, blob.size, item.mimeType);
-                        await (item.storageKey.startsWith("image:") ? setImageBlob(item.storageKey, typedBlob) : setMediaBlob(item.storageKey, typedBlob));
-                    }),
-                ),
-            );
-            await Promise.all(
-                data.projects.map(async (item) => {
+        const importedReferences = new Map<string, ImportedStorageReference>();
+        const importedProjectIds: string[] = [];
+        const importedDrawings: Array<{ projectId: string; drawingId: string }> = [];
+        await withRemoteUserDataSyncPaused(async () => {
+            try {
+                const zip = await readZip(file);
+                const projectFile = zip.get("projects.json");
+                if (!projectFile) throw new Error("missing projects.json");
+                const data = JSON.parse(await projectFile.text()) as CanvasExportFile;
+                if (!Array.isArray(data.projects)) throw new Error("画布压缩包结构无效");
+                if (data.projects.some((item) => !item?.project || !Array.isArray(item.project.nodes) || !Array.isArray(item.files) || (item.drawingDocuments != null && !Array.isArray(item.drawingDocuments)))) {
+                    throw new Error("画布压缩包结构无效");
+                }
+                const fileItems = data.projects.flatMap((project) => project.files);
+                for (const item of fileItems) {
+                    if (!item?.storageKey || !item.path || !zip.get(item.path)) throw new Error(`画布压缩包缺少文件：${item?.path || "未知文件"}`);
+                }
+                for (const item of data.projects) {
+                    for (const document of item.drawingDocuments || []) {
+                        if (document.previewPath && !zip.get(document.previewPath)) throw new Error(`画布压缩包缺少绘图预览：${document.previewPath}`);
+                        if (document.generationRender?.path && !zip.get(document.generationRender.path)) throw new Error(`画布压缩包缺少绘图渲染：${document.generationRender.path}`);
+                    }
+                }
+                for (const item of fileItems) {
+                    if (importedReferences.has(item.storageKey)) continue;
+                    const blob = zip.get(item.path);
+                    if (!blob) throw new Error(`画布压缩包缺少文件：${item.path}`);
+                    const typedBlob = blob.type ? blob : blob.slice(0, blob.size, item.mimeType);
+                    const storageKey = createImportedStorageKey(item.storageKey, item.mimeType);
+                    const url = isImageStorageReference(item.storageKey, item.mimeType) ? await setImageBlob(storageKey, typedBlob) : await setMediaBlob(storageKey, typedBlob);
+                    importedReferences.set(item.storageKey, { storageKey, url });
+                }
+                const importedItems = remapImportedStorageReferences(data.projects, importedReferences);
+                // 顺序提交每个画布，失败后不会有仍在后台运行的 Promise 继续写入，
+                // 从而保证下面的项目、绘图和 Blob 回滚覆盖本次导入的全部副作用。
+                for (const item of importedItems) {
                     const drawingEngineById = new Map((item.drawingDocuments || []).map((document) => [document.drawingId, document.engine || "tldraw"]));
                     const importedProjectId = importProject({
                         ...item.project,
@@ -109,51 +137,64 @@ export default function CanvasPage() {
                             node.type === "drawing" && node.metadata?.drawingId ? { ...node, metadata: { ...node.metadata, drawingEngine: drawingEngineById.get(node.metadata.drawingId) || node.metadata.drawingEngine || "tldraw" } } : node,
                         ),
                     });
-                    await Promise.all(
-                        (item.drawingDocuments || []).map((document) => {
-                            const previewFile = document.previewPath ? zip.get(document.previewPath) : undefined;
-                            const preview = previewFile && !previewFile.type ? previewFile.slice(0, previewFile.size, "image/png") : previewFile;
-                            const renderFile = document.generationRender?.path ? zip.get(document.generationRender.path) : undefined;
-                            const renderBlob = renderFile && !renderFile.type ? renderFile.slice(0, renderFile.size, document.generationRender?.mimeType || "image/png") : renderFile;
-                            const render =
-                                renderBlob && document.generationRender
-                                    ? ({
-                                          blob: renderBlob,
-                                          pageId: document.generationRender.pageId,
-                                          width: document.generationRender.width,
-                                          height: document.generationRender.height,
-                                          mimeType: document.generationRender.mimeType,
-                                          background: document.generationRender.background,
-                                      } satisfies CanvasDrawingRenderDraft)
-                                    : undefined;
-                            const engine = document.engine || "tldraw";
-                            return saveCanvasDrawing(
-                                importedProjectId,
-                                document.drawingId,
+                    importedProjectIds.push(importedProjectId);
+                    for (const document of item.drawingDocuments || []) {
+                        const previewFile = document.previewPath ? zip.get(document.previewPath) : undefined;
+                        if (document.previewPath && !previewFile) throw new Error(`画布压缩包缺少绘图预览：${document.previewPath}`);
+                        const preview = previewFile && !previewFile.type ? previewFile.slice(0, previewFile.size, "image/png") : previewFile;
+                        const renderFile = document.generationRender?.path ? zip.get(document.generationRender.path) : undefined;
+                        if (document.generationRender?.path && !renderFile) throw new Error(`画布压缩包缺少绘图渲染：${document.generationRender.path}`);
+                        const renderBlob = renderFile && !renderFile.type ? renderFile.slice(0, renderFile.size, document.generationRender?.mimeType || "image/png") : renderFile;
+                        const render =
+                            renderBlob && document.generationRender
+                                ? ({
+                                      blob: renderBlob,
+                                      pageId: document.generationRender.pageId,
+                                      width: document.generationRender.width,
+                                      height: document.generationRender.height,
+                                      mimeType: document.generationRender.mimeType,
+                                      background: document.generationRender.background,
+                                  } satisfies CanvasDrawingRenderDraft)
+                                : undefined;
+                        const engine = document.engine || "tldraw";
+                        importedDrawings.push({ projectId: importedProjectId, drawingId: document.drawingId });
+                        await saveCanvasDrawing(
+                            importedProjectId,
+                            document.drawingId,
+                            engine,
+                            document.snapshot,
+                            {
+                                version: 2,
                                 engine,
-                                document.snapshot,
-                                {
-                                    version: 2,
-                                    engine,
-                                    snapshot: document.snapshot,
-                                    revision: Math.max(0, document.revision - 1),
-                                    updatedAt: document.updatedAt,
-                                    shapeCount: document.shapeCount,
-                                    pageCount: document.pageCount,
-                                },
-                                preview,
-                                render,
-                            );
-                        }),
-                    );
-                }),
-            );
-            message.success(`已导入 ${data.projects.length} 个画布`);
-        } catch {
-            message.error("导入失败，请选择有效的画布压缩包");
-        } finally {
-            if (inputRef.current) inputRef.current.value = "";
-        }
+                                snapshot: document.snapshot,
+                                revision: Math.max(0, document.revision - 1),
+                                updatedAt: document.updatedAt,
+                                shapeCount: document.shapeCount,
+                                pageCount: document.pageCount,
+                            },
+                            preview,
+                            render,
+                        );
+                    }
+                }
+                message.success(`已导入 ${data.projects.length} 个画布`);
+            } catch (error) {
+                try {
+                    if (importedProjectIds.length) deleteProjects(importedProjectIds);
+                } catch (cleanupError) {
+                    console.warn("回滚失败的画布项目失败", cleanupError);
+                }
+                const imageKeys: string[] = [];
+                const mediaKeys: string[] = [];
+                importedReferences.forEach(({ storageKey }) => (isImageStorageReference(storageKey) ? imageKeys : mediaKeys).push(storageKey));
+                const cleanupResults = await Promise.allSettled([...importedDrawings.map(({ projectId, drawingId }) => removeCanvasDrawing(projectId, drawingId)), deleteStoredImages(imageKeys), deleteStoredMedia(mediaKeys)]);
+                const cleanupFailure = cleanupResults.find((result) => result.status === "rejected");
+                if (cleanupFailure) console.warn("清理失败的画布导入数据失败", cleanupFailure.reason);
+                message.error(error instanceof Error ? `导入失败：${error.message}` : "导入失败，请选择有效的画布压缩包");
+            } finally {
+                if (inputRef.current) inputRef.current.value = "";
+            }
+        });
     };
 
     useEffect(() => {
@@ -303,7 +344,7 @@ export default function CanvasPage() {
                                 移出项目
                             </Button>
                         ) : null}
-                        <Button size="small" disabled={!hydrated} icon={<Download className="size-3.5" />} onClick={() => void exportCanvasProjects(selectedProjects, `KAI影画布-${selectedIds.length}个画布`)}>
+                        <Button size="small" disabled={!hydrated} icon={<Download className="size-3.5" />} onClick={() => void exportSelected()}>
                             导出
                         </Button>
                         <Button size="small" danger disabled={!hydrated} onClick={() => setDeleteIds(selectedIds)}>

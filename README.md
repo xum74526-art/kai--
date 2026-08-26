@@ -91,9 +91,23 @@ bun run dev
 
 - 当前注册流程创建的是普通用户，不会把第一个注册账号自动提升为管理员。
 - 已有部署应迁移并保护现有管理员数据库，不要通过开放公网注册来初始化管理员。
-- 全新空数据库的受控管理员初始化流程仍需完善；完成前不建议把源码一键部署描述为可直接投入公网使用。
+- 全新数据库使用 `backend/cmd/admin-bootstrap` 受控初始化唯一管理员；命令在已有管理员时会拒绝执行，并把管理员、积分账户和审计记录放在同一事务中。
 - 公网开放注册时应同时启用邮箱验证、频率限制、资源配额和模型调用预算。
 - 管理员权限必须由后端校验，不能只依赖前端隐藏入口。
+
+Docker 部署首次初始化示例（密码从隐藏输入经标准输入传递，不写入命令参数）：
+
+```bash
+read -rsp "管理员密码：" KAI_ADMIN_PASSWORD && echo
+printf '%s\n' "$KAI_ADMIN_PASSWORD" | docker compose --env-file .env -f docker-compose.deploy.yml exec -T \
+  -e CANVAS_ADMIN_USERNAME=root_admin \
+  -e CANVAS_ADMIN_EMAIL=admin@example.com \
+  -e CANVAS_ADMIN_DISPLAY_NAME=主管理员 \
+  backend admin-bootstrap
+unset KAI_ADMIN_PASSWORD
+```
+
+密码至少 12 位，并同时包含大小写字母、数字和特殊字符。SQLite 本地运行该命令时必须显式设置 `CANVAS_BACKEND_DATA_DIR`；不要把管理员密码提交到 `.env`、Git 或部署日志。
 
 ## 部署与安全
 
@@ -102,9 +116,10 @@ Docker 配置位于仓库根目录，Simon 子路径部署说明见 [`deploy/sim
 1. 只对外暴露 Web 入口，后端服务留在容器网络内。
 2. 使用 HTTPS，并保留 `Host`、`X-Forwarded-For` 和 `X-Forwarded-Proto`。
 3. 为 `CANVAS_CORS_ORIGINS` 配置明确的前端 Origin，不在公网使用 `*`。
-4. 保护数据库、上传目录、备份和 `.settings-key`，并建立可恢复的定期备份。
-5. 仅对文本 SSE 路径关闭代理缓冲，不把长超时设置复制到全部 API。
-6. 自定义模型渠道仅连接可信 HTTPS 上游，避免把 API Key 暴露给浏览器、日志或 URL。
+4. 为服务器本地资源配置同源 HTTPS `CANVAS_PUBLIC_BASE_URL`，确保签名资源链接和外部模型取材可用。
+5. 保护数据库、上传目录、备份和 `.settings-key`，并建立可恢复的定期备份。
+6. 仅对文本 SSE 路径关闭代理缓冲，不把长超时设置复制到全部 API。
+7. 自定义模型渠道仅连接可信 HTTPS 上游，避免把 API Key 暴露给浏览器、日志或 URL。
 
 ## 数据边界
 

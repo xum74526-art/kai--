@@ -75,7 +75,8 @@ func (s *Service) CreateTask(userID string, req CreateTaskRequest) (*model.Task,
 		task.Model = routed.LogicalModel.Code
 		task.Provider = "managed"
 	}
-	if err := s.ensureTaskProjectActive(userID, req.ProjectID); err != nil {
+	projectRequirement, err := s.ensureTaskProjectActive(userID, req.ProjectID)
+	if err != nil {
 		return nil, err
 	}
 	billingOrder, err := s.taskBillingOrder(userID, &task, normalizedInput)
@@ -93,7 +94,7 @@ func (s *Service) CreateTask(userID string, req CreateTaskRequest) (*model.Task,
 	if billingOrder != nil {
 		task.BillingOrderID = billingOrder.ID
 	}
-	err = s.createTaskWithinStorageQuota(&task, billingOrder, policy)
+	err = s.createTaskWithinStorageQuota(&task, billingOrder, policy, projectRequirement)
 	if errors.Is(err, repository.ErrActiveTaskLimit) {
 		return nil, BadAuthRequest(fmt.Sprintf("同时排队或运行的任务最多 %d 个，请等待已有任务完成", policy.Task.ActiveTaskLimit))
 	}
@@ -102,6 +103,9 @@ func (s *Service) CreateTask(userID string, req CreateTaskRequest) (*model.Task,
 	}
 	if errors.Is(err, repository.ErrLogicalModelUnavailable) {
 		return nil, BadAuthRequest("所选模型已停用、归档或配置已更新，请重新选择")
+	}
+	if errors.Is(err, repository.ErrTaskProjectUnavailable) {
+		return nil, BadAuthRequest("项目已归档或删除，无法创建生成任务")
 	}
 	if err != nil {
 		return nil, err
@@ -192,6 +196,10 @@ func (s *Service) createTextReplayTask(userID string, req CreateTaskRequest, nor
 		Type: taskType, Status: model.TaskStatusTextReplay, Stage: "文本持久化（前端自管）", Progress: 5,
 		Prompt: prompt, Operation: req.Operation, Provider: req.Provider, Model: strings.TrimSpace(req.Model),
 	}
+	projectRequirement, err := s.ensureTaskProjectActive(userID, req.ProjectID)
+	if err != nil {
+		return nil, err
+	}
 	if err := s.protectTaskSecrets(normalizedInput); err != nil {
 		return nil, err
 	}
@@ -201,7 +209,10 @@ func (s *Service) createTextReplayTask(userID string, req CreateTaskRequest, nor
 	if err != nil {
 		return nil, err
 	}
-	if err := s.createTaskWithinStorageQuota(&task, nil, policy); err != nil {
+	if err := s.createTaskWithinStorageQuota(&task, nil, policy, projectRequirement); err != nil {
+		if errors.Is(err, repository.ErrTaskProjectUnavailable) {
+			return nil, BadAuthRequest("项目已归档或删除，无法创建生成任务")
+		}
 		return nil, err
 	}
 	_ = s.log(userID, task.ID, "info", "文本持久化任务已创建（前端自管）", "")

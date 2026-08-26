@@ -353,6 +353,7 @@ export const useCanvasStore = create<CanvasStore>()(
                     showImageInfo: source.showImageInfo || false,
                     viewport: source.viewport || initialViewport,
                     directorScenes: source.directorScenes || [],
+                    timeline: source.timeline,
                 };
                 set((state) => ({ projects: [project, ...state.projects] }));
                 return project.id;

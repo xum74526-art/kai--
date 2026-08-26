@@ -218,8 +218,12 @@ func (s *Service) CreateProject(userID string, req CreateProjectRequest) (model.
 	}
 	now := time.Now()
 	project := model.Project{ID: newID(), UserID: userID, Name: name, Type: projectType, AspectRatio: aspectRatio, SourceType: sourceType, Description: strings.TrimSpace(req.Description), StylePresetID: stylePresetID, StyleProfileJSON: styleProfileJSON, Status: model.ProjectStatusActive, Revision: 1, CreatedAt: now, UpdatedAt: now}
-	if err := s.repo.CreateProject(&project); err != nil {
-		return model.Project{}, err
+	resourceIDs, err := referencedResourceIDs(project.StyleProfileJSON)
+	if err != nil {
+		return model.Project{}, BadAuthRequest("项目风格中的资源引用格式无效")
+	}
+	if err := s.repo.CreateProject(&project, resourceIDs); err != nil {
+		return model.Project{}, resourceReferenceWriteError(err)
 	}
 	if _, err := s.createProjectWorkflow(project.ID, "", "project"); err != nil {
 		if deleteErr := s.repo.DeleteProject(userID, project.ID, nil); deleteErr != nil {
@@ -273,8 +277,12 @@ func (s *Service) UpdateProject(userID string, id string, req UpdateProjectReque
 	}
 	project.Revision++
 	project.UpdatedAt = time.Now()
-	if err := s.repo.UpdateProject(project); err != nil {
-		return model.Project{}, err
+	resourceIDs, err := referencedResourceIDs(project.StyleProfileJSON)
+	if err != nil {
+		return model.Project{}, BadAuthRequest("项目风格中的资源引用格式无效")
+	}
+	if err := s.repo.UpdateProject(project, resourceIDs); err != nil {
+		return model.Project{}, resourceReferenceWriteError(err)
 	}
 	return *project, nil
 }
@@ -548,35 +556,36 @@ func IsProjectNotFound(err error) bool {
 }
 
 // 任务仍以画布 ID 作为 projectId；写入前必须解析到业务项目并阻止归档项目继续生成。
-func (s *Service) ensureTaskProjectActive(userID string, canvasOrProjectID string) error {
+// 返回值只表示本次预检是否识别到真实 scope，供 repository 事务关闭“预检后被删除”的窗口。
+func (s *Service) ensureTaskProjectActive(userID string, canvasOrProjectID string) (repository.TaskProjectRequirement, error) {
 	id := strings.TrimSpace(canvasOrProjectID)
 	if id == "" {
-		return nil
+		return repository.TaskProjectRequirement{}, nil
 	}
 	if canvas, err := s.repo.CanvasProjectForUser(userID, id); err == nil {
 		if canvas.ProjectID == "" {
-			return nil
+			return repository.TaskProjectRequirement{MustExist: true}, nil
 		}
 		project, projectErr := s.repo.ProjectForUser(userID, canvas.ProjectID)
 		if projectErr != nil {
-			return projectErr
+			return repository.TaskProjectRequirement{}, projectErr
 		}
 		if project.Status == model.ProjectStatusArchived {
-			return BadAuthRequest("项目已归档，无法创建生成任务")
+			return repository.TaskProjectRequirement{}, BadAuthRequest("项目已归档，无法创建生成任务")
 		}
-		return nil
+		return repository.TaskProjectRequirement{MustExist: true}, nil
 	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-		return err
+		return repository.TaskProjectRequirement{}, err
 	}
 	project, err := s.repo.ProjectForUser(userID, id)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil
+			return repository.TaskProjectRequirement{}, nil
 		}
-		return err
+		return repository.TaskProjectRequirement{}, err
 	}
 	if project.Status == model.ProjectStatusArchived {
-		return BadAuthRequest("项目已归档，无法创建生成任务")
+		return repository.TaskProjectRequirement{}, BadAuthRequest("项目已归档，无法创建生成任务")
 	}
-	return nil
+	return repository.TaskProjectRequirement{MustExist: true}, nil
 }

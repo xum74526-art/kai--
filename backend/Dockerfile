@@ -12,7 +12,8 @@ COPY backend/go.mod backend/go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY backend ./
 RUN --mount=type=cache,target=/root/.cache/go-build CGO_ENABLED=1 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/beidou-kai-backend ./cmd/server \
-    && CGO_ENABLED=1 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/migrate-sqlite-postgres ./cmd/migrate-sqlite-postgres
+    && CGO_ENABLED=1 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/migrate-sqlite-postgres ./cmd/migrate-sqlite-postgres \
+    && CGO_ENABLED=1 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/admin-bootstrap ./cmd/admin-bootstrap
 
 FROM alpine:3.22
 
@@ -28,6 +29,7 @@ ENV CANVAS_BACKEND_DATA_DIR=/data
 RUN mkdir -p /data && chown -R app:app /data
 COPY --from=backend-build /out/beidou-kai-backend /usr/local/bin/beidou-kai-backend
 COPY --from=backend-build /out/migrate-sqlite-postgres /usr/local/bin/migrate-sqlite-postgres
+COPY --from=backend-build /out/admin-bootstrap /usr/local/bin/admin-bootstrap
 
 USER app
 EXPOSE 8080

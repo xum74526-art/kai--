@@ -1,11 +1,53 @@
 package main
 
 import (
+	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
 )
+
+func TestTrustedProxiesDefaultIgnoresForwardedClientIP(t *testing.T) {
+	engine := gin.New()
+	if err := configureTrustedProxies(engine, ""); err != nil {
+		t.Fatal(err)
+	}
+	engine.GET("/client-ip", func(c *gin.Context) { c.String(http.StatusOK, c.ClientIP()) })
+
+	request := httptest.NewRequest(http.MethodGet, "http://backend/client-ip", nil)
+	request.RemoteAddr = "198.51.100.10:4321"
+	request.Header.Set("X-Forwarded-For", "203.0.113.20")
+	response := httptest.NewRecorder()
+	engine.ServeHTTP(response, request)
+	if got := strings.TrimSpace(response.Body.String()); got != "198.51.100.10" {
+		t.Fatalf("ClientIP() = %q, want direct peer", got)
+	}
+}
+
+func TestTrustedProxiesUsesForwardedClientIPFromConfiguredProxy(t *testing.T) {
+	engine := gin.New()
+	if err := configureTrustedProxies(engine, "198.51.100.0/24"); err != nil {
+		t.Fatal(err)
+	}
+	engine.GET("/client-ip", func(c *gin.Context) { c.String(http.StatusOK, c.ClientIP()) })
+
+	request := httptest.NewRequest(http.MethodGet, "http://backend/client-ip", nil)
+	request.RemoteAddr = "198.51.100.10:4321"
+	request.Header.Set("X-Forwarded-For", "203.0.113.20")
+	response := httptest.NewRecorder()
+	engine.ServeHTTP(response, request)
+	if got := strings.TrimSpace(response.Body.String()); got != "203.0.113.20" {
+		t.Fatalf("ClientIP() = %q, want forwarded client", got)
+	}
+}
+
+func TestTrustedProxiesRejectsUniversalCIDR(t *testing.T) {
+	if err := configureTrustedProxies(gin.New(), "0.0.0.0/0"); err == nil {
+		t.Fatal("universal trusted proxy CIDR should be rejected")
+	}
+}
 
 func TestAllowedOriginWildcard(t *testing.T) {
 	t.Setenv("CANVAS_CORS_ORIGINS", "*")

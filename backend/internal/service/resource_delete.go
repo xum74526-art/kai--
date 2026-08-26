@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"infinite-canvas/backend/internal/model"
+	"infinite-canvas/backend/internal/repository"
 
 	qiniuAuth "github.com/qiniu/go-sdk/v7/auth"
 	qiniuStorage "github.com/qiniu/go-sdk/v7/storage"
@@ -76,22 +77,7 @@ func (s *Service) deleteUserAssetWithResources(userID string, assetID string) er
 		if snapshotErr != nil {
 			return snapshotErr
 		}
-		for _, reference := range snapshot.Direct {
-			if _, exists := ownedIDSet[reference.ResourceID]; exists {
-				usages = append(usages, resourceUsage{Kind: reference.Kind, ID: reference.ID, Title: reference.Title})
-			}
-		}
-		for _, document := range snapshot.Documents {
-			primaryReferenced := documentReferencesResources(document.PrimaryJSON, ownedIDSet)
-			secondaryReferenced := documentReferencesResources(document.SecondaryJSON, ownedIDSet)
-			if document.Kind == "任务" {
-				_, originTask := originTaskIDs[document.ID]
-				secondaryReferenced = secondaryReferenced && !originTask
-			}
-			if primaryReferenced || secondaryReferenced {
-				usages = append(usages, resourceUsage{Kind: document.Kind, ID: document.ID, Title: document.Title})
-			}
-		}
+		usages = append(usages, resourceUsagesFromSnapshot(snapshot, ownedIDSet, originTaskIDs)...)
 	}
 	if message := resourceOccupiedMessage(usages); message != "" {
 		return BadAuthRequest(message)
@@ -115,10 +101,18 @@ func (s *Service) deleteUserAssetWithResources(userID string, assetID string) er
 		physicalKeys = append(physicalKeys, key)
 	}
 	sort.Strings(physicalKeys)
+	if err := s.repo.PrepareAssetResourceDeletion(userID, assetID, ownedIDs, func(snapshot repository.ResourceReferenceSnapshot) error {
+		if message := resourceOccupiedMessage(resourceUsagesFromSnapshot(snapshot, ownedIDSet, originTaskIDs)); message != "" {
+			return BadAuthRequest(message)
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("素材删除状态发生变化，请重试：%w", err)
+	}
 	for _, key := range physicalKeys {
 		resource := physicalObjects[key]
 		if err := s.deleteStoredResourceObject(userID, resource); err != nil {
-			return fmt.Errorf("素材文件删除失败，素材记录已保留：%w", err)
+			return fmt.Errorf("素材文件删除失败，删除状态已保留，可重试：%w", err)
 		}
 	}
 	if err := s.repo.DeleteAssetAndResources(userID, assetID, ownedIDs); err != nil {
@@ -131,6 +125,27 @@ type resourceUsage struct {
 	Kind  string
 	ID    string
 	Title string
+}
+
+func resourceUsagesFromSnapshot(snapshot repository.ResourceReferenceSnapshot, ownedIDSet map[string]struct{}, originTaskIDs map[string]struct{}) []resourceUsage {
+	usages := make([]resourceUsage, 0, len(snapshot.Direct)+len(snapshot.Documents))
+	for _, reference := range snapshot.Direct {
+		if _, exists := ownedIDSet[reference.ResourceID]; exists {
+			usages = append(usages, resourceUsage{Kind: reference.Kind, ID: reference.ID, Title: reference.Title})
+		}
+	}
+	for _, document := range snapshot.Documents {
+		primaryReferenced := documentReferencesResources(document.PrimaryJSON, ownedIDSet)
+		secondaryReferenced := documentReferencesResources(document.SecondaryJSON, ownedIDSet)
+		if document.Kind == "任务" {
+			_, originTask := originTaskIDs[document.ID]
+			secondaryReferenced = secondaryReferenced && !originTask
+		}
+		if primaryReferenced || secondaryReferenced {
+			usages = append(usages, resourceUsage{Kind: document.Kind, ID: document.ID, Title: document.Title})
+		}
+	}
+	return usages
 }
 
 func resourceOccupiedMessage(usages []resourceUsage) string {
@@ -171,6 +186,59 @@ func collectOwnedAssetDocumentReferences(raw string, resourceIDs map[string]stru
 	}
 	walkReferenceDocument(value, "", resourceIDs, taskIDs)
 	return nil
+}
+
+// referencedResourceIDs 提取即将持久化文档中的资源引用；纯 URL 字段允许不是 JSON。
+// service 负责协议解析，repository 只接收已经归一化的 ID 并在写事务内锁行校验。
+func referencedResourceIDs(rawValues ...string) ([]string, error) {
+	resourceIDs := map[string]struct{}{}
+	for _, raw := range rawValues {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		if json.Valid([]byte(raw)) {
+			if err := collectOwnedAssetDocumentReferences(raw, resourceIDs, map[string]struct{}{}); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		if resourceID := canvasResourceID(raw); resourceID != "" {
+			resourceIDs[resourceID] = struct{}{}
+		}
+	}
+	return sortedReferenceIDs(resourceIDs), nil
+}
+
+func referencedResourceIDsForRepresentations(representations []model.AssetRepresentation, rawValues ...string) ([]string, error) {
+	resourceIDs, err := referencedResourceIDs(rawValues...)
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]struct{}, len(resourceIDs)+len(representations))
+	for _, resourceID := range resourceIDs {
+		seen[resourceID] = struct{}{}
+	}
+	for _, representation := range representations {
+		if resourceID := validCanvasResourceID(representation.ResourceID); resourceID != "" {
+			seen[resourceID] = struct{}{}
+		}
+		metadataIDs, metadataErr := referencedResourceIDs(representation.MetadataJSON)
+		if metadataErr != nil {
+			return nil, metadataErr
+		}
+		for _, resourceID := range metadataIDs {
+			seen[resourceID] = struct{}{}
+		}
+	}
+	return sortedReferenceIDs(seen), nil
+}
+
+func resourceReferenceWriteError(err error) error {
+	if errors.Is(err, repository.ErrResourceReferenceUnavailable) {
+		return BadAuthRequest("引用的资源不存在、尚未就绪或正在删除，请重新选择素材")
+	}
+	return err
 }
 
 func walkReferenceDocument(value any, parentKey string, resourceIDs map[string]struct{}, taskIDs map[string]struct{}) {

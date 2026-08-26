@@ -231,16 +231,12 @@ func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
 			return
 		}
 		resource := delivery.Resource
+		applyResourceResponseSecurity(c, resource)
 		etag := resourceResponseETag(resource)
 		// 私有资源允许浏览器保存响应，但每次复用前必须重新鉴权；304 会在读取 OSS 前返回。
 		c.Header("Cache-Control", "private, no-cache")
 		c.Header("ETag", etag)
 		c.Header("Accept-Ranges", "bytes")
-		c.Header("X-Content-Type-Options", "nosniff")
-		if resource.Kind == "file" {
-			c.Header("Content-Disposition", "attachment")
-			c.Header("Content-Security-Policy", "sandbox")
-		}
 		if ifNoneMatch(c.GetHeader("If-None-Match"), etag) {
 			c.Status(http.StatusNotModified)
 			return
@@ -281,13 +277,13 @@ func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
 		}
 		defer stream.Body.Close()
 		resource := stream.Resource
+		applyResourceResponseSecurity(c, resource)
 		if resource.MimeType == "" {
 			resource.MimeType = "application/octet-stream"
 		}
 		c.Header("Cache-Control", "public, max-age=0, must-revalidate")
 		c.Header("Accept-Ranges", "bytes")
 		c.Header("Referrer-Policy", "no-referrer")
-		c.Header("X-Content-Type-Options", "nosniff")
 		if stream.ContentRange != "" {
 			c.Header("Content-Range", stream.ContentRange)
 		}

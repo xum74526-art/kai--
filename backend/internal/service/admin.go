@@ -3,7 +3,6 @@ package service
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"strings"
 	"time"
 
@@ -258,17 +257,15 @@ func (s *Service) CreateAdminUser(actor *model.User, req CreateAdminUserRequest)
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
-	if err := s.repo.Create(user); err != nil {
-		return nil, err
-	}
-	if err := s.ensureSignupBonus(user.ID); err != nil {
-		return nil, err
-	}
-	if err := s.appendAdminAudit(actor, "user.create", "user", user.ID, "\u521b\u5efa\u7528\u6237\u8d26\u53f7", map[string]any{"role": user.Role, "status": user.Status}); err != nil {
-		return nil, err
-	}
-	account, err := s.repo.CreditAccount(user.ID)
+	account, signupLedger, err := s.signupBootstrapRecords(user.ID, now)
 	if err != nil {
+		return nil, err
+	}
+	audit, err := newAdminAuditEvent(actor, "user.create", "user", user.ID, "创建用户账号", map[string]any{"role": user.Role, "status": user.Status})
+	if err != nil {
+		return nil, err
+	}
+	if err := s.repo.CreateAdminUserWithAudit(user, &account, signupLedger, audit); err != nil {
 		return nil, err
 	}
 	return &AdminUser{
@@ -320,8 +317,10 @@ func (s *Service) UpdateUser(actor *model.User, userID string, req UpdateUserReq
 			return nil, BadAuthRequest("至少需要保留一个可用管理员")
 		}
 	}
+	expected := *user
+	next := *user
 	if strings.TrimSpace(req.DisplayName) != "" {
-		user.DisplayName = normalizeDisplayName(req.DisplayName, user.Username)
+		next.DisplayName = normalizeDisplayName(req.DisplayName, user.Username)
 	}
 	if req.Email != "" {
 		email := normalizeEmail(req.Email)
@@ -335,8 +334,9 @@ func (s *Service) UpdateUser(actor *model.User, userID string, req UpdateUserReq
 		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, err
 		}
-		user.Email = email
+		next.Email = email
 	}
+	var passwordHash *string
 	if req.Password != "" {
 		if err := validatePassword(req.Password); err != nil {
 			return nil, err
@@ -345,21 +345,28 @@ func (s *Service) UpdateUser(actor *model.User, userID string, req UpdateUserReq
 		if err != nil {
 			return nil, err
 		}
-		user.PasswordHash = hash
-		if err := s.repo.DeleteUserAuthSessions(user.ID); err != nil {
-			return nil, fmt.Errorf("清理旧登录会话失败，密码未更新：%w", err)
-		}
+		passwordHash = &hash
+		next.PasswordHash = hash
 	}
-	user.Role = nextRole
-	user.Status = nextStatus
-	user.UpdatedAt = time.Now()
-	if err := s.repo.Save(user); err != nil {
+	next.Role = nextRole
+	next.Status = nextStatus
+	next.UpdatedAt = time.Now()
+	audit, err := newAdminAuditEvent(actor, "user.update", "user", user.ID, "更新用户账号状态或资料", map[string]any{"role": next.Role, "status": next.Status})
+	if err != nil {
 		return nil, err
 	}
-	if err := s.appendAdminAudit(actor, "user.update", "user", user.ID, "更新用户账号状态或资料", map[string]any{"role": user.Role, "status": user.Status}); err != nil {
+	revokeSessions := passwordHash != nil || expected.Email != next.Email || expected.Role != next.Role || expected.Status != next.Status
+	updated, err := s.repo.UpdateUserWithAudit(&expected, repository.AdminUserUpdate{
+		DisplayName: next.DisplayName, Email: next.Email, PasswordHash: passwordHash,
+		Role: next.Role, Status: next.Status, UpdatedAt: next.UpdatedAt,
+	}, revokeSessions, audit)
+	if errors.Is(err, repository.ErrUserAdminStateChanged) {
+		return nil, BadAuthRequest("用户资料已发生变化，请刷新后重试")
+	}
+	if err != nil {
 		return nil, err
 	}
-	return user, nil
+	return updated, nil
 }
 
 func (s *Service) ensureSingleAdmin(excludingUserID string) error {

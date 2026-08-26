@@ -1,12 +1,20 @@
 package repository
 
 import (
+	"errors"
+	"sort"
 	"strings"
+	"time"
 
 	"infinite-canvas/backend/internal/model"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
+
+var ErrResourceDeletionConflict = errors.New("resource deletion state changed concurrently")
+
+var ErrResourceReferenceUnavailable = errors.New("referenced resource is unavailable")
 
 // ResourceReferenceDocument 是资源删除校验使用的只读业务文档快照。
 // JSON 中的精确资源 ID 识别由 service 完成，repository 只负责缩小候选记录。
@@ -80,13 +88,17 @@ func (r *Repository) ResourceStorageReferenceCount(resource *model.Resource, exc
 }
 
 func (r *Repository) ResourceReferenceSnapshot(userID string, excludingAssetID string, resourceIDs []string) (ResourceReferenceSnapshot, error) {
+	return resourceReferenceSnapshot(r.db, userID, excludingAssetID, resourceIDs)
+}
+
+func resourceReferenceSnapshot(db *gorm.DB, userID string, excludingAssetID string, resourceIDs []string) (ResourceReferenceSnapshot, error) {
 	snapshot := ResourceReferenceSnapshot{Documents: []ResourceReferenceDocument{}, Direct: []ResourceDirectReference{}}
 	if len(resourceIDs) == 0 {
 		return snapshot, nil
 	}
 
 	var assets []model.Asset
-	assetQuery := r.db.Where("user_id = ? AND id <> ?", userID, excludingAssetID)
+	assetQuery := db.Where("user_id = ? AND id <> ?", userID, excludingAssetID)
 	if err := resourceTextQuery(assetQuery, []string{"payload_json"}, resourceIDs).Find(&assets).Error; err != nil {
 		return snapshot, err
 	}
@@ -95,7 +107,7 @@ func (r *Repository) ResourceReferenceSnapshot(userID string, excludingAssetID s
 	}
 
 	var canvases []model.CanvasProject
-	if err := resourceTextQuery(r.db.Where("user_id = ?", userID), []string{"payload_json"}, resourceIDs).Find(&canvases).Error; err != nil {
+	if err := resourceTextQuery(db.Where("user_id = ?", userID), []string{"payload_json"}, resourceIDs).Find(&canvases).Error; err != nil {
 		return snapshot, err
 	}
 	for _, canvas := range canvases {
@@ -103,7 +115,7 @@ func (r *Repository) ResourceReferenceSnapshot(userID string, excludingAssetID s
 	}
 
 	var tasks []model.Task
-	if err := resourceTextQuery(r.db.Where("user_id = ?", userID), []string{"input_json", "result_json"}, resourceIDs).Find(&tasks).Error; err != nil {
+	if err := resourceTextQuery(db.Where("user_id = ?", userID), []string{"input_json", "result_json"}, resourceIDs).Find(&tasks).Error; err != nil {
 		return snapshot, err
 	}
 	for _, task := range tasks {
@@ -111,7 +123,7 @@ func (r *Repository) ResourceReferenceSnapshot(userID string, excludingAssetID s
 	}
 
 	var projects []model.Project
-	if err := resourceTextQuery(r.db.Where("user_id = ?", userID), []string{"style_profile_json"}, resourceIDs).Find(&projects).Error; err != nil {
+	if err := resourceTextQuery(db.Where("user_id = ?", userID), []string{"style_profile_json"}, resourceIDs).Find(&projects).Error; err != nil {
 		return snapshot, err
 	}
 	for _, project := range projects {
@@ -119,7 +131,7 @@ func (r *Repository) ResourceReferenceSnapshot(userID string, excludingAssetID s
 	}
 
 	var styles []model.StyleProfile
-	if err := resourceTextQuery(r.db.Where("user_id = ?", userID), []string{"cover_url", "profile_json"}, resourceIDs).Find(&styles).Error; err != nil {
+	if err := resourceTextQuery(db.Where("user_id = ?", userID), []string{"cover_url", "profile_json"}, resourceIDs).Find(&styles).Error; err != nil {
 		return snapshot, err
 	}
 	for _, style := range styles {
@@ -133,7 +145,7 @@ func (r *Repository) ResourceReferenceSnapshot(userID string, excludingAssetID s
 		SecondaryJSON string
 	}
 	var versions []joinedDocument
-	versionQuery := r.db.Table("asset_versions").
+	versionQuery := db.Table("asset_versions").
 		Select("asset_versions.id, assets.title, asset_versions.definition_json AS primary_json").
 		Joins("JOIN assets ON assets.id = asset_versions.asset_id").
 		Where("assets.user_id = ? AND assets.id <> ?", userID, excludingAssetID)
@@ -145,7 +157,7 @@ func (r *Repository) ResourceReferenceSnapshot(userID string, excludingAssetID s
 	}
 
 	var candidates []joinedDocument
-	candidateQuery := r.db.Table("project_asset_candidates").
+	candidateQuery := db.Table("project_asset_candidates").
 		Select("project_asset_candidates.id, projects.name AS title, project_asset_candidates.details_json AS primary_json").
 		Joins("JOIN projects ON projects.id = project_asset_candidates.project_id").
 		Where("projects.user_id = ?", userID)
@@ -157,7 +169,7 @@ func (r *Repository) ResourceReferenceSnapshot(userID string, excludingAssetID s
 	}
 
 	var steps []joinedDocument
-	stepQuery := r.db.Table("workflow_step_instances").
+	stepQuery := db.Table("workflow_step_instances").
 		Select("workflow_step_instances.id, workflow_step_instances.name AS title, workflow_step_instances.input_json AS primary_json, workflow_step_instances.output_json AS secondary_json").
 		Joins("JOIN workflow_instances ON workflow_instances.id = workflow_step_instances.workflow_instance_id").
 		Joins("JOIN projects ON projects.id = workflow_instances.project_id").
@@ -175,7 +187,7 @@ func (r *Repository) ResourceReferenceSnapshot(userID string, excludingAssetID s
 		ResourceID string
 	}
 	var representations []joinedRepresentation
-	if err := r.db.Table("asset_representations").
+	if err := db.Table("asset_representations").
 		Select("asset_representations.id, assets.title, asset_representations.resource_id").
 		Joins("JOIN asset_versions ON asset_versions.id = asset_representations.asset_version_id").
 		Joins("JOIN assets ON assets.id = asset_versions.asset_id").
@@ -187,14 +199,104 @@ func (r *Repository) ResourceReferenceSnapshot(userID string, excludingAssetID s
 		snapshot.Direct = append(snapshot.Direct, ResourceDirectReference{Kind: "素材", ID: representation.ID, Title: representation.Title, ResourceID: representation.ResourceID})
 	}
 
+	var representationMetadata []joinedDocument
+	representationMetadataQuery := db.Table("asset_representations").
+		Select("asset_representations.id, assets.title, asset_representations.metadata_json AS primary_json").
+		Joins("JOIN asset_versions ON asset_versions.id = asset_representations.asset_version_id").
+		Joins("JOIN assets ON assets.id = asset_versions.asset_id").
+		Where("assets.user_id = ? AND assets.id <> ?", userID, excludingAssetID)
+	if err := resourceTextQuery(representationMetadataQuery, []string{"asset_representations.metadata_json"}, resourceIDs).Scan(&representationMetadata).Error; err != nil {
+		return snapshot, err
+	}
+	for _, representation := range representationMetadata {
+		snapshot.Documents = append(snapshot.Documents, ResourceReferenceDocument{Kind: "素材", ID: representation.ID, Title: representation.Title, PrimaryJSON: representation.PrimaryJSON})
+	}
+
 	var voices []model.VoiceProfile
-	if err := r.db.Where("user_id = ? AND sample_resource_id IN ?", userID, resourceIDs).Find(&voices).Error; err != nil {
+	if err := db.Where("user_id = ? AND sample_resource_id IN ?", userID, resourceIDs).Find(&voices).Error; err != nil {
 		return snapshot, err
 	}
 	for _, voice := range voices {
 		snapshot.Direct = append(snapshot.Direct, ResourceDirectReference{Kind: "声音", ID: voice.ID, Title: voice.Name, ResourceID: voice.SampleResourceID})
 	}
 	return snapshot, nil
+}
+
+// lockReadyResourceReferences 以稳定顺序锁定资源行并校验归属与 ready 状态。
+// 引用写入与删除准备都使用同一组行锁：谁先取得锁，另一方都必须观察其提交后的状态。
+func (r *Repository) lockReadyResourceReferences(tx *gorm.DB, userID string, resourceIDs []string) error {
+	resourceIDs = normalizedResourceIDs(resourceIDs)
+	for _, resourceID := range resourceIDs {
+		var resource model.Resource
+		query := tx.Select("id", "status").Where("id = ? AND user_id = ?", resourceID, userID)
+		if r.Dialect() == "postgres" {
+			query = query.Clauses(clause.Locking{Strength: "UPDATE"})
+		}
+		if err := query.First(&resource).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrResourceReferenceUnavailable
+			}
+			return err
+		}
+		if resource.Status != model.ResourceStatusReady {
+			return ErrResourceReferenceUnavailable
+		}
+	}
+	return nil
+}
+
+func normalizedResourceIDs(resourceIDs []string) []string {
+	seen := make(map[string]struct{}, len(resourceIDs))
+	result := make([]string, 0, len(resourceIDs))
+	for _, resourceID := range resourceIDs {
+		resourceID = strings.TrimSpace(resourceID)
+		if resourceID == "" {
+			continue
+		}
+		if _, exists := seen[resourceID]; exists {
+			continue
+		}
+		seen[resourceID] = struct{}{}
+		result = append(result, resourceID)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func optionalResourceIDs(batches [][]string) []string {
+	var result []string
+	for _, batch := range batches {
+		result = append(result, batch...)
+	}
+	return normalizedResourceIDs(result)
+}
+
+func resourceOwnerForAsset(tx *gorm.DB, assetID string) (string, error) {
+	var asset model.Asset
+	if err := tx.Select("user_id").First(&asset, "id = ?", assetID).Error; err != nil {
+		return "", err
+	}
+	return asset.UserID, nil
+}
+
+func resourceOwnerForProject(tx *gorm.DB, projectID string) (string, error) {
+	var project model.Project
+	if err := tx.Select("user_id").First(&project, "id = ?", projectID).Error; err != nil {
+		return "", err
+	}
+	return project.UserID, nil
+}
+
+func resourceOwnerForWorkflowInstance(tx *gorm.DB, workflowInstanceID string) (string, error) {
+	var owner struct {
+		UserID string
+	}
+	err := tx.Table("workflow_instances").
+		Select("projects.user_id").
+		Joins("JOIN projects ON projects.id = workflow_instances.project_id").
+		Where("workflow_instances.id = ?", workflowInstanceID).
+		Take(&owner).Error
+	return owner.UserID, err
 }
 
 func (r *Repository) AssetBusinessReferences(userID string, assetID string) ([]ResourceDirectReference, error) {
@@ -235,8 +337,67 @@ func (r *Repository) AssetBusinessReferences(userID string, assetID string) ([]R
 	return result, nil
 }
 
+// PrepareAssetResourceDeletion 在任何物理删除前持久化删除意图。
+// 删除失败时 Resource tombstone 会保留完整存储定位，重复调用同一素材删除即可安全重试。
+func (r *Repository) PrepareAssetResourceDeletion(userID string, assetID string, resourceIDs []string, validate func(ResourceReferenceSnapshot) error) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		resourceIDs = normalizedResourceIDs(resourceIDs)
+		for _, resourceID := range resourceIDs {
+			var resource model.Resource
+			resourceQuery := tx.Select("id").Where("user_id = ? AND id = ?", userID, resourceID)
+			if r.Dialect() == "postgres" {
+				resourceQuery = resourceQuery.Clauses(clause.Locking{Strength: "UPDATE"})
+			}
+			if err := resourceQuery.First(&resource).Error; err != nil {
+				return ErrResourceDeletionConflict
+			}
+		}
+		var asset model.Asset
+		assetQuery := tx.Select("id").Where("id = ? AND user_id = ?", assetID, userID)
+		if r.Dialect() == "postgres" {
+			assetQuery = assetQuery.Clauses(clause.Locking{Strength: "UPDATE"})
+		}
+		if err := assetQuery.First(&asset).Error; err != nil {
+			return err
+		}
+		if len(resourceIDs) == 0 {
+			return nil
+		}
+		if validate != nil {
+			snapshot, err := resourceReferenceSnapshot(tx, userID, assetID, resourceIDs)
+			if err != nil {
+				return err
+			}
+			if err := validate(snapshot); err != nil {
+				return err
+			}
+		}
+		result := tx.Model(&model.Resource{}).
+			Where("user_id = ? AND id IN ?", userID, resourceIDs).
+			Updates(map[string]any{"status": model.ResourceStatusDeleted, "updated_at": time.Now()})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != int64(len(resourceIDs)) {
+			return ErrResourceDeletionConflict
+		}
+		return nil
+	})
+}
+
 func (r *Repository) DeleteAssetAndResources(userID string, assetID string, resourceIDs []string) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
+		if len(resourceIDs) > 0 {
+			var preparedCount int64
+			if err := tx.Model(&model.Resource{}).
+				Where("user_id = ? AND id IN ? AND status = ?", userID, resourceIDs, model.ResourceStatusDeleted).
+				Count(&preparedCount).Error; err != nil {
+				return err
+			}
+			if preparedCount != int64(len(resourceIDs)) {
+				return ErrResourceDeletionConflict
+			}
+		}
 		versionIDs := tx.Model(&model.AssetVersion{}).Select("id").Where("asset_id = ?", assetID)
 		if err := tx.Where("asset_version_id IN (?)", versionIDs).Delete(&model.CharacterVoiceBinding{}).Error; err != nil {
 			return err

@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	"infinite-canvas/backend/internal/model"
+	"infinite-canvas/backend/internal/repository"
 
 	"gorm.io/gorm"
 )
@@ -72,6 +73,10 @@ func (s *Service) UpsertUserAsset(userID string, raw json.RawMessage) (UserDataS
 	if err != nil {
 		return UserDataSummary{}, err
 	}
+	resourceIDs, err := referencedResourceIDs(asset.PayloadJSON)
+	if err != nil {
+		return UserDataSummary{}, BadAuthRequest("素材资源引用格式无效")
+	}
 	policy, err := s.RuntimePolicy()
 	if err != nil {
 		return UserDataSummary{}, err
@@ -93,8 +98,8 @@ func (s *Service) UpsertUserAsset(userID string, raw json.RawMessage) (UserDataS
 	if err := validateStructuredStorageQuotaWithPolicy(usage, "asset", errors.Is(existingErr, gorm.ErrRecordNotFound), int64(len(raw))-existingBytes, policy.Resource); err != nil {
 		return UserDataSummary{}, err
 	}
-	if err := s.repo.UpsertAsset(&asset); err != nil {
-		return UserDataSummary{}, err
+	if err := s.repo.UpsertAsset(&asset, resourceIDs); err != nil {
+		return UserDataSummary{}, resourceReferenceWriteError(err)
 	}
 	if existingErr != nil {
 		s.recordActivity(userID, "asset", 1)
@@ -124,6 +129,7 @@ func (s *Service) UserAssets(userID string) ([]json.RawMessage, error) {
 
 func (s *Service) ReplaceUserAssets(userID string, req AssetsSyncRequest) ([]json.RawMessage, error) {
 	assets := make([]model.Asset, 0, len(req.Assets))
+	resourceIDs := map[string]struct{}{}
 	var totalBytes int64
 	for _, raw := range req.Assets {
 		item, err := assetFromJSON(userID, raw)
@@ -132,6 +138,13 @@ func (s *Service) ReplaceUserAssets(userID string, req AssetsSyncRequest) ([]jso
 		}
 		assets = append(assets, item)
 		totalBytes += int64(len(raw))
+		itemResourceIDs, referenceErr := referencedResourceIDs(item.PayloadJSON)
+		if referenceErr != nil {
+			return nil, BadAuthRequest("素材资源引用格式无效")
+		}
+		for _, resourceID := range itemResourceIDs {
+			resourceIDs[resourceID] = struct{}{}
+		}
 	}
 	policy, err := s.RuntimePolicy()
 	if err != nil {
@@ -146,8 +159,8 @@ func (s *Service) ReplaceUserAssets(userID string, req AssetsSyncRequest) ([]jso
 	if err := validateStructuredReplacementQuotaWithPolicy(usage, "asset", len(assets), totalBytes, policy.Resource); err != nil {
 		return nil, err
 	}
-	if err := s.repo.ReplaceAssets(userID, assets); err != nil {
-		return nil, err
+	if err := s.repo.ReplaceAssets(userID, assets, sortedReferenceIDs(resourceIDs)); err != nil {
+		return nil, resourceReferenceWriteError(err)
 	}
 	if len(assets) > 0 {
 		s.recordActivity(userID, "asset", len(assets))
@@ -194,6 +207,10 @@ func (s *Service) UpsertUserCanvasProject(userID string, raw json.RawMessage) (U
 	if err != nil {
 		return UserDataSummary{}, err
 	}
+	resourceIDs, err := referencedResourceIDs(project.PayloadJSON)
+	if err != nil {
+		return UserDataSummary{}, BadAuthRequest("画布资源引用格式无效")
+	}
 	policy, err := s.RuntimePolicy()
 	if err != nil {
 		return UserDataSummary{}, err
@@ -215,8 +232,11 @@ func (s *Service) UpsertUserCanvasProject(userID string, raw json.RawMessage) (U
 	if err := validateStructuredStorageQuotaWithPolicy(usage, "canvas", errors.Is(existingErr, gorm.ErrRecordNotFound), int64(len(raw))-existingBytes, policy.Resource); err != nil {
 		return UserDataSummary{}, err
 	}
-	if err := s.repo.UpsertCanvasProject(&project); err != nil {
-		return UserDataSummary{}, err
+	if err := s.repo.UpsertCanvasProject(&project, resourceIDs); err != nil {
+		if errors.Is(err, repository.ErrCanvasParentProjectUnavailable) {
+			return UserDataSummary{}, BadAuthRequest("所属项目已删除，无法保存画布")
+		}
+		return UserDataSummary{}, resourceReferenceWriteError(err)
 	}
 	if existingErr != nil || existing.PayloadJSON != project.PayloadJSON || existing.Title != project.Title {
 		s.recordActivity(userID, "canvas", 1)
@@ -233,6 +253,7 @@ func (s *Service) DeleteUserCanvasProject(userID string, id string) error {
 
 func (s *Service) ReplaceUserCanvasProjects(userID string, req CanvasProjectsSyncRequest) ([]json.RawMessage, error) {
 	projects := make([]model.CanvasProject, 0, len(req.Projects))
+	resourceIDs := map[string]struct{}{}
 	var totalBytes int64
 	for _, raw := range req.Projects {
 		item, err := canvasProjectFromJSON(userID, raw)
@@ -241,6 +262,13 @@ func (s *Service) ReplaceUserCanvasProjects(userID string, req CanvasProjectsSyn
 		}
 		projects = append(projects, item)
 		totalBytes += int64(len(raw))
+		itemResourceIDs, referenceErr := referencedResourceIDs(item.PayloadJSON)
+		if referenceErr != nil {
+			return nil, BadAuthRequest("画布资源引用格式无效")
+		}
+		for _, resourceID := range itemResourceIDs {
+			resourceIDs[resourceID] = struct{}{}
+		}
 	}
 	policy, err := s.RuntimePolicy()
 	if err != nil {
@@ -255,8 +283,8 @@ func (s *Service) ReplaceUserCanvasProjects(userID string, req CanvasProjectsSyn
 	if err := validateStructuredReplacementQuotaWithPolicy(usage, "canvas", len(projects), totalBytes, policy.Resource); err != nil {
 		return nil, err
 	}
-	if err := s.repo.ReplaceCanvasProjects(userID, projects); err != nil {
-		return nil, err
+	if err := s.repo.ReplaceCanvasProjects(userID, projects, sortedReferenceIDs(resourceIDs)); err != nil {
+		return nil, resourceReferenceWriteError(err)
 	}
 	if len(projects) > 0 {
 		s.recordActivity(userID, "canvas", 1)

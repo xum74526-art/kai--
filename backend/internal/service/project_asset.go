@@ -142,9 +142,17 @@ func (s *Service) LinkProjectAsset(userID string, projectID string, req LinkProj
 		return ProjectAssetSummary{}, err
 	}
 	link := model.ProjectAssetLink{ID: newID(), ProjectID: projectID, AssetID: asset.ID, FolderID: folderID, Position: position, CreatedAt: now}
-	created, err := s.repo.LinkProjectAsset(asset, initialVersion, &link)
+	resourceDocuments := []string{asset.PayloadJSON}
+	if initialVersion != nil {
+		resourceDocuments = append(resourceDocuments, initialVersion.DefinitionJSON)
+	}
+	resourceIDs, err := referencedResourceIDs(resourceDocuments...)
 	if err != nil {
-		return ProjectAssetSummary{}, err
+		return ProjectAssetSummary{}, BadAuthRequest("素材资源引用格式无效")
+	}
+	created, err := s.repo.LinkProjectAsset(asset, initialVersion, &link, resourceIDs)
+	if err != nil {
+		return ProjectAssetSummary{}, resourceReferenceWriteError(err)
 	}
 	if !created {
 		current, currentErr := s.repo.AssetForUser(userID, asset.ID)
@@ -293,8 +301,12 @@ func (s *Service) CreateProjectAssetVersion(userID string, projectID string, ass
 	}
 	now := time.Now()
 	version := model.AssetVersion{ID: newID(), AssetID: assetID, Version: nextVersion, Status: model.AssetVersionStatusDraft, DefinitionJSON: definition, Prompt: strings.TrimSpace(req.Prompt), Note: strings.TrimSpace(req.Note), CreatedAt: now, UpdatedAt: now}
-	if err := s.repo.CreateAssetVersion(&version); err != nil {
-		return model.AssetVersion{}, err
+	resourceIDs, err := referencedResourceIDs(version.DefinitionJSON)
+	if err != nil {
+		return model.AssetVersion{}, BadAuthRequest("资产版本资源引用格式无效")
+	}
+	if err := s.repo.CreateAssetVersion(&version, resourceIDs); err != nil {
+		return model.AssetVersion{}, resourceReferenceWriteError(err)
 	}
 	asset.PrimaryVersionID = version.ID
 	asset.Status = model.AssetVersionStatusDraft
@@ -341,8 +353,12 @@ func (s *Service) ConfirmProjectAssetCandidate(userID string, projectID string, 
 		candidate.Status = "confirmed"
 		candidate.ResolvedAssetID = asset.ID
 		candidate.UpdatedAt = now
-		if saveErr := s.repo.ConfirmProjectCharacterCandidate(candidate, &nextAsset, &nextVersion, representations, voice); saveErr != nil {
-			return ProjectAssetSummary{}, saveErr
+		resourceIDs, referenceErr := referencedResourceIDsForRepresentations(representations, nextAsset.PayloadJSON, nextVersion.DefinitionJSON)
+		if referenceErr != nil {
+			return ProjectAssetSummary{}, BadAuthRequest("候选角色资源引用格式无效")
+		}
+		if saveErr := s.repo.ConfirmProjectCharacterCandidate(candidate, &nextAsset, &nextVersion, representations, voice, resourceIDs); saveErr != nil {
+			return ProjectAssetSummary{}, resourceReferenceWriteError(saveErr)
 		}
 		return s.projectAssetSummary(userID, projectID, &nextAsset)
 	}
@@ -391,8 +407,12 @@ func (s *Service) ConfirmProjectAssetCandidate(userID string, projectID string, 
 		return ProjectAssetSummary{}, positionErr
 	}
 	link := model.ProjectAssetLink{ID: newID(), ProjectID: projectID, AssetID: assetID, FolderID: folderID, Position: position, CreatedAt: now}
-	if err := s.repo.ConfirmProjectAssetCandidate(candidate, &asset, &version, &link, createAsset); err != nil {
-		return ProjectAssetSummary{}, err
+	resourceIDs, err := referencedResourceIDs(asset.PayloadJSON, version.DefinitionJSON, candidate.DetailsJSON)
+	if err != nil {
+		return ProjectAssetSummary{}, BadAuthRequest("候选素材资源引用格式无效")
+	}
+	if err := s.repo.ConfirmProjectAssetCandidate(candidate, &asset, &version, &link, createAsset, resourceIDs); err != nil {
+		return ProjectAssetSummary{}, resourceReferenceWriteError(err)
 	}
 	return s.projectAssetSummary(userID, projectID, &asset)
 }

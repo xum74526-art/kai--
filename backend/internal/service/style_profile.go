@@ -99,8 +99,12 @@ func (s *Service) CreateStyleProfile(userID string, req StyleProfileRequest) (mo
 	}
 	profile.ProfileJSON = normalized
 	profile.Name = document.Title
-	if err := s.repo.CreateStyleProfile(&profile); err != nil {
-		return model.StyleProfile{}, err
+	resourceIDs, err := referencedResourceIDs(profile.CoverURL, profile.ProfileJSON)
+	if err != nil {
+		return model.StyleProfile{}, BadAuthRequest("风格资源引用格式无效")
+	}
+	if err := s.repo.CreateStyleProfile(&profile, resourceIDs); err != nil {
+		return model.StyleProfile{}, resourceReferenceWriteError(err)
 	}
 	return profile, nil
 }
@@ -121,8 +125,12 @@ func (s *Service) UpdateStyleProfile(userID string, id string, req StyleProfileR
 	profile.ProfileJSON = normalized
 	profile.Revision++
 	profile.UpdatedAt = time.Now()
-	if err := s.repo.UpdateStyleProfile(profile); err != nil {
-		return model.StyleProfile{}, err
+	resourceIDs, err := referencedResourceIDs(profile.CoverURL, profile.ProfileJSON)
+	if err != nil {
+		return model.StyleProfile{}, BadAuthRequest("风格资源引用格式无效")
+	}
+	if err := s.repo.UpdateStyleProfile(profile, resourceIDs); err != nil {
+		return model.StyleProfile{}, resourceReferenceWriteError(err)
 	}
 	return *profile, nil
 }

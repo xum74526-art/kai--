@@ -94,7 +94,7 @@ func validateStructuredReplacementQuotaWithPolicy(usage repository.UserStorageUs
 	return validateStructuredStorageQuotaWithPolicy(usage, kind, false, deltaBytes, policy)
 }
 
-func (s *Service) createTaskWithinStorageQuota(task *model.Task, billingOrder *model.BillingOrder, policy RuntimePolicySetting) error {
+func (s *Service) createTaskWithinStorageQuota(task *model.Task, billingOrder *model.BillingOrder, policy RuntimePolicySetting, projectRequirement repository.TaskProjectRequirement) error {
 	s.storageMu.Lock()
 	defer s.storageMu.Unlock()
 	usage, err := s.repo.UserStorageUsage(task.UserID)
@@ -105,10 +105,14 @@ func (s *Service) createTaskWithinStorageQuota(task *model.Task, billingOrder *m
 	if err := validateTaskStorageQuotaWithPolicy(usage, incomingBytes, policy.Resource); err != nil {
 		return err
 	}
-	if billingOrder != nil {
-		return s.repo.CreateTaskWithCreditReservation(task, billingOrder, policy.Task.ActiveTaskLimit)
+	resourceIDs, err := referencedResourceIDs(task.InputJSON)
+	if err != nil {
+		return BadAuthRequest("任务资源引用格式无效")
 	}
-	return s.repo.CreateTaskWithActiveLimit(task, policy.Task.ActiveTaskLimit)
+	if billingOrder != nil {
+		return resourceReferenceWriteError(s.repo.CreateTaskWithCreditReservation(task, billingOrder, policy.Task.ActiveTaskLimit, projectRequirement, resourceIDs))
+	}
+	return resourceReferenceWriteError(s.repo.CreateTaskWithActiveLimit(task, policy.Task.ActiveTaskLimit, projectRequirement, resourceIDs))
 }
 
 // 任务完成会同时扩张任务历史和 Agent 会话数据，必须在同一临界区核算并原子写入。
@@ -169,8 +173,19 @@ func (s *Service) saveTaskCompletionWithinStorageQuota(task *model.Task, resultJ
 	completed.ResultJSON = string(resultJSON)
 	completed.InputJSON = publicInputJSON
 	completed.CompletedAt = ptr(time.Now())
-	if err := s.repo.SaveTaskCompletion(&completed, expectedStatus, session, message, results); err != nil {
-		return err
+	referenceDocuments := []string{completed.InputJSON, completed.ResultJSON, string(opsJSON)}
+	if message != nil {
+		referenceDocuments = append(referenceDocuments, message.Payload)
+	}
+	for _, result := range results {
+		referenceDocuments = append(referenceDocuments, result.URL, result.Payload)
+	}
+	resourceIDs, err := referencedResourceIDs(referenceDocuments...)
+	if err != nil {
+		return BadAuthRequest("任务结果中的资源引用格式无效")
+	}
+	if err := s.repo.SaveTaskCompletion(&completed, expectedStatus, session, message, results, resourceIDs); err != nil {
+		return resourceReferenceWriteError(err)
 	}
 	*task = completed
 	return nil

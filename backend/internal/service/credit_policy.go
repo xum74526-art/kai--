@@ -120,6 +120,33 @@ func (s *Service) ensureSignupBonus(userID string) error {
 	return err
 }
 
+// signupBootstrapRecords 在用户创建事务前生成确定的账户与奖励记录；repository 负责与用户一并提交。
+func (s *Service) signupBootstrapRecords(userID string, now time.Time) (model.CreditAccount, *model.CreditLedgerEntry, error) {
+	account := model.CreditAccount{UserID: userID, CreatedAt: now, UpdatedAt: now}
+	enabled, err := s.FeatureEnabled(FeatureCredits)
+	if err != nil || !enabled {
+		return account, nil, err
+	}
+	policy, err := s.creditPolicy()
+	if err != nil {
+		return model.CreditAccount{}, nil, err
+	}
+	amount := policy.SignupBonusMicrocredits
+	if amount == 0 {
+		return account, nil, nil
+	}
+	reference := "signup:" + userID
+	account.AvailableMicrocredits = amount
+	account.Version = 1
+	ledger := &model.CreditLedgerEntry{
+		ID: newID(), UserID: userID, Type: model.CreditLedgerSignupBonus,
+		AmountMicrocredits: amount, AvailableDeltaMicrocredits: amount,
+		AvailableAfterMicrocredits: amount, ReservedAfterMicrocredits: 0,
+		ReferenceKey: &reference, Note: "新用户默认积分", CreatedAt: now,
+	}
+	return account, ledger, nil
+}
+
 func (s *Service) CheckinCredits(user *model.User) (*model.CreditAccount, bool, error) {
 	if user == nil {
 		return nil, false, Unauthorized("请先登录")

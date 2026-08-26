@@ -44,6 +44,17 @@ func (s *Service) UpdateRegistrationSetting(actor *model.User, req RegistrationS
 	if err := s.RequireAdmin(actor); err != nil {
 		return nil, err
 	}
+	s.registrationMu.Lock()
+	defer s.registrationMu.Unlock()
+	if req.Enabled {
+		emailEnabled, err := s.EmailEnabled()
+		if err != nil {
+			return nil, err
+		}
+		if !emailEnabled {
+			return nil, BadAuthRequest("开放公开注册前，请先启用并完整配置 SMTP 注册邮件")
+		}
+	}
 	encoded, err := json.Marshal(registrationSettingValue{Enabled: req.Enabled})
 	if err != nil {
 		return nil, err
@@ -65,6 +76,21 @@ func (s *Service) UpdateRegistrationSetting(actor *model.User, req RegistrationS
 func (s *Service) RegistrationEnabled() (bool, error) {
 	_, value, err := s.readRegistrationSetting()
 	return value.Enabled, err
+}
+
+// PasswordRegistrationEnabled 在全局新用户准入之上叠加本地邮箱验证码能力。
+// Linux.do 已由上游完成身份验证，不应因本地 SMTP 临时不可用而拒绝首次登录。
+func (s *Service) PasswordRegistrationEnabled() (bool, error) {
+	registrationEnabled, err := s.RegistrationEnabled()
+	if err != nil || !registrationEnabled {
+		return false, err
+	}
+	emailEnabled, err := s.EmailEnabled()
+	if err != nil {
+		return false, err
+	}
+	// 环境变量或旧数据可能绕过后台保存校验；SMTP 不可用时本地密码注册保持关闭。
+	return emailEnabled, nil
 }
 
 func (s *Service) readRegistrationSetting() (*model.SystemSetting, registrationSettingValue, error) {

@@ -21,8 +21,17 @@ const activeRemoteSyncOperations = new Set<Promise<void>>();
 let subscriptionsInstalled = false;
 let remoteAssetVersions = new Map<string, string>();
 let remoteProjectVersions = new Map<string, string>();
+let knownRemoteAssetVersions = new Map<string, string>();
+let knownRemoteProjectVersions = new Map<string, string>();
+let knownRemoteAssetIds = new Set<string>();
+let knownRemoteProjectIds = new Set<string>();
+let pendingDeletedAssetIds = new Set<string>();
+let pendingDeletedProjectIds = new Set<string>();
+let syncRetryAttempt = 0;
+let remoteSnapshotFreshForPush = false;
 
-const LOCAL_STORAGE_KEY_PATTERN = /^(image|video|audio|file|video-reference|audio-reference):/;
+const LOCAL_STORAGE_KEY_PATTERN = /^(image|generation-image|video|generation-video|audio|generation-audio|file|video-reference|audio-reference):/;
+const REMOTE_KNOWN_IDS_STORAGE_PREFIX = "kai:remote-user-data-known-v1:";
 
 export async function syncRemoteUserData(userId?: string | null) {
     await runRemoteUserDataSyncOperation(async () => {
@@ -33,15 +42,24 @@ export async function syncRemoteUserData(userId?: string | null) {
             // 登录只拉一次聚合快照。摘要列表再逐条请求详情会把 N 条数据放大成 2N+2 个请求，
             // 并且会在登录阶段同时触发大量媒体解析，任何一项失败都会污染登录结果。
             const snapshot = normalizeBackendMediaUrls(await getRemoteUserDataSnapshot());
-            remoteProjectVersions = versionMap(snapshot.projects);
-            remoteAssetVersions = versionMap(snapshot.assets);
+            const known = readKnownRemoteIds(activeRemoteUserId);
+            knownRemoteProjectIds = known.projects;
+            knownRemoteAssetIds = known.assets;
+            knownRemoteProjectVersions = known.projectVersions;
+            knownRemoteAssetVersions = known.assetVersions;
+            pendingDeletedProjectIds = known.deletedProjects;
+            pendingDeletedAssetIds = known.deletedAssets;
             const localProjects = useCanvasStore.getState().projects;
             const localAssets = useAssetStore.getState().assets;
-            const mergedProjects = mergeById(localProjects, snapshot.projects);
+            const mergedProjects = mergeRemoteSnapshot(localProjects, snapshot.projects, knownRemoteProjectIds, pendingDeletedProjectIds, knownRemoteProjectVersions);
             // 这里只合并结构化素材数据，不在登录阶段解析图片/视频/音频 URL；媒体由实际使用方按需解析。
-            const mergedAssets = mergeById(localAssets, snapshot.assets);
+            const mergedAssets = mergeRemoteSnapshot(localAssets, snapshot.assets, knownRemoteAssetIds, pendingDeletedAssetIds, knownRemoteAssetVersions);
             useCanvasStore.getState().replaceProjects(mergedProjects);
             useAssetStore.getState().replaceAssets(mergedAssets);
+            remoteProjectVersions = versionMap(snapshot.projects);
+            remoteAssetVersions = versionMap(snapshot.assets);
+            rememberRemoteIds(snapshot.projects, snapshot.assets);
+            remoteSnapshotFreshForPush = true;
         } finally {
             applyingRemoteState = false;
         }
@@ -59,9 +77,11 @@ export function installRemoteUserDataAutoSync() {
     if (subscriptionsInstalled) return;
     subscriptionsInstalled = true;
     useCanvasStore.subscribe((state, previous) => {
+        if (!applyingRemoteState) rememberLocalDeletions(previous.projects, state.projects, knownRemoteProjectIds, pendingDeletedProjectIds);
         if (state.projects !== previous.projects) scheduleRemoteUserDataSync();
     });
     useAssetStore.subscribe((state, previous) => {
+        if (!applyingRemoteState) rememberLocalDeletions(previous.assets, state.assets, knownRemoteAssetIds, pendingDeletedAssetIds);
         if (state.assets !== previous.assets) scheduleRemoteUserDataSync();
     });
 }
@@ -70,6 +90,14 @@ export function resetRemoteUserDataSync() {
     activeRemoteUserId = "";
     remoteAssetVersions.clear();
     remoteProjectVersions.clear();
+    knownRemoteAssetVersions.clear();
+    knownRemoteProjectVersions.clear();
+    knownRemoteAssetIds.clear();
+    knownRemoteProjectIds.clear();
+    pendingDeletedAssetIds.clear();
+    pendingDeletedProjectIds.clear();
+    syncRetryAttempt = 0;
+    remoteSnapshotFreshForPush = false;
     if (syncTimer) {
         window.clearTimeout(syncTimer);
         syncTimer = null;
@@ -135,6 +163,10 @@ export async function withRemoteUserDataSyncPaused<T>(operation: () => Promise<T
 }
 
 export function scheduleRemoteUserDataSync() {
+    scheduleRemoteUserDataSyncAfter(1200);
+}
+
+function scheduleRemoteUserDataSyncAfter(delayMs: number) {
     if (!activeRemoteUserId || applyingRemoteState) return;
     if (syncPauseCount) {
         syncQueued = true;
@@ -152,7 +184,7 @@ export function scheduleRemoteUserDataSync() {
     syncTimer = window.setTimeout(() => {
         syncTimer = null;
         void saveRemoteUserDataNow().catch((error) => console.warn("云端自动同步失败", error));
-    }, 1200);
+    }, delayMs);
 }
 
 export async function createCanvasProjectWithRemoteSync(title: string, projectId?: string, initialContent?: Partial<Pick<CanvasProject, "nodes" | "connections">>) {
@@ -173,8 +205,15 @@ export async function deleteAssetWithRemoteSync(id: string) {
         if (activeRemoteUserId) {
             await deleteRemoteAsset(id);
             remoteAssetVersions.delete(id);
+            pendingDeletedAssetIds.delete(id);
         }
-        useAssetStore.getState().removeAsset(id);
+        applyingRemoteState = true;
+        try {
+            useAssetStore.getState().removeAsset(id);
+        } finally {
+            applyingRemoteState = false;
+        }
+        persistKnownRemoteIds();
     });
 }
 
@@ -190,10 +229,19 @@ export async function saveRemoteUserDataNow() {
         return syncPromise;
     }
     syncPromise = drainRemoteUserDataChanges();
+    let failed = false;
     try {
         await syncPromise;
+        syncRetryAttempt = 0;
+    } catch (error) {
+        failed = true;
+        throw error;
     } finally {
         syncPromise = null;
+        if (failed && activeRemoteUserId) {
+            syncRetryAttempt += 1;
+            scheduleRemoteUserDataSyncAfter(Math.min(30_000, 2_000 * 2 ** Math.min(syncRetryAttempt - 1, 4)));
+        }
     }
 }
 
@@ -206,6 +254,10 @@ async function drainRemoteUserDataChanges() {
 
 async function saveRemoteUserDataBatch() {
     try {
+        // 仅在完整聚合快照成功返回后应用删除推断；这不是服务端 tombstone 的原子替代方案。
+        // 登录刚拉取的快照可复用一次，后续推送前重新确认远端现状，让旧设备识别另一设备的删除。
+        if (remoteSnapshotFreshForPush) remoteSnapshotFreshForPush = false;
+        else await refreshRemoteStateBeforePush();
         const currentProjects = useCanvasStore.getState().projects;
         const currentAssets = useAssetStore.getState().assets;
         const dirtyProjects = currentProjects.filter((item) => !sameVersion(remoteProjectVersions.get(item.id), item.updatedAt));
@@ -217,26 +269,51 @@ async function saveRemoteUserDataBatch() {
         const projects = await prepareRemoteCanvasProjects(dirtyProjects, uploaded);
         const assets = await prepareRemoteAssets(dirtyAssets, uploaded);
         applyingRemoteState = true;
-        if (projects.length) useCanvasStore.getState().replaceProjects(replaceById(currentProjects, projects));
-        if (assets.length) useAssetStore.getState().replaceAssets(replaceById(currentAssets, assets));
+        if (projects.length) useCanvasStore.getState().replaceProjects(mergePreparedItems(useCanvasStore.getState().projects, dirtyProjects, projects, uploaded));
+        if (assets.length) useAssetStore.getState().replaceAssets(mergePreparedItems(useAssetStore.getState().assets, dirtyAssets, assets, uploaded));
         applyingRemoteState = false;
         // SQLite 和接口频控都要求写入保持有界；逐项提交还能准确记录已完成版本。
-        for (const project of projects) {
+        const latestProjectIds = new Set(useCanvasStore.getState().projects.map((item) => item.id));
+        const latestAssetIds = new Set(useAssetStore.getState().assets.map((item) => item.id));
+        for (const project of projects.filter((item) => latestProjectIds.has(item.id))) {
             await upsertRemoteCanvasProject(project);
             remoteProjectVersions.set(project.id, project.updatedAt);
+            knownRemoteProjectIds.add(project.id);
+            knownRemoteProjectVersions.set(project.id, project.updatedAt);
+            // 删除可能发生在首次 upsert 等待期间；此时订阅器尚不知道它已存在于远端。
+            // 在同一批次补记 tombstone 并立即清理，避免下一次快照把它重新带回本地。
+            if (!useCanvasStore.getState().projects.some((item) => item.id === project.id)) {
+                pendingDeletedProjectIds.add(project.id);
+                persistKnownRemoteIds();
+                await deleteRemoteCanvasProject(project.id);
+                remoteProjectVersions.delete(project.id);
+                pendingDeletedProjectIds.delete(project.id);
+            }
         }
-        for (const asset of assets) {
+        for (const asset of assets.filter((item) => latestAssetIds.has(item.id))) {
             await upsertRemoteAsset(asset);
             remoteAssetVersions.set(asset.id, asset.updatedAt);
+            knownRemoteAssetIds.add(asset.id);
+            knownRemoteAssetVersions.set(asset.id, asset.updatedAt);
+            if (!useAssetStore.getState().assets.some((item) => item.id === asset.id)) {
+                pendingDeletedAssetIds.add(asset.id);
+                persistKnownRemoteIds();
+                await deleteRemoteAsset(asset.id);
+                remoteAssetVersions.delete(asset.id);
+                pendingDeletedAssetIds.delete(asset.id);
+            }
         }
         for (const id of deletedProjectIds) {
             await deleteRemoteCanvasProject(id);
             remoteProjectVersions.delete(id);
+            pendingDeletedProjectIds.delete(id);
         }
         for (const id of deletedAssetIds) {
             await deleteRemoteAsset(id);
             remoteAssetVersions.delete(id);
+            pendingDeletedAssetIds.delete(id);
         }
+        persistKnownRemoteIds();
     } finally {
         applyingRemoteState = false;
     }
@@ -274,13 +351,12 @@ async function ensureRemoteResourceReferences<T>(value: T, uploaded = new Map<st
     if (!isLocalStorageKey(storageKey)) {
         const inline = inlineMediaDataUrl(next);
         if (!inline) return next as T;
-        const resourceStorage = await uploadInlineDataUrl(inline).catch(() => "");
-        return (resourceStorage ? applyResourceReference(next, resourceStorage) : next) as T;
+        const resourceStorage = await uploadInlineDataUrl(inline);
+        return applyResourceReference(next, resourceStorage) as T;
     }
 
     const cached = uploaded.get(storageKey);
-    const resourceStorage = cached || (await uploadLocalStorageKey(storageKey, next).catch(() => ""));
-    if (!resourceStorage) return next as T;
+    const resourceStorage = cached || (await uploadLocalStorageKey(storageKey, next));
     uploaded.set(storageKey, resourceStorage);
     return applyResourceReference(next, resourceStorage) as T;
 }
@@ -303,15 +379,17 @@ function inlineMediaDataUrl(payload: Record<string, unknown>) {
 }
 
 async function uploadInlineDataUrl(dataUrl: string) {
-    const blob = await (await fetch(dataUrl)).blob();
+    const response = await fetch(dataUrl);
+    if (!response.ok) throw new Error(`内联媒体读取失败（HTTP ${response.status}）`);
+    const blob = await response.blob();
     const kind: "image" | "video" | "audio" | "file" = blob.type.startsWith("image/") ? "image" : blob.type.startsWith("video/") ? "video" : blob.type.startsWith("audio/") ? "audio" : "file";
     const resource = await uploadResourceFile(blob, kind);
     return resourceStorageKey(resource.id);
 }
 
 async function uploadLocalStorageKey(storageKey: string, payload: Record<string, unknown>) {
-    const blob = storageKey.startsWith("image:") ? await getImageBlob(storageKey) : await getMediaBlob(storageKey);
-    if (!blob) return "";
+    const blob = isImageStorageKey(storageKey) ? await getImageBlob(storageKey) : await getMediaBlob(storageKey);
+    if (!blob) throw new Error(`本地媒体文件已丢失，无法同步：${storageKey}`);
     const kind = blob.type.startsWith("image/") ? "image" : blob.type.startsWith("video/") ? "video" : blob.type.startsWith("audio/") ? "audio" : "file";
     const resource = await uploadResourceFile(blob, kind, {
         width: numberValue(payload.naturalWidth) || numberValue(payload.width),
@@ -334,6 +412,133 @@ function mergeById<T extends { id?: string; updatedAt?: string }>(local: T[], re
     return Array.from(items.values()).sort((a, b) => timeValue(b.updatedAt) - timeValue(a.updatedAt));
 }
 
+function mergeRemoteSnapshot<T extends { id?: string; updatedAt?: string }>(local: T[], remote: T[], knownRemoteIds: Set<string>, pendingDeletedIds: Set<string>, knownRemoteVersions: Map<string, string>) {
+    const remoteIds = new Set(remote.flatMap((item) => (item.id ? [item.id] : [])));
+    const retainedLocal = local.filter((item) => {
+        if (!item.id) return true;
+        if (pendingDeletedIds.has(item.id)) return false;
+        if (!knownRemoteIds.has(item.id) || remoteIds.has(item.id)) return true;
+        const lastSyncedVersion = knownRemoteVersions.get(item.id);
+        // 远端缺失只有在本地仍是上次同步版本时才可推断为远端删除；本地有更新时保留并重新推送，避免静默丢稿。
+        return !sameVersion(lastSyncedVersion, item.updatedAt);
+    });
+    const retainedRemote = remote.filter((item) => !item.id || !pendingDeletedIds.has(item.id));
+    return mergeById(retainedLocal, retainedRemote);
+}
+
+async function refreshRemoteStateBeforePush() {
+    const snapshot = normalizeBackendMediaUrls(await getRemoteUserDataSnapshot());
+    applyingRemoteState = true;
+    try {
+        const projects = mergeRemoteSnapshot(useCanvasStore.getState().projects, snapshot.projects, knownRemoteProjectIds, pendingDeletedProjectIds, knownRemoteProjectVersions);
+        const assets = mergeRemoteSnapshot(useAssetStore.getState().assets, snapshot.assets, knownRemoteAssetIds, pendingDeletedAssetIds, knownRemoteAssetVersions);
+        useCanvasStore.getState().replaceProjects(projects);
+        useAssetStore.getState().replaceAssets(assets);
+        remoteProjectVersions = versionMap(snapshot.projects);
+        remoteAssetVersions = versionMap(snapshot.assets);
+        rememberRemoteIds(snapshot.projects, snapshot.assets);
+    } finally {
+        applyingRemoteState = false;
+    }
+}
+
+function mergePreparedItems<T extends { id: string; updatedAt?: string }>(latest: T[], source: T[], prepared: T[], uploaded: Map<string, string>) {
+    const sourceById = new Map(source.map((item) => [item.id, item]));
+    const preparedById = new Map(prepared.map((item) => [item.id, item]));
+    return latest.map((item) => {
+        const original = sourceById.get(item.id);
+        const remoteReady = preparedById.get(item.id);
+        if (!original || !remoteReady) return item;
+        if (sameVersion(original.updatedAt, item.updatedAt)) return remoteReady;
+        return replaceUploadedStorageReferences(item, uploaded);
+    });
+}
+
+function replaceUploadedStorageReferences<T>(value: T, uploaded: Map<string, string>): T {
+    if (!value || typeof value !== "object") return value;
+    if (Array.isArray(value)) return value.map((item) => replaceUploadedStorageReferences(item, uploaded)) as T;
+    const next = Object.fromEntries(Object.entries(value).map(([key, child]) => [key, replaceUploadedStorageReferences(child, uploaded)]));
+    const storageKey = typeof next.storageKey === "string" ? next.storageKey : "";
+    const replacement = uploaded.get(storageKey);
+    return (replacement ? applyResourceReference(next, replacement) : next) as T;
+}
+
+function readKnownRemoteIds(userId: string) {
+    const empty = {
+        projects: new Set<string>(),
+        assets: new Set<string>(),
+        projectVersions: new Map<string, string>(),
+        assetVersions: new Map<string, string>(),
+        deletedProjects: new Set<string>(),
+        deletedAssets: new Set<string>(),
+    };
+    if (typeof window === "undefined" || !window.localStorage || !userId) return empty;
+    try {
+        const value = JSON.parse(window.localStorage.getItem(`${REMOTE_KNOWN_IDS_STORAGE_PREFIX}${userId}`) || "{}") as {
+            projects?: unknown;
+            assets?: unknown;
+            projectVersions?: unknown;
+            assetVersions?: unknown;
+            deletedProjects?: unknown;
+            deletedAssets?: unknown;
+        };
+        return {
+            projects: new Set(Array.isArray(value.projects) ? value.projects.filter((id): id is string => typeof id === "string") : []),
+            assets: new Set(Array.isArray(value.assets) ? value.assets.filter((id): id is string => typeof id === "string") : []),
+            projectVersions: stringMap(value.projectVersions),
+            assetVersions: stringMap(value.assetVersions),
+            deletedProjects: new Set(Array.isArray(value.deletedProjects) ? value.deletedProjects.filter((id): id is string => typeof id === "string") : []),
+            deletedAssets: new Set(Array.isArray(value.deletedAssets) ? value.deletedAssets.filter((id): id is string => typeof id === "string") : []),
+        };
+    } catch {
+        return empty;
+    }
+}
+
+function rememberRemoteIds(projects: Array<{ id: string; updatedAt?: string }>, assets: Array<{ id: string; updatedAt?: string }>) {
+    projects.forEach((item) => {
+        knownRemoteProjectIds.add(item.id);
+        knownRemoteProjectVersions.set(item.id, item.updatedAt || "");
+    });
+    assets.forEach((item) => {
+        knownRemoteAssetIds.add(item.id);
+        knownRemoteAssetVersions.set(item.id, item.updatedAt || "");
+    });
+    persistKnownRemoteIds();
+}
+
+function persistKnownRemoteIds() {
+    if (typeof window === "undefined" || !window.localStorage || !activeRemoteUserId) return;
+    try {
+        window.localStorage.setItem(
+            `${REMOTE_KNOWN_IDS_STORAGE_PREFIX}${activeRemoteUserId}`,
+            JSON.stringify({
+                projects: [...knownRemoteProjectIds],
+                assets: [...knownRemoteAssetIds],
+                projectVersions: Object.fromEntries(knownRemoteProjectVersions),
+                assetVersions: Object.fromEntries(knownRemoteAssetVersions),
+                deletedProjects: [...pendingDeletedProjectIds],
+                deletedAssets: [...pendingDeletedAssetIds],
+            }),
+        );
+    } catch {
+        // 浏览器禁用本地存储时仍保留本次会话内的集合；服务端 tombstone 才能提供跨设备的严格原子保证。
+    }
+}
+
+function rememberLocalDeletions<T extends { id: string }>(previous: T[], current: T[], knownRemoteIds: Set<string>, pendingDeletedIds: Set<string>) {
+    if (!activeRemoteUserId || previous === current) return;
+    const currentIds = new Set(current.map((item) => item.id));
+    let changed = false;
+    for (const item of previous) {
+        if (!currentIds.has(item.id) && knownRemoteIds.has(item.id)) {
+            pendingDeletedIds.add(item.id);
+            changed = true;
+        }
+    }
+    if (changed) persistKnownRemoteIds();
+}
+
 function versionMap(items: Array<{ id: string; updatedAt?: string }>) {
     return new Map<string, string>(items.map((item) => [item.id, item.updatedAt || ""]));
 }
@@ -341,11 +546,6 @@ function versionMap(items: Array<{ id: string; updatedAt?: string }>) {
 function missingIds<T extends { id: string }>(remote: Map<string, string>, local: T[]) {
     const localIds = new Set(local.map((item) => item.id));
     return Array.from(remote.keys()).filter((id) => !localIds.has(id));
-}
-
-function replaceById<T extends { id: string }>(current: T[], changed: T[]) {
-    const changedById = new Map(changed.map((item) => [item.id, item]));
-    return current.map((item) => changedById.get(item.id) || item);
 }
 
 function timeValue(value?: string) {
@@ -359,6 +559,15 @@ function sameVersion(remote?: string, local?: string) {
 
 function isLocalStorageKey(value: string) {
     return LOCAL_STORAGE_KEY_PATTERN.test(value) && !resourceIdFromStorageKey(value);
+}
+
+function stringMap(value: unknown) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return new Map<string, string>();
+    return new Map(Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+}
+
+function isImageStorageKey(value: string) {
+    return value.startsWith("image:") || value.startsWith("generation-image:");
 }
 
 function numberValue(value: unknown) {

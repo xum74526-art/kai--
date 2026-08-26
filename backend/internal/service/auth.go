@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"infinite-canvas/backend/internal/model"
+	"infinite-canvas/backend/internal/repository"
 
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
@@ -117,7 +118,7 @@ func (s *Service) Register(req RegisterRequest) (*AuthSessionResult, error) {
 	}
 	s.registrationMu.Lock()
 	defer s.registrationMu.Unlock()
-	registrationEnabled, err := s.RegistrationEnabled()
+	registrationEnabled, err := s.PasswordRegistrationEnabled()
 	if err != nil {
 		return nil, err
 	}
@@ -159,13 +160,25 @@ func (s *Service) Register(req RegisterRequest) (*AuthSessionResult, error) {
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
-	if err := s.repo.CreateUserWithEmailVerification(&user, verifiedCode.ID, time.Now()); err != nil {
+	account, signupLedger, err := s.signupBootstrapRecords(user.ID, now)
+	if err != nil {
 		return nil, err
 	}
-	if err := s.ensureSignupBonus(user.ID); err != nil {
+	token := randomToken()
+	session := model.AuthSession{
+		ID: newID(), UserID: user.ID, TokenHash: hashToken(token),
+		ExpiresAt: now.Add(sessionMaxAge), CreatedAt: now, UpdatedAt: now,
+	}
+	if err := s.repo.CreateRegisteredUser(&user, verifiedCode.ID, now, &account, signupLedger, &session); err != nil {
+		if errors.Is(err, repository.ErrEmailVerificationCodeInvalid) {
+			return nil, BadAuthRequest("邮箱验证码已失效，请重新获取")
+		}
 		return nil, err
 	}
-	return s.createAuthSession(&user)
+	return &AuthSessionResult{
+		User: AuthUser{User: user}, Session: session.ID + "." + token,
+		MaxAgeSecs: int(sessionMaxAge.Seconds()),
+	}, nil
 }
 
 func (s *Service) Login(req LoginRequest) (*AuthSessionResult, error) {
@@ -183,17 +196,32 @@ func (s *Service) Login(req LoginRequest) (*AuthSessionResult, error) {
 	if !verifyPassword(req.Password, user.PasswordHash) {
 		return nil, Unauthorized("用户名、邮箱或密码不正确")
 	}
-	now := time.Now()
-	user.LastLoginAt = &now
-	user.UpdatedAt = now
-	if err := s.repo.Save(user); err != nil {
+	publicUser, err := s.PublicAuthUser(user)
+	if err != nil {
 		return nil, err
 	}
 	if err := s.ensureSignupBonus(user.ID); err != nil {
 		return nil, err
 	}
+	now := time.Now()
+	token := randomToken()
+	session := model.AuthSession{
+		ID: newID(), UserID: user.ID, TokenHash: hashToken(token),
+		ExpiresAt: now.Add(sessionMaxAge), CreatedAt: now, UpdatedAt: now,
+	}
+	user, err = s.repo.CompleteUserLoginWithSession(user.ID, user.PasswordHash, now, &session)
+	if errors.Is(err, repository.ErrUserLoginStateChanged) {
+		return nil, Forbidden("账号状态已变更，请重新登录")
+	}
+	if err != nil {
+		return nil, err
+	}
+	publicUser.User = *user
 	s.recordActivity(user.ID, "login", 1)
-	return s.createAuthSession(user)
+	return &AuthSessionResult{
+		User: publicUser, Session: session.ID + "." + token,
+		MaxAgeSecs: int(sessionMaxAge.Seconds()),
+	}, nil
 }
 
 func (s *Service) Logout(cookieValue string) error {

@@ -95,15 +95,15 @@ func RegisterCanvasShareRoutes(r *gin.RouterGroup, svc *service.Service) {
 		stream := delivery.Stream
 		defer stream.Body.Close()
 		resource := stream.Resource
+		applyResourceResponseSecurity(c, resource)
 		mimeType := resource.MimeType
 		if mimeType == "" {
 			mimeType = "application/octet-stream"
 		}
 		headers := map[string]string{
 			"Cache-Control":           "no-store",
-			"Content-Security-Policy": "sandbox",
+			"Content-Security-Policy": resourceSandboxPolicy,
 			"Referrer-Policy":         "no-referrer",
-			"X-Content-Type-Options":  "nosniff",
 			"X-Robots-Tag":            "noindex, nofollow",
 			"Accept-Ranges":           "bytes",
 		}

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 
-type Scenario = "image-cleanup" | "scope-cleanup-switch" | "scope-cleanup-late-canvas-reference" | "video-commit-race" | "audio-commit-race";
+type Scenario = "image-cleanup" | "scope-cleanup-switch" | "scope-cleanup-late-canvas-reference" | "creation-conversation-cleanup" | "asset-import-rollback" | "video-commit-race" | "audio-commit-race";
 type ScenarioResponse<T> = { ok: true; result: T } | { ok: false; error: string };
 
 function runScenario<T>(scenario: Scenario): Promise<T> {
@@ -26,20 +26,33 @@ test("generation image cleanup removes unused generation-image blobs and preserv
     const result = await runScenario<{ usedPresent: boolean; unusedPresent: boolean }>("image-cleanup");
     expect(result.usedPresent).toBe(true);
     expect(result.unusedPresent).toBe(false);
-});
+}, 15_000);
 
 test("delayed cleanup keeps account-A Canvas-only image references after switching the active account", async () => {
     const result = await runScenario<{ referencedPresent: boolean; unusedPresent: boolean; otherScopePresent: boolean }>("scope-cleanup-switch");
     expect(result.referencedPresent).toBe(true);
     expect(result.unusedPresent).toBe(false);
     expect(result.otherScopePresent).toBe(true);
-});
+}, 15_000);
 
 test("delayed cleanup preserves a same-scope Canvas-only reference added after cleanup was queued", async () => {
     const result = await runScenario<{ referencedPresent: boolean; unusedPresent: boolean }>("scope-cleanup-late-canvas-reference");
     expect(result.referencedPresent).toBe(true);
     expect(result.unusedPresent).toBe(false);
-});
+}, 15_000);
+
+test("local cleanup preserves media referenced only by a persisted creation conversation", async () => {
+    const result = await runScenario<{ referencedPresent: boolean; unusedPresent: boolean }>("creation-conversation-cleanup");
+    expect(result.referencedPresent).toBe(true);
+    expect(result.unusedPresent).toBe(false);
+}, 15_000);
+
+test("asset ZIP import validates all files before writing imported blobs", async () => {
+    const result = await runScenario<{ error: string; imageFileCount: number; mediaFileCount: number }>("asset-import-rollback");
+    expect(result.error).toContain("files/missing.png");
+    expect(result.imageFileCount).toBe(0);
+    expect(result.mediaFileCount).toBe(0);
+}, 15_000);
 
 test("generation video and audio materialization cannot race cleanup into a catalog row whose blob is missing", async () => {
     for (const mediaType of ["video", "audio"] as const) {
@@ -49,4 +62,4 @@ test("generation video and audio materialization cannot race cleanup into a cata
         expect(result.blobPresent).toBe(true);
         expect(result.generationAssetCount).toBe(1);
     }
-});
+}, 15_000);

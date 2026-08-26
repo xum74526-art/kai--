@@ -209,9 +209,15 @@ func (r *Repository) CreditLedgerReferenceExists(referenceKey string) (bool, err
 	return count > 0, err
 }
 
-func (r *Repository) CreateTaskWithCreditReservation(task *model.Task, order *model.BillingOrder, activeTaskLimit int) error {
+func (r *Repository) CreateTaskWithCreditReservation(task *model.Task, order *model.BillingOrder, activeTaskLimit int, projectRequirement TaskProjectRequirement, resourceIDBatches ...[]string) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := r.lockReadyResourceReferences(tx, task.UserID, optionalResourceIDs(resourceIDBatches)); err != nil {
+			return err
+		}
 		if err := r.requireActiveLogicalModelForTask(tx, task); err != nil {
+			return err
+		}
+		if err := r.requireActiveTaskProject(tx, task, projectRequirement); err != nil {
 			return err
 		}
 		if err := enforceActiveTaskLimit(tx, task.UserID, activeTaskLimit); err != nil {
@@ -224,9 +230,15 @@ func (r *Repository) CreateTaskWithCreditReservation(task *model.Task, order *mo
 	})
 }
 
-func (r *Repository) CreateTaskWithActiveLimit(task *model.Task, activeTaskLimit int) error {
+func (r *Repository) CreateTaskWithActiveLimit(task *model.Task, activeTaskLimit int, projectRequirement TaskProjectRequirement, resourceIDBatches ...[]string) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := r.lockReadyResourceReferences(tx, task.UserID, optionalResourceIDs(resourceIDBatches)); err != nil {
+			return err
+		}
 		if err := r.requireActiveLogicalModelForTask(tx, task); err != nil {
+			return err
+		}
+		if err := r.requireActiveTaskProject(tx, task, projectRequirement); err != nil {
 			return err
 		}
 		if err := enforceActiveTaskLimit(tx, task.UserID, activeTaskLimit); err != nil {
@@ -236,10 +248,16 @@ func (r *Repository) CreateTaskWithActiveLimit(task *model.Task, activeTaskLimit
 	})
 }
 
-func (r *Repository) RetryTaskWithBilling(userID string, prepared *model.Task, order *model.BillingOrder, activeTaskLimit int) (*model.Task, error) {
+func (r *Repository) RetryTaskWithBilling(userID string, prepared *model.Task, order *model.BillingOrder, activeTaskLimit int, projectRequirement TaskProjectRequirement, resourceIDBatches ...[]string) (*model.Task, error) {
 	var task model.Task
 	taskID := prepared.ID
 	err := r.db.Transaction(func(tx *gorm.DB) error {
+		if err := r.lockReadyResourceReferences(tx, userID, optionalResourceIDs(resourceIDBatches)); err != nil {
+			return err
+		}
+		if err := r.requireActiveTaskProject(tx, prepared, projectRequirement); err != nil {
+			return err
+		}
 		if err := enforceActiveTaskLimit(tx, userID, activeTaskLimit); err != nil {
 			return err
 		}

@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"sort"
 	"time"
 
 	"infinite-canvas/backend/internal/model"
@@ -76,15 +77,37 @@ func (r *Repository) EnsureVoiceProfiles(profiles []model.VoiceProfile) error {
 	if len(profiles) == 0 {
 		return nil
 	}
-	return r.db.Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "user_id"}, {Name: "provider"}, {Name: "voice_key"}},
-		DoNothing: true,
-	}).Create(&profiles).Error
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		resourceIDsByUser := map[string][]string{}
+		for _, profile := range profiles {
+			if profile.SampleResourceID != "" {
+				resourceIDsByUser[profile.UserID] = append(resourceIDsByUser[profile.UserID], profile.SampleResourceID)
+			}
+		}
+		userIDs := make([]string, 0, len(resourceIDsByUser))
+		for userID := range resourceIDsByUser {
+			userIDs = append(userIDs, userID)
+		}
+		sort.Strings(userIDs)
+		for _, userID := range userIDs {
+			resourceIDs := resourceIDsByUser[userID]
+			if err := r.lockReadyResourceReferences(tx, userID, resourceIDs); err != nil {
+				return err
+			}
+		}
+		return tx.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "user_id"}, {Name: "provider"}, {Name: "voice_key"}},
+			DoNothing: true,
+		}).Create(&profiles).Error
+	})
 }
 
 // CreateProjectCharacter 将角色身份、首版本和项目关联放入同一事务。
-func (r *Repository) CreateProjectCharacter(projectID string, asset *model.Asset, version *model.AssetVersion, link *model.ProjectAssetLink) error {
+func (r *Repository) CreateProjectCharacter(projectID string, asset *model.Asset, version *model.AssetVersion, link *model.ProjectAssetLink, resourceIDBatches ...[]string) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := r.lockReadyResourceReferences(tx, asset.UserID, optionalResourceIDs(resourceIDBatches)); err != nil {
+			return err
+		}
 		if err := tx.Create(asset).Error; err != nil {
 			return err
 		}
@@ -100,8 +123,11 @@ func (r *Repository) CreateProjectCharacter(projectID string, asset *model.Asset
 }
 
 // SaveCharacterVersion 通过不可变版本替换角色当前状态，旧镜头仍可继续引用历史版本。
-func (r *Repository) SaveCharacterVersion(projectID string, asset *model.Asset, version *model.AssetVersion, representations []model.AssetRepresentation, voice *model.CharacterVoiceBinding) error {
+func (r *Repository) SaveCharacterVersion(projectID string, asset *model.Asset, version *model.AssetVersion, representations []model.AssetRepresentation, voice *model.CharacterVoiceBinding, resourceIDBatches ...[]string) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := r.lockReadyResourceReferences(tx, asset.UserID, optionalResourceIDs(resourceIDBatches)); err != nil {
+			return err
+		}
 		if err := saveCharacterVersion(tx, asset, version, representations, voice); err != nil {
 			return err
 		}
@@ -111,8 +137,11 @@ func (r *Repository) SaveCharacterVersion(projectID string, asset *model.Asset, 
 }
 
 // ConfirmProjectCharacterCandidate 保证角色归并版本与候选确认同时生效，失败时不会留下孤立版本。
-func (r *Repository) ConfirmProjectCharacterCandidate(candidate *model.ProjectAssetCandidate, asset *model.Asset, version *model.AssetVersion, representations []model.AssetRepresentation, voice *model.CharacterVoiceBinding) error {
+func (r *Repository) ConfirmProjectCharacterCandidate(candidate *model.ProjectAssetCandidate, asset *model.Asset, version *model.AssetVersion, representations []model.AssetRepresentation, voice *model.CharacterVoiceBinding, resourceIDBatches ...[]string) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := r.lockReadyResourceReferences(tx, asset.UserID, optionalResourceIDs(resourceIDBatches)); err != nil {
+			return err
+		}
 		if err := saveCharacterVersion(tx, asset, version, representations, voice); err != nil {
 			return err
 		}

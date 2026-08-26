@@ -85,8 +85,16 @@ func (s *Service) createProjectWorkflow(projectID string, unitID string, scope s
 		}
 		steps = append(steps, model.WorkflowStepInstance{ID: newID(), WorkflowInstanceID: instance.ID, StepKey: definition.Key, Name: definition.Name, Position: index, Status: status, InputJSON: "{}", OutputJSON: "{}", CreatedAt: now, UpdatedAt: now})
 	}
-	if err := s.repo.CreateWorkflowInstance(&instance, steps); err != nil {
-		return ProjectWorkflowDetail{}, err
+	referenceDocuments := make([]string, 0, len(steps)*2)
+	for _, step := range steps {
+		referenceDocuments = append(referenceDocuments, step.InputJSON, step.OutputJSON)
+	}
+	resourceIDs, err := referencedResourceIDs(referenceDocuments...)
+	if err != nil {
+		return ProjectWorkflowDetail{}, BadAuthRequest("工作流资源引用格式无效")
+	}
+	if err := s.repo.CreateWorkflowInstance(&instance, steps, resourceIDs); err != nil {
+		return ProjectWorkflowDetail{}, resourceReferenceWriteError(err)
 	}
 	if err := s.repo.BumpProjectRevision(projectID); err != nil {
 		return ProjectWorkflowDetail{}, err
@@ -173,8 +181,12 @@ func (s *Service) UpdateWorkflowStep(userID string, projectID string, stepID str
 	} else if status == model.WorkflowStepStatusFailed {
 		instance.Status = model.WorkflowStatusFailed
 	}
-	if err := s.repo.UpdateWorkflowProgress(step, next, instance, projectID); err != nil {
-		return model.WorkflowStepInstance{}, err
+	resourceIDs, err := referencedResourceIDs(step.InputJSON, step.OutputJSON)
+	if err != nil {
+		return model.WorkflowStepInstance{}, BadAuthRequest("工作流资源引用格式无效")
+	}
+	if err := s.repo.UpdateWorkflowProgress(step, next, instance, projectID, resourceIDs); err != nil {
+		return model.WorkflowStepInstance{}, resourceReferenceWriteError(err)
 	}
 	return *step, nil
 }
@@ -258,8 +270,17 @@ func (s *Service) RegisterTaskOutput(userID string, projectID string, stepID str
 		representation = &model.AssetRepresentation{ID: newID(), TaskID: task.ID, AssetVersionID: strings.TrimSpace(req.AssetVersionID), ResourceID: strings.TrimSpace(req.ResourceID), MediaType: strings.TrimSpace(req.MediaType), Role: role, MetadataJSON: metadata, CreatedAt: now}
 	}
 	link := &model.WorkflowStepTask{ID: newID(), WorkflowStepID: step.ID, TaskID: task.ID, CreatedAt: now}
-	if err := s.repo.RegisterWorkflowTaskOutput(step, next, instance, projectID, link, representation); err != nil {
-		return model.WorkflowStepInstance{}, err
+	resourceIDs, err := referencedResourceIDs(step.InputJSON, step.OutputJSON, metadata)
+	if err != nil {
+		return model.WorkflowStepInstance{}, BadAuthRequest("工作流产物资源引用格式无效")
+	}
+	if representation != nil {
+		if resourceID := validCanvasResourceID(representation.ResourceID); resourceID != "" {
+			resourceIDs = append(resourceIDs, resourceID)
+		}
+	}
+	if err := s.repo.RegisterWorkflowTaskOutput(step, next, instance, projectID, link, representation, resourceIDs); err != nil {
+		return model.WorkflowStepInstance{}, resourceReferenceWriteError(err)
 	}
 	return *step, nil
 }

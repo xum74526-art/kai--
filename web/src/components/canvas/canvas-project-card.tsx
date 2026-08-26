@@ -1,7 +1,7 @@
 import { Check, Clapperboard, Download, FileText, Frame, Image as ImageIcon, MoreHorizontal, Music2, Pencil, Plus, Settings2, Sparkles, Trash2, Video, X } from "lucide-react";
 import type { ReactNode } from "react";
 import { useNavigate, useSearchParams } from "react-router";
-import { Dropdown, Input } from "antd";
+import { App, Dropdown, Input } from "antd";
 
 import { useCanvasStore, type CanvasProject } from "@/stores/canvas/use-canvas-store";
 import { useCanvasUiStore } from "@/stores/canvas/use-canvas-ui-store";
@@ -12,14 +12,19 @@ import { resolveBackendApiUrl } from "@/stores/use-config-store";
 import { cn } from "@/lib/utils";
 
 export function CanvasCreateCard({ disabled, onClick }: { disabled?: boolean; onClick: () => void }) {
-    return <button type="button" className="app-canvas-create-card" disabled={disabled} onClick={onClick}>
-        <span className="app-canvas-create-preview"><Plus className="app-canvas-create-icon" /></span>
-        <span className="app-canvas-create-title">新建画布</span>
-        <span className="app-canvas-create-meta">从空白开始</span>
-    </button>;
+    return (
+        <button type="button" className="app-canvas-create-card" disabled={disabled} onClick={onClick}>
+            <span className="app-canvas-create-preview">
+                <Plus className="app-canvas-create-icon" />
+            </span>
+            <span className="app-canvas-create-title">新建画布</span>
+            <span className="app-canvas-create-meta">从空白开始</span>
+        </button>
+    );
 }
 
 export function CanvasProjectCard({ project, projectName, variant = "library", readOnly = false, footer }: { project: CanvasProject; projectName?: string; variant?: "library" | "recent"; readOnly?: boolean; footer?: ReactNode }) {
+    const { message } = App.useApp();
     const navigate = useNavigate();
     const [searchParams] = useSearchParams();
     const renameProject = useCanvasStore((state) => state.renameProject);
@@ -38,6 +43,13 @@ export function CanvasProjectCard({ project, projectName, variant = "library", r
         renameProject(project.id, editingTitle);
         stopEditing();
     };
+    const exportProject = async () => {
+        try {
+            await exportCanvasProjects([project], project.title || "KAI影画布");
+        } catch (error) {
+            message.error(error instanceof Error ? `画布导出失败：${error.message}` : "画布导出失败");
+        }
+    };
 
     const compact = variant === "recent";
     return (
@@ -53,14 +65,27 @@ export function CanvasProjectCard({ project, projectName, variant = "library", r
                 >
                     <ProjectPreview project={project} />
                 </button>
-                {!compact && !readOnly ? <span className={`canvas-project-select ${selected ? "is-visible" : ""}`} onClick={(event) => event.stopPropagation()}><input type="checkbox" checked={selected} onChange={(event) => toggleSelected(project.id, event.target.checked)} className="app-canvas-project-checkbox" aria-label={`选择 ${project.title}`} /></span> : null}
-                <div className="canvas-project-cover-meta" aria-hidden="true"><span className="canvas-project-node-count">{project.nodes.length} 节点</span></div>
+                {!compact && !readOnly ? (
+                    <span className={`canvas-project-select ${selected ? "is-visible" : ""}`} onClick={(event) => event.stopPropagation()}>
+                        <input type="checkbox" checked={selected} onChange={(event) => toggleSelected(project.id, event.target.checked)} className="app-canvas-project-checkbox" aria-label={`选择 ${project.title}`} />
+                    </span>
+                ) : null}
+                <div className="canvas-project-cover-meta" aria-hidden="true">
+                    <span className="canvas-project-node-count">{project.nodes.length} 节点</span>
+                </div>
             </div>
 
             <div className={cn("app-canvas-project-body", compact ? "is-compact" : "")}>
                 <div className="canvas-project-heading-row">
                     {editing && !readOnly ? (
-                        <Input className="canvas-project-title-input" value={editingTitle} onClick={(event) => event.stopPropagation()} onChange={(event) => setEditingTitle(event.target.value)} onKeyDown={(event) => event.key === "Enter" && saveTitle()} autoFocus />
+                        <Input
+                            className="canvas-project-title-input"
+                            value={editingTitle}
+                            onClick={(event) => event.stopPropagation()}
+                            onChange={(event) => setEditingTitle(event.target.value)}
+                            onKeyDown={(event) => event.key === "Enter" && saveTitle()}
+                            autoFocus
+                        />
                     ) : (
                         <button
                             type="button"
@@ -75,58 +100,82 @@ export function CanvasProjectCard({ project, projectName, variant = "library", r
                     )}
                     {editing && !readOnly ? (
                         <div className="canvas-project-actions" onClick={(event) => event.stopPropagation()}>
-                            <button type="button" onClick={saveTitle} aria-label="保存名称"><Check className="size-3.5" /></button>
-                            <button type="button" onClick={stopEditing} aria-label="取消重命名"><X className="size-3.5" /></button>
+                            <button type="button" onClick={saveTitle} aria-label="保存名称">
+                                <Check className="size-3.5" />
+                            </button>
+                            <button type="button" onClick={stopEditing} aria-label="取消重命名">
+                                <X className="size-3.5" />
+                            </button>
                         </div>
                     ) : !readOnly ? (
                         <div className="canvas-project-actions" onClick={(event) => event.stopPropagation()}>
-                            <button type="button" onClick={() => startEditing(project.id, project.title)} aria-label={`重命名 ${project.title}`} title="重命名"><Pencil className="size-3.5" /></button>
+                            <button type="button" onClick={() => startEditing(project.id, project.title)} aria-label={`重命名 ${project.title}`} title="重命名">
+                                <Pencil className="size-3.5" />
+                            </button>
                             <Dropdown
                                 trigger={["click"]}
                                 menu={{
                                     onClick: ({ domEvent }) => domEvent.stopPropagation(),
                                     items: [
-                                        { key: "export", icon: <Download className="size-3.5" />, label: "导出画布", onClick: () => void exportCanvasProjects([project], project.title || "KAI影画布") },
+                                        { key: "export", icon: <Download className="size-3.5" />, label: "导出画布", onClick: () => void exportProject() },
                                         { type: "divider" },
                                         { key: "delete", danger: true, icon: <Trash2 className="size-3.5" />, label: "删除", onClick: () => setDeleteIds([project.id]) },
                                     ],
                                 }}
                             >
-                                <button type="button" aria-label={`${project.title} 画布操作`} title="更多操作"><MoreHorizontal className="size-4" /></button>
+                                <button type="button" aria-label={`${project.title} 画布操作`} title="更多操作">
+                                    <MoreHorizontal className="size-4" />
+                                </button>
                             </Dropdown>
                         </div>
                     ) : null}
                 </div>
-                <div className="canvas-project-stats"><span>{projectName || "自由画布"}</span><span aria-hidden="true">·</span><time dateTime={project.updatedAt}>{formatProjectTime(project.updatedAt)}</time></div>
-                {footer ? <div className="canvas-project-card-footer" onClick={(event) => event.stopPropagation()}>{footer}</div> : null}
+                <div className="canvas-project-stats">
+                    <span>{projectName || "自由画布"}</span>
+                    <span aria-hidden="true">·</span>
+                    <time dateTime={project.updatedAt}>{formatProjectTime(project.updatedAt)}</time>
+                </div>
+                {footer ? (
+                    <div className="canvas-project-card-footer" onClick={(event) => event.stopPropagation()}>
+                        {footer}
+                    </div>
+                ) : null}
             </div>
         </article>
     );
 }
 
 export function ProjectPreview({ project, preferLatestImage = false }: { project: CanvasProject; preferLatestImage?: boolean }) {
-    const mediaNodes = project.nodes
-        .flatMap((node) => {
-            if (node.type !== CanvasNodeType.Image && node.type !== CanvasNodeType.Video) return [];
-            const url = getNodeMediaUrl(node);
-            return isPreviewUrl(url) ? [{ node, url }] : [];
-        });
+    const mediaNodes = project.nodes.flatMap((node) => {
+        if (node.type !== CanvasNodeType.Image && node.type !== CanvasNodeType.Video) return [];
+        const url = getNodeMediaUrl(node);
+        return isPreviewUrl(url) ? [{ node, url }] : [];
+    });
     const imageNodes = mediaNodes.filter(({ node }) => node.type === CanvasNodeType.Image);
-    const media = preferLatestImage
-        ? imageNodes[imageNodes.length - 1] || mediaNodes[mediaNodes.length - 1]
-        : imageNodes[0] || mediaNodes[0];
+    const media = preferLatestImage ? imageNodes[imageNodes.length - 1] || mediaNodes[mediaNodes.length - 1] : imageNodes[0] || mediaNodes[0];
     if (media) {
         const { node, url } = media;
         return (
             <div className="canvas-project-media size-full">
-                {node.type === CanvasNodeType.Video
-                    ? <div className="canvas-project-video size-full"><Video className="size-8" aria-label={node.title || "项目视频"} /></div>
-                    : <img src={url} alt={node.title || "项目图片"} loading="lazy" decoding="async" className="size-full min-h-0 object-cover" />}
+                {node.type === CanvasNodeType.Video ? (
+                    <div className="canvas-project-video size-full">
+                        <Video className="size-8" aria-label={node.title || "项目视频"} />
+                    </div>
+                ) : (
+                    <img src={url} alt={node.title || "项目图片"} loading="lazy" decoding="async" className="size-full min-h-0 object-cover" />
+                )}
             </div>
         );
     }
     const nodes = project.nodes.slice(0, 8);
-    if (!nodes.length) return <div className="canvas-project-empty size-full"><Plus className="canvas-project-empty-icon" /><span>空白画布</span><small>等待第一幕</small></div>;
+    if (!nodes.length)
+        return (
+            <div className="canvas-project-empty size-full">
+                <Plus className="canvas-project-empty-icon" />
+                <span>空白画布</span>
+                <small>等待第一幕</small>
+            </div>
+        );
     const previewNodes = buildNodePreviewLayout(nodes);
 
     return (

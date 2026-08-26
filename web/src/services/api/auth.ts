@@ -120,8 +120,15 @@ export type AdminUserDetail = {
     account: { userId: string; availableMicrocredits: number; reservedMicrocredits: number; version: number };
     counts: { ledgerEntries: number; tasks: number; apiCalls: number; auditEvents: number };
     storageUsage: {
-        assetCount: number; assetBytes: number; canvasCount: number; canvasBytes: number;
-        sessionCount: number; sessionBytes: number; taskCount: number; taskBytes: number; apiCallCount: number;
+        assetCount: number;
+        assetBytes: number;
+        canvasCount: number;
+        canvasBytes: number;
+        sessionCount: number;
+        sessionBytes: number;
+        taskCount: number;
+        taskBytes: number;
+        apiCallCount: number;
     };
     storedFileBytes: number;
     dailyUploadBytes: number;
@@ -334,7 +341,6 @@ export type RuntimePolicySetting = {
     updatedAt?: string;
 };
 
-
 export function getAuthSettings() {
     return request<{ firstUser: boolean; registrationEnabled: boolean; linuxdoEnabled: boolean; emailEnabled: boolean; emailCodeRequired: boolean }>(api.get("/auth/settings"));
 }
@@ -386,8 +392,11 @@ export function sendRegistrationEmailCode(email: string) {
     return request<{ sent: boolean }>(api.post("/auth/email-code", { email }));
 }
 
-export function register(input: { username: string; email?: string; emailCode?: string; displayName?: string; password: string }) {
-    return request<{ user: LocalUser }>(api.post("/auth/register", input));
+export async function register(input: { username: string; email?: string; emailCode?: string; displayName?: string; password: string }) {
+    const result = await request<{ user: LocalUser }>(api.post("/auth/register", input));
+    // 注册接口会直接建立登录态；清除注册前的游客缓存，避免随后恢复会话时误判为未登录。
+    invalidateAuthSessionCache();
+    return result;
 }
 
 export async function logout() {

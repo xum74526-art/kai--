@@ -1,9 +1,10 @@
 import { saveAs } from "file-saver";
 
 import { createZip, readZip } from "@/lib/zip";
-import { getMediaBlob, setMediaBlob } from "@/services/file-storage";
-import { getImageBlob, setImageBlob } from "@/services/image-storage";
+import { deleteStoredMedia, getMediaBlob, setMediaBlob } from "@/services/file-storage";
+import { deleteStoredImages, getImageBlob, setImageBlob } from "@/services/image-storage";
 import type { Asset } from "@/stores/use-asset-store";
+import { createImportedStorageKey, isImageStorageReference, remapImportedStorageReferences, type ImportedStorageReference } from "@/lib/imported-storage";
 
 type AssetExportFile = {
     app: "infinite-canvas";
@@ -29,8 +30,8 @@ export async function exportAssets(assets: Asset[]) {
             if (asset.kind !== "image" && asset.kind !== "video" && asset.kind !== "audio" && asset.kind !== "model") return;
             const storageKey = asset.data.storageKey;
             if (!storageKey) return;
-            const blob = asset.kind === "image" ? await getImageBlob(storageKey) : await getMediaBlob(storageKey);
-            if (!blob) return;
+            const blob = isImageStorageReference(storageKey, asset.data.mimeType) ? await getImageBlob(storageKey) : await getMediaBlob(storageKey);
+            if (!blob) throw new Error(`素材“${asset.title}”引用的本地文件已丢失：${storageKey}`);
             const path = `files/${safeFileName(storageKey)}.${fileExtension(blob.type, asset.kind)}`;
             files.push({ storageKey, path, mimeType: blob.type || asset.data.mimeType, bytes: blob.size });
             zipFiles.push({ name: path, data: blob });
@@ -47,15 +48,43 @@ export async function readAssetPackage(file: File) {
     const assetFile = zip.get("assets.json");
     if (!assetFile) throw new Error("missing assets.json");
     const data = JSON.parse(await assetFile.text()) as AssetExportFile;
-    await Promise.all(
-        data.files.map(async (item) => {
-            const blob = zip.get(item.path);
-            if (!blob) return;
+    if (!Array.isArray(data.assets) || !Array.isArray(data.files)) throw new Error("素材压缩包结构无效");
+    for (const item of data.files) {
+        if (!zip.get(item.path)) throw new Error(`素材压缩包缺少文件：${item.path}`);
+    }
+    const references = new Map<string, ImportedStorageReference>();
+    try {
+        for (const item of data.files) {
+            if (references.has(item.storageKey)) continue;
+            const blob = zip.get(item.path)!;
             const typedBlob = blob.type ? blob : blob.slice(0, blob.size, item.mimeType);
-            await (item.storageKey.startsWith("image:") ? setImageBlob(item.storageKey, typedBlob) : setMediaBlob(item.storageKey, typedBlob));
-        }),
-    );
-    return data.assets;
+            const storageKey = createImportedStorageKey(item.storageKey, item.mimeType);
+            const url = isImageStorageReference(item.storageKey, item.mimeType) ? await setImageBlob(storageKey, typedBlob) : await setMediaBlob(storageKey, typedBlob);
+            references.set(item.storageKey, { storageKey, url });
+        }
+        return remapImportedStorageReferences(data.assets, references);
+    } catch (error) {
+        await cleanupImportedAssetFilesFromReferences(references.values());
+        throw error;
+    }
+}
+
+export async function cleanupImportedAssetFiles(assets: Asset[]) {
+    const references = assets.flatMap((asset) => {
+        if (asset.kind !== "image" && asset.kind !== "video" && asset.kind !== "audio" && asset.kind !== "model") return [];
+        const storageKey = asset.data.storageKey;
+        return storageKey ? [{ storageKey, mimeType: asset.data.mimeType }] : [];
+    });
+    await cleanupImportedAssetFilesFromReferences(references);
+}
+
+async function cleanupImportedAssetFilesFromReferences(references: Iterable<{ storageKey: string; mimeType?: string }>) {
+    const imageKeys: string[] = [];
+    const mediaKeys: string[] = [];
+    for (const reference of references) {
+        (isImageStorageReference(reference.storageKey, reference.mimeType) ? imageKeys : mediaKeys).push(reference.storageKey);
+    }
+    await Promise.all([deleteStoredImages(imageKeys), deleteStoredMedia(mediaKeys)]);
 }
 
 function safeFileName(value: string) {

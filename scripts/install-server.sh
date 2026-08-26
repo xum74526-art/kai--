@@ -6,6 +6,7 @@ REPOSITORY_URL="${REPOSITORY_URL:-https://github.com/xum74526-art/kai--.git}"
 REPOSITORY_REF="${REPOSITORY_REF:-main}"
 INSTALL_DIR="${INSTALL_DIR:-/opt/beidou-kai}"
 CANVAS_HTTP_PORT="${CANVAS_HTTP_PORT:-3000}"
+CANVAS_PUBLIC_ORIGIN="${CANVAS_PUBLIC_ORIGIN:-}"
 COMPOSE_FILE="docker-compose.deploy.yml"
 BUILD_COMPOSE_FILE="docker-compose.build.yml"
 
@@ -91,12 +92,19 @@ prepare_environment() {
             ((configured_http_port >= 1 && configured_http_port <= 65535)) || fail ".env 中的 CANVAS_HTTP_PORT 无效"
             CANVAS_HTTP_PORT="$configured_http_port"
         fi
+        local configured_cors_origins
+        configured_cors_origins="$(sed -n 's/^CANVAS_CORS_ORIGINS=//p' .env | tail -n 1)"
+        [[ -n "$configured_cors_origins" ]] || fail ".env 中的 CANVAS_CORS_ORIGINS 为空，请填写浏览器实际访问 Origin（例如 http://服务器IP:${CANVAS_HTTP_PORT}）"
         return
     fi
 
     step "生成 PostgreSQL 随机密码和部署配置"
     local database_password
+    local local_ip
     database_password="$(openssl rand -hex 32)"
+    local_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+    [[ -n "$CANVAS_PUBLIC_ORIGIN" ]] || CANVAS_PUBLIC_ORIGIN="http://${local_ip:-127.0.0.1}:${CANVAS_HTTP_PORT}"
+    [[ "$CANVAS_PUBLIC_ORIGIN" =~ ^https?://[^/]+$ ]] || fail "CANVAS_PUBLIC_ORIGIN 必须是完整 Origin，且不能包含路径"
     umask 077
     cat >.env <<EOF
 POSTGRES_DB=open_ai_canvas
@@ -107,7 +115,9 @@ CANVAS_HTTP_PORT=${CANVAS_HTTP_PORT}
 CANVAS_REGISTRATION_ENABLED=false
 CANVAS_ALLOW_PRIVATE_UPSTREAMS=false
 CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS=
-CANVAS_CORS_ORIGINS=
+CANVAS_CORS_ORIGINS=${CANVAS_PUBLIC_ORIGIN}
+CANVAS_PUBLIC_BASE_URL=${CANVAS_PUBLIC_ORIGIN}
+CANVAS_TRUSTED_PROXIES=172.16.0.0/12
 EOF
 }
 
@@ -126,7 +136,9 @@ print_result() {
     [[ -n "$local_ip" ]] || local_ip="服务器IP"
 
     printf '\n部署完成。\n'
-    printf '访问地址：http://%s:%s\n' "$local_ip" "$CANVAS_HTTP_PORT"
+    local configured_origin
+    configured_origin="$(sed -n 's/^CANVAS_CORS_ORIGINS=//p' .env | tail -n 1)"
+    printf '访问地址：%s\n' "${configured_origin:-http://${local_ip}:${CANVAS_HTTP_PORT}}"
     printf '安装目录：%s\n' "$INSTALL_DIR"
     printf '查看状态：cd %q && docker compose --env-file .env -f %s -f %s ps\n' "$INSTALL_DIR" "$COMPOSE_FILE" "$BUILD_COMPOSE_FILE"
     printf '\n新注册账号默认为普通用户；请通过受控流程初始化管理员。公网长期使用前请配置 HTTPS。\n'

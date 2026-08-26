@@ -615,13 +615,14 @@ func RegisterAdminRoutes(r *gin.RouterGroup, svc *service.Service) {
 		stream := delivery.Stream
 		defer stream.Body.Close()
 		resource := stream.Resource
+		// 日志媒体可能来自普通用户任务，仍需与用户资源下载采用同一主动内容隔离策略。
+		applyResourceResponseSecurity(c, resource)
 		mimeType := resource.MimeType
 		if mimeType == "" {
 			mimeType = "application/octet-stream"
 		}
 		c.Header("Cache-Control", "private, no-cache")
 		c.Header("Accept-Ranges", "bytes")
-		c.Header("X-Content-Type-Options", "nosniff")
 		if c.Query("download") == "1" {
 			extension := filepath.Ext(resource.ObjectKey)
 			if len(extension) > 12 {

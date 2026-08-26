@@ -71,10 +71,15 @@ func (w *taskLifecycleCoordinator) retryTask(userID string, id string) (*model.T
 	if err != nil {
 		return nil, err
 	}
-	if err := s.ensureTaskProjectActive(userID, task.ProjectID); err != nil {
+	projectRequirement, err := s.ensureTaskProjectActive(userID, task.ProjectID)
+	if err != nil {
 		return nil, err
 	}
-	task, err = s.repo.RetryTaskWithBilling(userID, task, billingOrder, policy.Task.ActiveTaskLimit)
+	resourceIDs, err := referencedResourceIDs(task.InputJSON)
+	if err != nil {
+		return nil, BadAuthRequest("任务资源引用格式无效")
+	}
+	task, err = s.repo.RetryTaskWithBilling(userID, task, billingOrder, policy.Task.ActiveTaskLimit, projectRequirement, resourceIDs)
 	if errors.Is(err, repository.ErrInsufficientCredits) {
 		return nil, BadAuthRequest("积分不足，请先使用兑换码充值")
 	}
@@ -83,6 +88,12 @@ func (w *taskLifecycleCoordinator) retryTask(userID string, id string) (*model.T
 	}
 	if errors.Is(err, repository.ErrTaskNotRetryable) {
 		return nil, BadAuthRequest("任务已被其他请求重新入队，请勿重复重试")
+	}
+	if errors.Is(err, repository.ErrTaskProjectUnavailable) {
+		return nil, BadAuthRequest("项目已归档或删除，无法重新创建生成任务")
+	}
+	if errors.Is(err, repository.ErrResourceReferenceUnavailable) {
+		return nil, resourceReferenceWriteError(err)
 	}
 	if err != nil {
 		return nil, err

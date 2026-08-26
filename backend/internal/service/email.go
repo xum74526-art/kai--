@@ -79,6 +79,8 @@ func (s *Service) UpdateEmailSetting(actor *model.User, req EmailSettingRequest)
 	if err := s.RequireAdmin(actor); err != nil {
 		return nil, err
 	}
+	s.registrationMu.Lock()
+	defer s.registrationMu.Unlock()
 	currentSetting, current, err := s.readEmailSetting()
 	if err != nil {
 		return nil, err
@@ -89,6 +91,15 @@ func (s *Service) UpdateEmailSetting(actor *model.User, req EmailSettingRequest)
 	}
 	if err := validateEmailSetting(next); err != nil {
 		return nil, err
+	}
+	if !next.Enabled {
+		registrationEnabled, err := s.RegistrationEnabled()
+		if err != nil {
+			return nil, err
+		}
+		if registrationEnabled {
+			return nil, BadAuthRequest("公开注册仍处于开启状态，请先关闭公开注册再停用 SMTP")
+		}
 	}
 	stored := next
 	stored.Password, err = s.encryptSettingSecret(next.Password)
@@ -114,7 +125,10 @@ func (s *Service) EmailEnabled() (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return value.Enabled && value.Host != "" && value.Port > 0 && value.FromEmail != "", nil
+	if !value.Enabled || validateEmailSetting(value) != nil {
+		return false, nil
+	}
+	return true, nil
 }
 
 func (s *Service) SendRegistrationEmailCode(rawEmail string) error {
@@ -122,7 +136,7 @@ func (s *Service) SendRegistrationEmailCode(rawEmail string) error {
 	if err := validateEmail(email); err != nil {
 		return err
 	}
-	registrationEnabled, err := s.RegistrationEnabled()
+	registrationEnabled, err := s.PasswordRegistrationEnabled()
 	if err != nil {
 		return err
 	}

@@ -9,6 +9,7 @@ type PendingCreationMessage = {
     mode?: string;
     status?: string;
     taskIds?: string[];
+    attachments?: Array<{ storageKey?: string; [key: string]: unknown }>;
 };
 
 export type StoredCreationConversation = {
@@ -34,9 +35,7 @@ function isRecoverableCreationMessage(message: PendingCreationMessage) {
 }
 
 export function pendingCreationTaskKey(conversations: StoredCreationConversation[]) {
-    return conversations
-        .flatMap((conversation) => conversation.messages.flatMap((message) => (isRecoverableCreationMessage(message) ? [`${conversation.id}:${message.id}:${(message.taskIds || []).join(",")}`] : [])))
-        .join("|");
+    return conversations.flatMap((conversation) => conversation.messages.flatMap((message) => (isRecoverableCreationMessage(message) ? [`${conversation.id}:${message.id}:${(message.taskIds || []).join(",")}`] : []))).join("|");
 }
 
 export function pendingCreationTaskIds(conversations: StoredCreationConversation[]) {
@@ -49,8 +48,8 @@ export function pendingCreationTaskIds(conversations: StoredCreationConversation
     return Array.from(new Set(taskIds));
 }
 
-export async function loadCreationConversations<T extends StoredCreationConversation>() {
-    const storage = localForageStorageForScope(getActiveUserScope());
+export async function loadCreationConversations<T extends StoredCreationConversation>(scope = getActiveUserScope()) {
+    const storage = localForageStorageForScope(scope);
     const value = await storage.getItem(CREATION_CONVERSATIONS_KEY);
     if (!value) return null;
     let parsed: unknown;

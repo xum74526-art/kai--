@@ -11,6 +11,7 @@ import { cleanupUnusedImages, collectImageStorageKeys, resolveImageUrl, uploadIm
 import { cleanupUnusedMedia, collectMediaStorageKeys, resolveMediaUrl } from "@/services/file-storage";
 import { flushGenerationAssetStorageLocks, insertOrReturnGenerationAsset, withGenerationArtifactCommitLock, withGenerationAssetStorageLock } from "@/services/generation-asset-repository";
 import { CANVAS_STORE_KEY, commitPendingCanvasStorePersistenceLocked, pendingCanvasStorePersistence, withCanvasStorePersistenceLock } from "@/stores/canvas/use-canvas-store";
+import { loadCreationConversations, type StoredCreationConversation } from "@/services/creation-conversation-store";
 
 export type AssetKind = "text" | "image" | "video" | "audio" | "model" | "entity";
 export type AssetCategory = "character" | "environment" | "wardrobe" | "prop" | "weapon" | "style" | "other";
@@ -367,29 +368,35 @@ export const useAssetStore = create<AssetStore>()(
                 const frozenExtraImageKeys = collectImageStorageKeys(extra);
                 const frozenExtraMediaKeys = collectMediaStorageKeys(extra);
                 window.setTimeout(async () => {
-                    await withGenerationArtifactCommitLock(scope, async () => {
-                        // 固定锁序：artifact -> Canvas（释放）-> Asset，避免跨 store 锁重入。
-                        const canvasProjects = await withCanvasStorePersistenceLock(scope, async () => {
-                            await commitPendingCanvasStorePersistenceLocked(scope);
-                            const durableCanvas = parseCanvasStorageDocument(await localForageStorageForScope(scope).getItem(CANVAS_STORE_KEY));
-                            return pendingCanvasStorePersistence(scope)?.projects ?? durableCanvas.state.projects;
+                    try {
+                        await withGenerationArtifactCommitLock(scope, async () => {
+                            // 固定锁序：artifact -> Canvas（释放）-> Asset，避免跨 store 锁重入。
+                            const canvasProjects = await withCanvasStorePersistenceLock(scope, async () => {
+                                await commitPendingCanvasStorePersistenceLocked(scope);
+                                const durableCanvas = parseCanvasStorageDocument(await localForageStorageForScope(scope).getItem(CANVAS_STORE_KEY));
+                                return pendingCanvasStorePersistence(scope)?.projects ?? durableCanvas.state.projects;
+                            });
+                            await withGenerationAssetStorageLock(scope, async () => {
+                                await commitPendingAssetStorePersistenceLocked(scope);
+                                const durableAssets = (await readPersistedAssetDocumentForScope(scope)).state.assets;
+                                // 创作页历史消息也会独立持有上传附件；清理 Blob 时必须把这些引用一并纳入。
+                                const conversations = (await loadCreationConversations<StoredCreationConversation>(scope)) || [];
+                                const references = { projects: canvasProjects, assets: durableAssets, conversations };
+                                const imageKeys = new Set([...frozenExtraImageKeys, ...collectImageStorageKeys(references)]);
+                                const mediaKeys = new Set([...frozenExtraMediaKeys, ...collectMediaStorageKeys(references)]);
+                                await cleanupUnusedImages(
+                                    [...imageKeys].map((storageKey) => ({ storageKey })),
+                                    scope,
+                                );
+                                await cleanupUnusedMedia(
+                                    [...mediaKeys].map((storageKey) => ({ storageKey })),
+                                    scope,
+                                );
+                            });
                         });
-                        await withGenerationAssetStorageLock(scope, async () => {
-                            await commitPendingAssetStorePersistenceLocked(scope);
-                            const durableAssets = (await readPersistedAssetDocumentForScope(scope)).state.assets;
-                            const references = { projects: canvasProjects, assets: durableAssets };
-                            const imageKeys = new Set([...frozenExtraImageKeys, ...collectImageStorageKeys(references)]);
-                            const mediaKeys = new Set([...frozenExtraMediaKeys, ...collectMediaStorageKeys(references)]);
-                            await cleanupUnusedImages(
-                                [...imageKeys].map((storageKey) => ({ storageKey })),
-                                scope,
-                            );
-                            await cleanupUnusedMedia(
-                                [...mediaKeys].map((storageKey) => ({ storageKey })),
-                                scope,
-                            );
-                        });
-                    });
+                    } catch (error) {
+                        console.warn("清理未使用的本地媒体失败，已保留现有文件", error);
+                    }
                 }, 0);
             },
         }),
