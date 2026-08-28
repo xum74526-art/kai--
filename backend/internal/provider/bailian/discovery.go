@@ -315,11 +315,35 @@ func (d *Discovery) getExtendedModels() []provider.Model {
 
 		// === 图像生成模型（补充）===
 		{
+			ID:                     "qwen-image-3.0",
+			DisplayName:            "通义千问图像 3.0",
+			Provider:               "bailian",
+			Capability:             []string{"image"},
+			SupportedEndpointTypes: []string{"bailian-image"},
+			APIPath:                "/api/v1/services/aigc/multimodal-generation/generation",
+			Metadata: map[string]any{
+				"source":     "extended",
+				"model_type": "image_generation",
+			},
+		},
+		{
 			ID:                     "qwen-image-3.0-pro",
 			DisplayName:            "通义千问图像 3.0 Pro",
 			Provider:               "bailian",
 			Capability:             []string{"image"},
-			SupportedEndpointTypes: []string{"image"},
+			SupportedEndpointTypes: []string{"bailian-image"},
+			APIPath:                "/api/v1/services/aigc/multimodal-generation/generation",
+			Metadata: map[string]any{
+				"source":     "extended",
+				"model_type": "image_generation",
+			},
+		},
+		{
+			ID:                     "wan2.7-image",
+			DisplayName:            "万相图像 2.7",
+			Provider:               "bailian",
+			Capability:             []string{"image"},
+			SupportedEndpointTypes: []string{"bailian-image"},
 			APIPath:                "/api/v1/services/aigc/multimodal-generation/generation",
 			Metadata: map[string]any{
 				"source":     "extended",
@@ -331,7 +355,7 @@ func (d *Discovery) getExtendedModels() []provider.Model {
 			DisplayName:            "万相图像 2.7 Pro",
 			Provider:               "bailian",
 			Capability:             []string{"image"},
-			SupportedEndpointTypes: []string{"image"},
+			SupportedEndpointTypes: []string{"bailian-image"},
 			APIPath:                "/api/v1/services/aigc/multimodal-generation/generation",
 			Metadata: map[string]any{
 				"source":     "extended",

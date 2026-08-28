@@ -170,6 +170,12 @@ function ProtocolBrandMark({ protocol, compact = false }: { protocol: ModelProto
                 <Sparkles className={compact ? "size-3" : "size-4"} />
             </span>
         );
+    if (protocol.value === "bailian-image")
+        return (
+            <span className={cn("grid shrink-0 place-items-center rounded-md bg-muted text-foreground/65", iconSize)}>
+                <Sparkles className={compact ? "size-3" : "size-4"} />
+            </span>
+        );
     if (protocol.value.startsWith("volcengine-"))
         return (
             <span className={cn("grid shrink-0 place-items-center rounded-md bg-muted text-foreground/65", iconSize)}>

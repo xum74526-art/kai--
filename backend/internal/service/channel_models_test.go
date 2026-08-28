@@ -29,6 +29,19 @@ func TestNormalizeChannelModelContractRejectsCapabilityMismatch(t *testing.T) {
 	}
 }
 
+func TestNormalizeChannelModelContractAcceptsBailianImage(t *testing.T) {
+	channel := &model.ModelChannel{APIKey: "test-key"}
+	modelKey, capability, protocol, err := normalizeChannelModelContract(channel, ChannelModelRequest{
+		ModelKey: "wan2.7-image-pro", Capability: "image", Protocol: string(model.ChannelInterfaceBailianImage),
+	})
+	if err != nil {
+		t.Fatalf("normalizeChannelModelContract() error = %v", err)
+	}
+	if modelKey != "wan2.7-image-pro" || capability != "image" || protocol != model.ChannelInterfaceBailianImage {
+		t.Fatalf("contract = %q, %q, %q", modelKey, capability, protocol)
+	}
+}
+
 func TestNormalizeChannelModelContractRequiresJiMengSecret(t *testing.T) {
 	channel := &model.ModelChannel{APIKey: "access-key"}
 	_, _, _, err := normalizeChannelModelContract(channel, ChannelModelRequest{

@@ -17,6 +17,7 @@ import { normalizeGrokImageResolution, normalizeQuality, normalizeVolcengineArkI
 import { parseGeminiImagePayload, parseImagePayload, readAxiosError } from "@/services/api/image-response";
 import { toChatCompletionMessages, toChatCompletionToolChoice, toGeminiBody, toGeminiToolOptions, toResponseInput, toResponseTool, withSystemMessage } from "@/services/api/image-protocols";
 import { requestGeminiStreamingResponse, requestStreamingChatCompletion, requestStreamingResponse } from "@/services/api/image-streaming";
+import { bailianImageApiUrl, buildBailianImagePayload, parseBailianImagePayload, type BailianImageResponse } from "@/services/api/bailian-image";
 export { buildBackendToolRequests } from "@/services/api/image-protocols";
 export type { AiTextContentPart, AiTextMessage, ResponseFunctionTool, ResponseInputMessage, ResponseToolCall, ToolChoice, ToolResponseResult } from "@/services/api/image-contracts";
 
@@ -57,6 +58,19 @@ async function requestGeminiImagesOnce(config: AiConfig, prompt: string, referen
     return parseGeminiImagePayload(response);
 }
 
+async function requestBailianImages(config: AiConfig, prompt: string, references: ReferenceImage[], count: number, size: string, options?: RequestOptions) {
+    const images = await Promise.all(references.map((image) => imageToDataUrl(image)));
+    const payload = buildBailianImagePayload({
+        model: config.model,
+        prompt: withSystemPrompt(config, prompt),
+        images,
+        count,
+        size,
+    });
+    const response = await postChannelJSON<BailianImageResponse>(config, bailianImageApiUrl(config.baseUrl), payload, options);
+    return parseBailianImagePayload(response);
+}
+
 export async function requestGeneration(config: AiConfig, prompt: string, options?: RequestOptions) {
     const selectedModel = config.model || config.imageModel;
     const requestConfig = resolveModelRequestConfig(config, selectedModel);
@@ -69,6 +83,13 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
             return await requestGeminiImages(requestConfig, prompt, [], n, buildGeminiImageGenerationConfig(normalizedImage.size, normalizedImage.quality), options);
         } catch (error) {
             throw new Error(readAxiosError(error, "请求失败"));
+        }
+    }
+    if (requestConfig.interfaceType === "bailian-image") {
+        try {
+            return await requestBailianImages(requestConfig, prompt, [], n, normalizedImage.size, options);
+        } catch (error) {
+            throw new Error(readAxiosError(error, "百炼图片生成失败"));
         }
     }
     if (requestConfig.interfaceType === "grok-image") {
@@ -147,6 +168,14 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
             return await requestGeminiImages(requestConfig, requestPrompt, references, n, buildGeminiImageGenerationConfig(normalizedImage.size, normalizedImage.quality), options);
         } catch (error) {
             throw new Error(readAxiosError(error, "请求失败"));
+        }
+    }
+    if (requestConfig.interfaceType === "bailian-image") {
+        if (mask) throw new Error("阿里百炼图片协议不支持蒙版编辑，请移除蒙版后重试");
+        try {
+            return await requestBailianImages(requestConfig, requestPrompt, references, n, normalizedImage.size, options);
+        } catch (error) {
+            throw new Error(readAxiosError(error, "百炼图片编辑失败"));
         }
     }
     if (requestConfig.interfaceType === "grok-image") {

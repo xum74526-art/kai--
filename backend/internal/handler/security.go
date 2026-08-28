@@ -34,6 +34,7 @@ var (
 	customNovitaTaskResultPath = regexp.MustCompile(`(?:^|/)async/task-result$`)
 	customMiniMaxTaskPath      = regexp.MustCompile(`(?:^|/)v2/query/video_generation/[^/]+$`)
 	systemMiniMaxTaskPath      = regexp.MustCompile(`^/v2/query/video_generation/[^/]+$`)
+	bailianImageGenerationPath = "/api/v1/services/aigc/multimodal-generation/generation"
 	openAIPostEndpoints        = map[string]bool{
 		"/responses": true, "/chat/completions": true, "/images/generations": true, "/images/edits": true,
 		"/audio/speech": true,
@@ -91,7 +92,7 @@ func authorizeCustomRelay(method string, target *url.URL, apiFormat string, cont
 	}
 	if apiFormat == "openai" {
 		multipartAllowed := mediaType == "multipart/form-data" && (strings.HasSuffix(requestPath, "/images/edits") || strings.HasSuffix(requestPath, "/videos"))
-		jsonAllowed := mediaType == "application/json" && (strings.HasSuffix(requestPath, "/responses") || strings.HasSuffix(requestPath, "/chat/completions") || strings.HasSuffix(requestPath, "/images/generations") || strings.HasSuffix(requestPath, "/images/edits") || strings.HasSuffix(requestPath, "/audio/speech") || strings.HasSuffix(requestPath, "/video/generations") || strings.HasSuffix(requestPath, "/videos/generations") || strings.HasSuffix(requestPath, "/videos") || strings.HasSuffix(requestPath, "/contents/generations/tasks") || strings.HasSuffix(requestPath, "/video/create") || strings.HasSuffix(requestPath, "/v2/video_generation"))
+		jsonAllowed := mediaType == "application/json" && (strings.HasSuffix(requestPath, "/responses") || strings.HasSuffix(requestPath, "/chat/completions") || strings.HasSuffix(requestPath, "/images/generations") || strings.HasSuffix(requestPath, "/images/edits") || strings.HasSuffix(requestPath, "/audio/speech") || strings.HasSuffix(requestPath, "/video/generations") || strings.HasSuffix(requestPath, "/videos/generations") || strings.HasSuffix(requestPath, "/videos") || strings.HasSuffix(requestPath, "/contents/generations/tasks") || strings.HasSuffix(requestPath, "/video/create") || strings.HasSuffix(requestPath, "/v2/video_generation") || requestPath == bailianImageGenerationPath)
 		if len(query) != 0 || (!multipartAllowed && !jsonAllowed) {
 			return errors.New("自定义渠道不允许访问该上游接口")
 		}
@@ -162,6 +163,20 @@ func authorizeSystemProxy(channel *model.ModelChannel, protocol model.ChannelInt
 	if method == http.MethodGet && requestPath == "/models" {
 		return nil
 	}
+	if protocol == model.ChannelInterfaceBailianImage {
+		if method != http.MethodPost || requestPath != bailianImageGenerationPath {
+			return errors.New("系统渠道不允许访问该上游接口")
+		}
+		mediaType, _, err := mime.ParseMediaType(contentType)
+		if err != nil || mediaType != "application/json" {
+			return errors.New("阿里百炼图片请求必须使用 application/json")
+		}
+		modelName := proxyRequestModel(contentType, body)
+		if modelName == "" || !channelAllowsModel(channel, modelName) {
+			return errors.New("当前系统渠道未授权该模型")
+		}
+		return nil
+	}
 	if protocol == model.ChannelInterfaceMiniMaxVideo {
 		if method == http.MethodGet && systemMiniMaxTaskPath.MatchString(requestPath) {
 			return nil
@@ -215,7 +230,7 @@ func interfaceAllowsProxyPath(interfaceType model.ChannelInterfaceType, requestP
 		return requestPath == "/images/generations"
 	case model.ChannelInterfaceOpenAIAudio:
 		return requestPath == "/audio/speech"
-	case model.ChannelInterfaceAsyncAudio, model.ChannelInterfaceNewAPIVideo, model.ChannelInterfaceNewAPIChannel1, model.ChannelInterfaceNewAPIChannel2, model.ChannelInterfaceAIAPIWayVideo, model.ChannelInterfaceXAIVideo, model.ChannelInterfaceVolcengineArkVideo, model.ChannelInterfaceVolcengineJiMengImage, model.ChannelInterfaceVolcengineJiMengVideo, model.ChannelInterfaceGeminiVeo, model.ChannelInterfaceGeminiImage, model.ChannelInterfaceNovitaVideo, model.ChannelInterfaceMiniMaxVideo:
+	case model.ChannelInterfaceBailianImage, model.ChannelInterfaceAsyncAudio, model.ChannelInterfaceNewAPIVideo, model.ChannelInterfaceNewAPIChannel1, model.ChannelInterfaceNewAPIChannel2, model.ChannelInterfaceAIAPIWayVideo, model.ChannelInterfaceXAIVideo, model.ChannelInterfaceVolcengineArkVideo, model.ChannelInterfaceVolcengineJiMengImage, model.ChannelInterfaceVolcengineJiMengVideo, model.ChannelInterfaceGeminiVeo, model.ChannelInterfaceGeminiImage, model.ChannelInterfaceNovitaVideo, model.ChannelInterfaceMiniMaxVideo:
 		return false
 	default:
 		return true

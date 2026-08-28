@@ -65,6 +65,7 @@ const (
 	ChannelInterfaceChatCompletion        ChannelInterfaceType = "chat-completion"
 	ChannelInterfaceOpenAIResponse        ChannelInterfaceType = "openai-response"
 	ChannelInterfaceOpenAIImage           ChannelInterfaceType = "openai-image"
+	ChannelInterfaceBailianImage          ChannelInterfaceType = "bailian-image"
 	ChannelInterfaceGrokImage             ChannelInterfaceType = "grok-image"
 	ChannelInterfaceVolcengineArkImage    ChannelInterfaceType = "volcengine-ark-image"
 	ChannelInterfaceVolcengineJiMengImage ChannelInterfaceType = "volcengine-jimeng-image"

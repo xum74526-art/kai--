@@ -767,7 +767,11 @@ func proxySystemRequest(c *gin.Context, svc *service.Service, user *model.User, 
 	for _, key := range []string{"key", "api_key", "access_token", "token"} {
 		query.Del(key)
 	}
-	target := strings.TrimRight(channel.BaseURL, "/") + path
+	target, err := systemProxyTarget(channel.BaseURL, protocol, path)
+	if err != nil {
+		fail(c, http.StatusBadRequest, err)
+		return
+	}
 	if encodedQuery := query.Encode(); encodedQuery != "" {
 		target += "?" + encodedQuery
 	}
@@ -890,6 +894,22 @@ func proxySystemRequest(c *gin.Context, svc *service.Service, user *model.User, 
 	}
 	copySystemProxyResponseHeaders(c, resp)
 	c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), responseBody)
+}
+
+func systemProxyTarget(baseURL string, protocol model.ChannelInterfaceType, requestPath string) (string, error) {
+	if protocol != model.ChannelInterfaceBailianImage {
+		return strings.TrimRight(baseURL, "/") + requestPath, nil
+	}
+	base, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil || base.Scheme == "" || base.Host == "" {
+		return "", errors.New("阿里百炼渠道地址无效")
+	}
+	// 系统渠道通常保存 compatible-mode/v1 用于模型目录；原生图片端点必须回到同源根路径。
+	base.Path = requestPath
+	base.RawPath = ""
+	base.RawQuery = ""
+	base.Fragment = ""
+	return base.String(), nil
 }
 
 func apiCallLog(user *model.User, channel *model.ModelChannel, billingOrderID string, capability string, protocol model.ChannelInterfaceType, method string, path string, target string, body []byte, contentType string, status model.ApiCallStatus, statusCode int, duration time.Duration, errorText string, concurrencyLimit int) model.ApiCallLog {

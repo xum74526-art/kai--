@@ -24,6 +24,33 @@ func TestValidateImageTaskRejectsOversizedGrokPromptByUTF8Bytes(t *testing.T) {
 	}
 }
 
+func TestDefaultBailianImageCapabilityUsesModelLimits(t *testing.T) {
+	wanPro := DefaultImageCapabilityConfig("bailian-image", "wan2.7-image-pro")
+	if wanPro.References.MaxImages != 9 || wanPro.References.MaxImageBytes != 20*1024*1024 || wanPro.MaxOutputs != 4 || !containsCapabilityString(wanPro.Size.Values, "4K") {
+		t.Fatalf("wan2.7-image-pro capability = %#v", wanPro)
+	}
+	wan := DefaultImageCapabilityConfig("bailian-image", "wan2.7-image")
+	if wan.References.MaxImages != 9 || wan.References.MaxImageBytes != 20*1024*1024 || wan.MaxOutputs != 4 || containsCapabilityString(wan.Size.Values, "4K") {
+		t.Fatalf("wan2.7-image capability = %#v", wan)
+	}
+	qwen := DefaultImageCapabilityConfig("bailian-image", "qwen-image-3.0-pro")
+	if qwen.References.MaxImages != 3 || qwen.MaxOutputs != 6 || qwen.Size.Default != "auto" {
+		t.Fatalf("qwen-image-3.0-pro capability = %#v", qwen)
+	}
+}
+
+func TestValidateBailianImageSizeRejectsUnsupported4KEditing(t *testing.T) {
+	if err := validateBailianImageSize("wan2.7-image-pro", "4K", false); err != nil {
+		t.Fatalf("wan2.7-image-pro text-to-image 4K error = %v", err)
+	}
+	if err := validateBailianImageSize("wan2.7-image-pro", "4K", true); err == nil {
+		t.Fatal("wan2.7-image-pro image editing must reject 4K")
+	}
+	if err := validateBailianImageSize("qwen-image-3.0", "2K", false); err == nil {
+		t.Fatal("qwen-image-3.0 must use an explicit pixel size")
+	}
+}
+
 func TestValidateImageTaskDoesNotApplyQualityPromptLimitToGrokLite(t *testing.T) {
 	prompt := strings.Repeat("中", 4001)
 	input := canvasGenerationInput{

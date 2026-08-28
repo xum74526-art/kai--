@@ -120,6 +120,33 @@ func DefaultImageCapabilityConfig(protocol string, modelName string) *ImageCapab
 		MaxOutputs:            15,
 	}
 	switch model.ChannelInterfaceType(protocol) {
+	case model.ChannelInterfaceBailianImage:
+		// 百炼图片专用协议通过 size 接收“宽*高”。UI 仍使用项目统一的“宽x高”，
+		// 在 provider 边界转换，避免把上游格式泄漏到画布数据。
+		image.References.PromptMaxChars = 5000
+		image.References.MaxImageBytes = 10 * 1024 * 1024
+		image.References.MaskSupported = false
+		image.Size = ImageSizeConfig{Parameter: "size", Values: []string{"1K", "2K"}, Default: "2K", AllowCustom: true}
+		image.Quality.Supported = false
+		image.TransparentBackground.Supported = false
+		image.ResponseFormat.Supported = false
+		image.OutputFormat.Supported = false
+		image.MaxOutputs = 4
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(modelName)), "qwen-image-3.0") {
+			image.References.MaxImages = 3
+			image.Size = ImageSizeConfig{
+				Parameter: "size",
+				Values:    []string{"auto", "1024x1024", "2048x2048", "2688x1536", "1536x2688", "2368x1728", "1728x2368"},
+				Default:   "auto", AllowCustom: true,
+			}
+			image.MaxOutputs = 6
+		} else {
+			image.References.MaxImages = 9
+			image.References.MaxImageBytes = 20 * 1024 * 1024
+			if strings.EqualFold(strings.TrimSpace(modelName), "wan2.7-image-pro") {
+				image.Size.Values = append(image.Size.Values, "4K")
+			}
+		}
 	case model.ChannelInterfaceGrokImage:
 		image.References.MaxImages = 1
 		image.References.MaskSupported = false
@@ -669,12 +696,59 @@ func validateImageTask(profile *ImageCapabilityConfig, input canvasGenerationInp
 			return BadAuthRequest(err.Error())
 		}
 	}
+	if input.Config.InterfaceType == string(model.ChannelInterfaceBailianImage) && profile.Size.Parameter == "size" && profile.Size.AllowCustom {
+		if err := validateBailianImageSize(modelName, input.Config.Size, len(input.ReferenceImages) > 0); err != nil {
+			return BadAuthRequest(err.Error())
+		}
+	}
 	if profile.Quality.Supported && strings.TrimSpace(input.Config.Quality) != "" && !containsCapabilityString(profile.Quality.Values, input.Config.Quality) {
 		return BadAuthRequest("图片质量不在当前模型支持范围内")
 	}
 	count, err := strconv.Atoi(strings.TrimSpace(input.Config.Count))
 	if err == nil && count > profile.MaxOutputs {
 		return BadAuthRequest(fmt.Sprintf("当前图片模型单次最多生成 %d 张", profile.MaxOutputs))
+	}
+	return nil
+}
+
+func validateBailianImageSize(modelName string, value string, editing bool) error {
+	value = strings.ToLower(strings.TrimSpace(strings.ReplaceAll(value, "×", "x")))
+	if value == "" || value == "auto" || strings.Contains(value, ":") {
+		return nil
+	}
+	modelName = strings.ToLower(strings.TrimSpace(modelName))
+	if value == "1k" || value == "2k" || value == "4k" {
+		if !strings.HasPrefix(modelName, "wan2.7-image") {
+			return errors.New("当前百炼图片模型需要使用宽x高的尺寸")
+		}
+		if value == "4k" && (modelName != "wan2.7-image-pro" || editing) {
+			return errors.New("4K 仅支持 wan2.7-image-pro 文生图")
+		}
+		return nil
+	}
+	parts := strings.Split(value, "x")
+	if len(parts) != 2 {
+		return errors.New("百炼图片尺寸请使用宽x高，例如 2048x2048")
+	}
+	width, widthErr := strconv.Atoi(parts[0])
+	height, heightErr := strconv.Atoi(parts[1])
+	if widthErr != nil || heightErr != nil || width <= 0 || height <= 0 {
+		return errors.New("百炼图片尺寸必须是正整数")
+	}
+	if width > height*8 || height > width*8 {
+		return errors.New("百炼图片宽高比不能超过 8:1")
+	}
+	minPixels := int64(512 * 512)
+	maxPixels := int64(2048 * 2048)
+	if strings.HasPrefix(modelName, "wan2.7-image") {
+		minPixels = int64(768 * 768)
+	}
+	if modelName == "wan2.7-image-pro" && !editing {
+		maxPixels = int64(4096 * 4096)
+	}
+	pixels := int64(width) * int64(height)
+	if pixels < minPixels || pixels > maxPixels {
+		return fmt.Errorf("当前百炼图片模型尺寸像素需在 %d 至 %d 之间", minPixels, maxPixels)
 	}
 	return nil
 }

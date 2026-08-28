@@ -528,7 +528,7 @@ func (s *Service) syncChannelModelNames(channel *model.ModelChannel) error {
 
 func capabilityForProtocol(protocol model.ChannelInterfaceType) string {
 	switch protocol {
-	case model.ChannelInterfaceOpenAIImage, model.ChannelInterfaceGrokImage, model.ChannelInterfaceVolcengineArkImage, model.ChannelInterfaceVolcengineJiMengImage, model.ChannelInterfaceGeminiImage:
+	case model.ChannelInterfaceOpenAIImage, model.ChannelInterfaceBailianImage, model.ChannelInterfaceGrokImage, model.ChannelInterfaceVolcengineArkImage, model.ChannelInterfaceVolcengineJiMengImage, model.ChannelInterfaceGeminiImage:
 		return "image"
 	case model.ChannelInterfaceOpenAIAudio, model.ChannelInterfaceAsyncAudio:
 		return "audio"

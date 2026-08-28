@@ -205,6 +205,31 @@ export function defaultImageCapabilityConfig(protocol?: ModelProtocol, model = "
         image.transparentBackground.supported = false;
         image.responseFormat.supported = false;
         image.outputFormat.supported = false;
+    } else if (protocol === "bailian-image") {
+        const normalizedModel = model.trim().toLowerCase();
+        const isWan27 = normalizedModel.startsWith("wan2.7-image");
+        image.references.promptMaxChars = 5000;
+        image.references.maxImages = isWan27 ? 9 : 3;
+        image.references.maxImageBytes = (isWan27 ? 20 : 10) * 1024 * 1024;
+        image.references.maskSupported = false;
+        image.size = isWan27
+            ? {
+                  parameter: "size",
+                  values: normalizedModel === "wan2.7-image-pro" ? ["1K", "2K", "4K"] : ["1K", "2K"],
+                  default: "2K",
+                  allowCustom: true,
+              }
+            : {
+                  parameter: "size",
+                  values: ["auto", "1024x1024", "2048x2048", "2688x1536", "1536x2688", "2368x1728", "1728x2368"],
+                  default: "auto",
+                  allowCustom: true,
+              };
+        image.quality.supported = false;
+        image.transparentBackground.supported = false;
+        image.responseFormat.supported = false;
+        image.outputFormat.supported = false;
+        image.maxOutputs = isWan27 ? 4 : 6;
     }
     if (protocol === "volcengine-jimeng-image") {
         image.references.maxImages = 14;

@@ -185,7 +185,9 @@ function defaultProtocolForModel(channel: ModelChannel, model: string): ModelPro
     if (channel.interfaceType) return channel.interfaceType;
     if (channel.apiFormat === "gemini" && modelMatchesCapability(model, "video")) return "gemini-veo";
     if (modelMatchesCapability(model, "video")) return "newapi";
-    if (modelOptionName(model).trim().toLowerCase().startsWith("grok-imagine-image")) return "grok-image";
+    const normalizedModel = modelOptionName(model).trim().toLowerCase();
+    if (normalizedModel.startsWith("wan2.7-image") || normalizedModel.startsWith("qwen-image-3.0")) return "bailian-image";
+    if (normalizedModel.startsWith("grok-imagine-image")) return "grok-image";
     if (modelMatchesCapability(model, "image")) return "openai-image";
     return "chat-completion";
 }

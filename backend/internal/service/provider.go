@@ -881,6 +881,9 @@ func systemChannelIDFromBaseURL(baseURL string) string {
 }
 
 func runImageTask(ctx context.Context, input canvasGenerationInput) (map[string]interface{}, error) {
+	if input.Config.InterfaceType == string(model.ChannelInterfaceBailianImage) {
+		return runBailianImageTask(ctx, input)
+	}
 	if input.Config.InterfaceType == string(model.ChannelInterfaceGrokImage) {
 		return runGrokImageTask(ctx, input)
 	}
@@ -970,6 +973,158 @@ func runImageTask(ctx context.Context, input canvasGenerationInput) (map[string]
 		return nil, err
 	}
 	return map[string]interface{}{"mode": "image", "images": images}, nil
+}
+
+func runBailianImageTask(ctx context.Context, input canvasGenerationInput) (map[string]interface{}, error) {
+	if input.Mask != nil {
+		return nil, errors.New("阿里百炼图片协议不支持蒙版文件，请改用参考图和文字指令编辑")
+	}
+	if len(input.ReferenceVideos) > 0 || len(input.ReferenceAudios) > 0 {
+		return nil, errors.New("阿里百炼图片协议不支持参考视频或音频")
+	}
+	content := make([]map[string]string, 0, len(input.ReferenceImages)+1)
+	for _, image := range input.ReferenceImages {
+		imageURL, err := openAIImageInputURL(image)
+		if err != nil {
+			return nil, fmt.Errorf("读取阿里百炼参考图失败：%w", err)
+		}
+		content = append(content, map[string]string{"image": imageURL})
+	}
+	prompt := strings.TrimSpace(withSystemPrompt(input.Config, input.Prompt))
+	if prompt == "" {
+		return nil, errors.New("阿里百炼图片请求缺少提示词")
+	}
+	content = append(content, map[string]string{"text": prompt})
+
+	count, err := strconv.Atoi(strings.TrimSpace(input.Config.Count))
+	if err != nil || count < 1 {
+		count = 1
+	}
+	parameters := map[string]interface{}{"n": count, "watermark": false}
+	if size := bailianImageSize(input.Config.Size); size != "" {
+		parameters["size"] = size
+	}
+	body := map[string]interface{}{
+		"model": input.Config.Model,
+		"input": map[string]interface{}{
+			"messages": []map[string]interface{}{{"role": "user", "content": content}},
+		},
+		"parameters": parameters,
+	}
+	var payload map[string]interface{}
+	if err := postBailianImageJSON(ctx, input.Config, body, &payload); err != nil {
+		return nil, err
+	}
+	images, err := bailianImageDataURLs(ctx, input.Config, payload)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]interface{}{"mode": "image", "images": images}, nil
+}
+
+// 百炼业务空间同时提供 compatible-mode 和原生多模态端点；图片模型只支持后者。
+// 保留 scheme/host，替换固定路径，避免要求管理员再维护一份同渠道地址。
+func bailianImageEndpoint(baseURL string) (string, error) {
+	endpoint, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil || endpoint.Scheme == "" || endpoint.Host == "" {
+		return "", errors.New("阿里百炼渠道地址无效")
+	}
+	endpoint.Path = "/api/v1/services/aigc/multimodal-generation/generation"
+	endpoint.RawPath = ""
+	endpoint.RawQuery = ""
+	endpoint.Fragment = ""
+	return endpoint.String(), nil
+}
+
+func postBailianImageJSON(ctx context.Context, config providerConfig, body interface{}, target interface{}) error {
+	endpoint, err := bailianImageEndpoint(config.BaseURL)
+	if err != nil {
+		return err
+	}
+	data, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+config.APIKey)
+	req.Header.Set("Content-Type", "application/json")
+	ApplyOutboundHeaders(req, config.Headers)
+	return doJSON(req, target)
+}
+
+func bailianImageSize(value string) string {
+	value = strings.ToLower(strings.TrimSpace(strings.ReplaceAll(value, "×", "x")))
+	if value == "" || value == "auto" {
+		return ""
+	}
+	if value == "1k" || value == "2k" || value == "4k" {
+		return strings.ToUpper(value)
+	}
+	recommended := map[string]string{
+		"1:1": "2048*2048", "16:9": "2688*1536", "9:16": "1536*2688",
+		"4:3": "2368*1728", "3:4": "1728*2368", "3:2": "2496*1664",
+		"2:3": "1664*2496", "21:9": "3072*1312",
+	}
+	if size := recommended[value]; size != "" {
+		return size
+	}
+	if strings.Count(value, "x") == 1 {
+		return strings.Replace(value, "x", "*", 1)
+	}
+	return ""
+}
+
+func bailianImageDataURLs(ctx context.Context, config providerConfig, payload map[string]interface{}) ([]map[string]string, error) {
+	if code := stringField(payload, "code"); code != "" {
+		message := stringField(payload, "message")
+		return nil, providerPayloadError{raw: message, message: providerPayloadErrorMessage(firstNonEmptyString(message, code))}
+	}
+	output, _ := payload["output"].(map[string]interface{})
+	if output == nil {
+		return nil, errors.New("阿里百炼图片接口没有返回 output")
+	}
+	if code := stringField(output, "code"); code != "" {
+		message := stringField(output, "message")
+		return nil, providerPayloadError{raw: message, message: providerPayloadErrorMessage(firstNonEmptyString(message, code))}
+	}
+	choices, _ := output["choices"].([]interface{})
+	images := make([]map[string]string, 0)
+	for _, choiceValue := range choices {
+		choice, _ := choiceValue.(map[string]interface{})
+		message, _ := choice["message"].(map[string]interface{})
+		content, _ := message["content"].([]interface{})
+		for _, partValue := range content {
+			part, _ := partValue.(map[string]interface{})
+			imageURL := strings.TrimSpace(stringField(part, "image"))
+			if imageURL == "" {
+				continue
+			}
+			if strings.HasPrefix(strings.ToLower(imageURL), "data:image/") {
+				images = append(images, map[string]string{"dataUrl": imageURL})
+				continue
+			}
+			if !isPublicMediaURL(imageURL) {
+				return nil, errors.New("阿里百炼图片接口返回了无效的图片地址")
+			}
+			data, mimeType, err := getProviderExternalBinary(withProviderRequestKind(ctx, "download"), config, imageURL)
+			if err != nil {
+				return nil, fmt.Errorf("下载阿里百炼图片结果失败：%w", err)
+			}
+			detected := strings.ToLower(strings.TrimSpace(strings.Split(http.DetectContentType(data), ";")[0]))
+			mimeType = strings.ToLower(normalizedMediaMimeType(mimeType, data))
+			if len(data) == 0 || strings.Contains(detected, "json") || strings.HasPrefix(detected, "text/") || !strings.HasPrefix(mimeType, "image/") {
+				return nil, fmt.Errorf("阿里百炼图片结果无效：%s", defaultString(detected, mimeType))
+			}
+			images = append(images, map[string]string{"dataUrl": dataURL(mimeType, data), "mimeType": mimeType})
+		}
+	}
+	if len(images) == 0 {
+		return nil, errors.New("阿里百炼图片接口没有返回可用图片")
+	}
+	return images, nil
 }
 
 func runGeminiImageTask(ctx context.Context, input canvasGenerationInput) (map[string]interface{}, error) {
@@ -2877,7 +3032,7 @@ func validateGenerationInterface(mode string, interfaceType string) error {
 	}
 	allowed := map[string]map[string]bool{
 		"text":  {"chat-completion": true, "openai-response": true},
-		"image": {"openai-image": true, "grok-image": true, "volcengine-ark-image": true, "volcengine-jimeng-image": true, "gemini-image": true},
+		"image": {"openai-image": true, "bailian-image": true, "grok-image": true, "volcengine-ark-image": true, "volcengine-jimeng-image": true, "gemini-image": true},
 		"video": {"newapi": true, "newapi-channel-1": true, "newapi-channel-2": true, "aiapiway-video": true, "xai-video": true, "volcengine-ark-video": true, "volcengine-jimeng-video": true, "gemini-veo": true, "novita-video": true, "minimax-video": true},
 		"audio": {"openai-audio": true, "async-audio": true},
 	}

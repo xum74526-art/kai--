@@ -21,6 +21,67 @@ import (
 const testReferenceImageDataURL = "data:image/png;base64,aGVsbG8="
 const testGeminiReferenceImageDataURL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 
+func TestBailianImageTaskUsesNativeWorkspaceEndpoint(t *testing.T) {
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/services/aigc/multimodal-generation/generation" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer test-key" {
+			t.Errorf("authorization = %q", r.Header.Get("Authorization"))
+		}
+		var body map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if body["model"] != "qwen-image-3.0-pro" {
+			t.Errorf("model = %#v", body["model"])
+		}
+		parameters, _ := body["parameters"].(map[string]interface{})
+		if parameters["size"] != "2048*2048" || parameters["n"] != float64(2) {
+			t.Errorf("parameters = %#v", parameters)
+		}
+		input, _ := body["input"].(map[string]interface{})
+		messages, _ := input["messages"].([]interface{})
+		message, _ := messages[0].(map[string]interface{})
+		content, _ := message["content"].([]interface{})
+		if len(content) != 2 {
+			t.Errorf("content = %#v", content)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"output":{"choices":[{"message":{"content":[{"image":"`+testGeminiReferenceImageDataURL+`"}]}}]}}`)
+	}))
+	defer server.Close()
+
+	config := providerConfig{
+		BaseURL: server.URL + "/compatible-mode/v1", APIKey: "test-key", Model: "qwen-image-3.0-pro",
+		InterfaceType: "bailian-image", Size: "2048x2048", Count: "2", AllowLocalChannel: true,
+	}
+	ctx := withProviderOutboundPolicy(context.Background(), config)
+	result, err := runBailianImageTask(ctx, canvasGenerationInput{
+		Mode: "image", Prompt: "生成一张海报", Config: config,
+		ReferenceImages: []providerMedia{{DataURL: testGeminiReferenceImageDataURL}},
+	})
+	if err != nil {
+		t.Fatalf("runBailianImageTask() error = %v", err)
+	}
+	images, _ := result["images"].([]map[string]string)
+	if len(images) != 1 || images[0]["dataUrl"] != testGeminiReferenceImageDataURL {
+		t.Fatalf("images = %#v", images)
+	}
+}
+
+func TestBailianImageEndpointReplacesCompatibleModePath(t *testing.T) {
+	got, err := bailianImageEndpoint("https://workspace.example.com/compatible-mode/v1")
+	if err != nil {
+		t.Fatalf("bailianImageEndpoint() error = %v", err)
+	}
+	want := "https://workspace.example.com/api/v1/services/aigc/multimodal-generation/generation"
+	if got != want {
+		t.Fatalf("endpoint = %q, want %q", got, want)
+	}
+}
+
 func TestProviderRequestErrorDetails(t *testing.T) {
 	tests := []struct {
 		name string

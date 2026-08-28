@@ -50,6 +50,7 @@ func TestAuthorizeCustomRelayAllowsModelsAndAgentEndpoints(t *testing.T) {
 		{method: http.MethodGet, target: "https://api.novita.ai/v3/async/task-result?task_id=task-1", apiFormat: "openai"},
 		{method: http.MethodPost, target: "https://ark.cn-beijing.volces.com/api/v3/images/generations", apiFormat: "openai", contentType: "application/json"},
 		{method: http.MethodPost, target: "https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks", apiFormat: "openai", contentType: "application/json"},
+		{method: http.MethodPost, target: "https://workspace.cn-beijing.maas.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation", apiFormat: "openai", contentType: "application/json"},
 		{method: http.MethodGet, target: "https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks/task-1", apiFormat: "openai"},
 		{method: http.MethodPost, target: "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:streamGenerateContent?alt=sse", apiFormat: "gemini", contentType: "application/json"},
 		{method: http.MethodPost, target: "https://generativelanguage.googleapis.com/v1beta/models/veo-3.0-generate-preview:predictLongRunning", apiFormat: "gemini", contentType: "application/json"},
@@ -63,6 +64,28 @@ func TestAuthorizeCustomRelayAllowsModelsAndAgentEndpoints(t *testing.T) {
 		if err := authorizeCustomRelay(test.method, target, test.apiFormat, test.contentType); err != nil {
 			t.Fatalf("authorizeCustomRelay(%s %s) error = %v", test.method, test.target, err)
 		}
+	}
+}
+
+func TestAuthorizeSystemProxyAllowsBailianNativeImageEndpoint(t *testing.T) {
+	channel := &model.ModelChannel{APIFormat: "openai", ModelsJSON: `["qwen-image-3.0-pro"]`}
+	body := []byte(`{"model":"qwen-image-3.0-pro","input":{"messages":[]}}`)
+	if err := authorizeSystemProxy(channel, model.ChannelInterfaceBailianImage, http.MethodPost, bailianImageGenerationPath, "application/json", body); err != nil {
+		t.Fatalf("authorizeSystemProxy() error = %v", err)
+	}
+	if err := authorizeSystemProxy(channel, model.ChannelInterfaceBailianImage, http.MethodPost, "/compatible-mode/v1/images/generations", "application/json", body); err == nil {
+		t.Fatal("OpenAI compatible image endpoint must not be accepted for Bailian native images")
+	}
+}
+
+func TestSystemProxyTargetUsesBailianWorkspaceOrigin(t *testing.T) {
+	got, err := systemProxyTarget("https://workspace.cn-beijing.maas.aliyuncs.com/compatible-mode/v1", model.ChannelInterfaceBailianImage, bailianImageGenerationPath)
+	if err != nil {
+		t.Fatalf("systemProxyTarget() error = %v", err)
+	}
+	want := "https://workspace.cn-beijing.maas.aliyuncs.com" + bailianImageGenerationPath
+	if got != want {
+		t.Fatalf("target = %q, want %q", got, want)
 	}
 }
 
