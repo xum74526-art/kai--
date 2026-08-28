@@ -36,9 +36,7 @@ describe("image api contracts", () => {
     });
 
     test("构造并解析百炼原生图片协议", () => {
-        expect(bailianImageApiUrl("https://workspace.cn-beijing.maas.aliyuncs.com/compatible-mode/v1")).toBe(
-            "https://workspace.cn-beijing.maas.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation",
-        );
+        expect(bailianImageApiUrl("https://workspace.cn-beijing.maas.aliyuncs.com/compatible-mode/v1")).toBe("https://workspace.cn-beijing.maas.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation");
         expect(bailianImageApiUrl("/api/ai/system/bailian")).toBe("/api/ai/system/bailian/api/v1/services/aigc/multimodal-generation/generation");
         expect(
             buildBailianImagePayload({
@@ -54,9 +52,7 @@ describe("image api contracts", () => {
             parameters: { n: 2, watermark: false, size: "1024*1536" },
         });
         expect(() => buildBailianImagePayload({ model: "wan2.7-image-pro", prompt: "编辑图片", images: ["https://example.com/reference.png"], count: 1, size: "4K" })).toThrow("最高支持 2K");
-        expect(parseBailianImagePayload({ output: { choices: [{ message: { content: [{ image: "https://example.com/result.png" }] } }] } })).toEqual([
-            { id: expect.any(String), dataUrl: "https://example.com/result.png" },
-        ]);
+        expect(parseBailianImagePayload({ output: { choices: [{ message: { content: [{ image: "https://example.com/result.png" }] } }] } })).toEqual([{ id: expect.any(String), dataUrl: "https://example.com/result.png" }]);
         expect(() => parseBailianImagePayload({ code: "InvalidParameter", message: "尺寸错误" })).toThrow("尺寸错误");
     });
 
