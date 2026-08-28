@@ -2,7 +2,7 @@ import { nanoid } from "nanoid";
 
 import { isSystemProxyBaseUrl, resolveBackendApiUrl } from "@/stores/use-config-store";
 
-const BAILIAN_IMAGE_PATH = "/api/v1/services/aigc/multimodal-generation/generation";
+const BAILIAN_IMAGE_PATH = "/api/v1/services/aigc/image-generation/generation";
 
 export type BailianImagePayload = {
     model: string;
@@ -32,7 +32,7 @@ export type BailianImageResponse = {
     request_id?: string;
 };
 
-/** 百炼兼容模式与原生多模态接口同源，但路径不共享。 */
+/** 百炼兼容模式与原生异步图片接口同源，但路径不共享。 */
 export function bailianImageApiUrl(baseUrl: string) {
     const normalizedBaseUrl = resolveBackendApiUrl(baseUrl).trim().replace(/\/+$/, "");
     if (isSystemProxyBaseUrl(normalizedBaseUrl)) return `${normalizedBaseUrl}${BAILIAN_IMAGE_PATH}`;

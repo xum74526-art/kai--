@@ -1,18 +1,12 @@
-import { afterEach, describe, expect, test } from "bun:test";
-import axios from "axios";
+import { describe, expect, test } from "bun:test";
 
 import { consumeChatCompletionStreamText, consumeGeminiStreamText, consumeResponseStreamText, parseChatCompletionPayload, parseGeminiToolResponse, parseImagePayload, parseToolResponse } from "../src/services/api/image-response";
 import { normalizeQuality, resolveRequestSize, validateImageSize } from "../src/services/api/image-validation";
 import { bailianImageApiUrl, buildBailianImagePayload, parseBailianImagePayload } from "../src/services/api/bailian-image";
 import { defaultImageCapabilityConfig } from "../src/lib/model-capabilities";
+import { modelProtocolDefinition } from "../src/lib/model-protocols";
 import { requestGeneration } from "../src/services/api/image";
 import { createModelChannel, defaultConfig } from "../src/stores/use-config-store";
-
-const originalAxiosPost = axios.post;
-
-afterEach(() => {
-    axios.post = originalAxiosPost;
-});
 
 describe("image api contracts", () => {
     test("规范化质量和尺寸，拒绝超出边界的图像", () => {
@@ -36,8 +30,8 @@ describe("image api contracts", () => {
     });
 
     test("构造并解析百炼原生图片协议", () => {
-        expect(bailianImageApiUrl("https://workspace.cn-beijing.maas.aliyuncs.com/compatible-mode/v1")).toBe("https://workspace.cn-beijing.maas.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation");
-        expect(bailianImageApiUrl("/api/ai/system/bailian")).toBe("/api/ai/system/bailian/api/v1/services/aigc/multimodal-generation/generation");
+        expect(bailianImageApiUrl("https://workspace.cn-beijing.maas.aliyuncs.com/compatible-mode/v1")).toBe("https://workspace.cn-beijing.maas.aliyuncs.com/api/v1/services/aigc/image-generation/generation");
+        expect(bailianImageApiUrl("/api/ai/system/bailian")).toBe("/api/ai/system/bailian/api/v1/services/aigc/image-generation/generation");
         expect(
             buildBailianImagePayload({
                 model: "qwen-image-3.0-pro",
@@ -69,16 +63,7 @@ describe("image api contracts", () => {
         expect(qwen.maxOutputs).toBe(6);
     });
 
-    test("百炼图片生成通过自定义渠道中转到原生端点", async () => {
-        let requestUrl = "";
-        let requestBody: unknown;
-        let requestHeaders: Record<string, string> = {};
-        axios.post = (async (url: string, body: unknown, config?: { headers?: Record<string, string> }) => {
-            requestUrl = url;
-            requestBody = body;
-            requestHeaders = config?.headers || {};
-            return { data: { output: { choices: [{ message: { content: [{ image: "https://example.com/result.png" }] } }] } } };
-        }) as typeof axios.post;
+    test("百炼图片协议声明原生异步提交与轮询，旧直连入口被拒绝", async () => {
         const model = "qwen-image-3.0-pro";
         const channel = createModelChannel({
             id: "bailian-test",
@@ -90,15 +75,11 @@ describe("image api contracts", () => {
         });
         const selectedModel = `${channel.id}::${model}`;
 
-        await requestGeneration({ ...defaultConfig, channels: [channel], model: selectedModel, imageModel: selectedModel, size: "1024x1024", count: "1" }, "生成商品主图");
-
-        expect(requestUrl).toBe("/api/ai/custom");
-        expect(requestHeaders["x-canvas-upstream-url"]).toBe("https://workspace.cn-beijing.maas.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation");
-        expect(requestBody).toMatchObject({
-            model,
-            input: { messages: [{ content: [{ text: "生成商品主图" }] }] },
-            parameters: { n: 1, watermark: false, size: "1024*1024" },
+        expect(modelProtocolDefinition("bailian-image")).toMatchObject({
+            create: "POST /api/v1/services/aigc/image-generation/generation",
+            poll: "GET /api/v1/tasks/{task_id}",
         });
+        await expect(requestGeneration({ ...defaultConfig, channels: [channel], model: selectedModel, imageModel: selectedModel, size: "1024x1024", count: "1" }, "生成商品主图")).rejects.toThrow("必须通过任务中心异步生成");
     });
 
     test("统一解析 Responses、Chat Completions 和 Gemini 工具调用", () => {

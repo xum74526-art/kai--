@@ -1004,6 +1004,18 @@ func runBailianImageTask(ctx context.Context, input canvasGenerationInput) (map[
 	if size := bailianImageSize(input.Config.Size); size != "" {
 		parameters["size"] = size
 	}
+	// 连接测试只验证鉴权、模型权限和协议可达性，关闭会显著增加等待时间的提示词扩写/思考。
+	// 正式生成不写这些字段，继续使用供应商质量默认值。
+	if metadataString(input.Metadata, "source") == "model-connection-test" {
+		modelName := strings.ToLower(strings.TrimSpace(input.Config.Model))
+		switch {
+		case strings.HasPrefix(modelName, "qwen-image-3.0"):
+			parameters["prompt_extend"] = false
+			parameters["enable_thinking"] = false
+		case strings.HasPrefix(modelName, "wan2.7-image"):
+			parameters["thinking_mode"] = false
+		}
+	}
 	body := map[string]interface{}{
 		"model": input.Config.Model,
 		"input": map[string]interface{}{
@@ -1011,25 +1023,78 @@ func runBailianImageTask(ctx context.Context, input canvasGenerationInput) (map[
 		},
 		"parameters": parameters,
 	}
-	var payload map[string]interface{}
-	if err := postBailianImageJSON(ctx, input.Config, body, &payload); err != nil {
-		return nil, err
+	taskID := resumedProviderRequestID(ctx)
+	if taskID == "" {
+		var payload map[string]interface{}
+		if err := postBailianImageJSON(ctx, input.Config, body, &payload); err != nil {
+			return nil, err
+		}
+		output, status, err := bailianImageTaskOutput(payload)
+		if err != nil {
+			return nil, err
+		}
+		taskID = strings.TrimSpace(stringField(output, "task_id"))
+		if taskID == "" {
+			return nil, errors.New("阿里百炼图片接口没有返回 task_id")
+		}
+		if status == "SUCCEEDED" {
+			images, err := bailianImageDataURLs(ctx, input.Config, payload)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]interface{}{"mode": "image", "images": images}, nil
+		}
+		if err := bailianImageTerminalError(status, output); err != nil {
+			return nil, err
+		}
 	}
-	images, err := bailianImageDataURLs(ctx, input.Config, payload)
-	if err != nil {
-		return nil, err
+
+	for deadline := providerPollingDeadline(ctx); time.Now().Before(deadline); {
+		var payload map[string]interface{}
+		if err := getBailianImageJSON(withProviderRequestKind(ctx, "poll"), input.Config, taskID, &payload); err != nil {
+			return nil, err
+		}
+		output, status, err := bailianImageTaskOutput(payload)
+		if err != nil {
+			return nil, err
+		}
+		if status == "SUCCEEDED" {
+			images, err := bailianImageDataURLs(ctx, input.Config, payload)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]interface{}{"mode": "image", "images": images}, nil
+		}
+		if err := bailianImageTerminalError(status, output); err != nil {
+			return nil, err
+		}
+		if err := sleepContext(ctx, 2500*time.Millisecond); err != nil {
+			return nil, err
+		}
 	}
-	return map[string]interface{}{"mode": "image", "images": images}, nil
+	return nil, fmt.Errorf("等待阿里百炼图片任务 %s 超时：%w", taskID, context.DeadlineExceeded)
 }
 
-// 百炼业务空间同时提供 compatible-mode 和原生多模态端点；图片模型只支持后者。
+// 百炼业务空间同时提供 compatible-mode 和原生异步端点；图片模型只支持后者。
 // 保留 scheme/host，替换固定路径，避免要求管理员再维护一份同渠道地址。
 func bailianImageEndpoint(baseURL string) (string, error) {
+	return bailianWorkspaceEndpoint(baseURL, "/api/v1/services/aigc/image-generation/generation")
+}
+
+func bailianImageTaskEndpoint(baseURL string, taskID string) (string, error) {
+	taskID = strings.TrimSpace(taskID)
+	if taskID == "" || strings.ContainsAny(taskID, "/\\?#%") {
+		return "", errors.New("阿里百炼图片任务 ID 无效")
+	}
+	return bailianWorkspaceEndpoint(baseURL, "/api/v1/tasks/"+url.PathEscape(taskID))
+}
+
+func bailianWorkspaceEndpoint(baseURL string, endpointPath string) (string, error) {
 	endpoint, err := url.Parse(strings.TrimSpace(baseURL))
 	if err != nil || endpoint.Scheme == "" || endpoint.Host == "" {
 		return "", errors.New("阿里百炼渠道地址无效")
 	}
-	endpoint.Path = "/api/v1/services/aigc/multimodal-generation/generation"
+	endpoint.Path = endpointPath
 	endpoint.RawPath = ""
 	endpoint.RawQuery = ""
 	endpoint.Fragment = ""
@@ -1052,7 +1117,57 @@ func postBailianImageJSON(ctx context.Context, config providerConfig, body inter
 	req.Header.Set("Authorization", "Bearer "+config.APIKey)
 	req.Header.Set("Content-Type", "application/json")
 	ApplyOutboundHeaders(req, config.Headers)
+	// 该端点只有显式启用异步时才返回 task_id；渠道自定义头不能覆盖此协议约束。
+	req.Header.Set("X-DashScope-Async", "enable")
 	return doJSON(req, target)
+}
+
+func getBailianImageJSON(ctx context.Context, config providerConfig, taskID string, target interface{}) error {
+	endpoint, err := bailianImageTaskEndpoint(config.BaseURL, taskID)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+config.APIKey)
+	ApplyOutboundHeaders(req, config.Headers)
+	return doJSON(req, target)
+}
+
+func bailianImageTaskOutput(payload map[string]interface{}) (map[string]interface{}, string, error) {
+	if code := strings.TrimSpace(stringField(payload, "code")); code != "" {
+		message := strings.TrimSpace(stringField(payload, "message"))
+		return nil, "", providerPayloadError{raw: message, message: providerPayloadErrorMessage(firstNonEmptyString(message, code))}
+	}
+	output, _ := payload["output"].(map[string]interface{})
+	if output == nil {
+		return nil, "", errors.New("阿里百炼图片接口没有返回 output")
+	}
+	if code := strings.TrimSpace(stringField(output, "code")); code != "" {
+		message := strings.TrimSpace(stringField(output, "message"))
+		return nil, "", providerPayloadError{raw: message, message: providerPayloadErrorMessage(firstNonEmptyString(message, code))}
+	}
+	status := strings.ToUpper(strings.TrimSpace(firstNonEmptyString(stringField(output, "task_status"), stringField(output, "status"))))
+	if status == "" {
+		return nil, "", errors.New("阿里百炼图片接口没有返回 task_status")
+	}
+	return output, status, nil
+}
+
+func bailianImageTerminalError(status string, output map[string]interface{}) error {
+	switch status {
+	case "PENDING", "RUNNING":
+		return nil
+	case "FAILED", "CANCELED", "CANCELLED", "UNKNOWN":
+		code := strings.TrimSpace(stringField(output, "code"))
+		message := strings.TrimSpace(stringField(output, "message"))
+		reason := firstNonEmptyString(message, code, status)
+		return providerPayloadError{raw: reason, message: providerPayloadErrorMessage(reason)}
+	default:
+		return fmt.Errorf("阿里百炼图片任务返回未知状态：%s", status)
+	}
 }
 
 func bailianImageSize(value string) string {

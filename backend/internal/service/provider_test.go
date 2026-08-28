@@ -22,34 +22,47 @@ const testReferenceImageDataURL = "data:image/png;base64,aGVsbG8="
 const testGeminiReferenceImageDataURL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 
 func TestBailianImageTaskUsesNativeWorkspaceEndpoint(t *testing.T) {
+	createCalls := 0
+	pollCalls := 0
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/services/aigc/multimodal-generation/generation" {
-			t.Errorf("path = %q", r.URL.Path)
-		}
 		if r.Header.Get("Authorization") != "Bearer test-key" {
 			t.Errorf("authorization = %q", r.Header.Get("Authorization"))
 		}
-		var body map[string]interface{}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatalf("decode request: %v", err)
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/services/aigc/image-generation/generation":
+			createCalls++
+			if r.Header.Get("X-DashScope-Async") != "enable" {
+				t.Errorf("X-DashScope-Async = %q", r.Header.Get("X-DashScope-Async"))
+			}
+			var body map[string]interface{}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			if body["model"] != "qwen-image-3.0-pro" {
+				t.Errorf("model = %#v", body["model"])
+			}
+			parameters, _ := body["parameters"].(map[string]interface{})
+			if parameters["size"] != "2048*2048" || parameters["n"] != float64(2) {
+				t.Errorf("parameters = %#v", parameters)
+			}
+			input, _ := body["input"].(map[string]interface{})
+			messages, _ := input["messages"].([]interface{})
+			message, _ := messages[0].(map[string]interface{})
+			content, _ := message["content"].([]interface{})
+			if len(content) != 2 {
+				t.Errorf("content = %#v", content)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"output":{"task_id":"task-1","task_status":"PENDING"},"request_id":"request-1"}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/tasks/task-1":
+			pollCalls++
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"output":{"task_id":"task-1","task_status":"SUCCEEDED","choices":[{"message":{"content":[{"image":"`+testGeminiReferenceImageDataURL+`"}]}}]}}`)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
 		}
-		if body["model"] != "qwen-image-3.0-pro" {
-			t.Errorf("model = %#v", body["model"])
-		}
-		parameters, _ := body["parameters"].(map[string]interface{})
-		if parameters["size"] != "2048*2048" || parameters["n"] != float64(2) {
-			t.Errorf("parameters = %#v", parameters)
-		}
-		input, _ := body["input"].(map[string]interface{})
-		messages, _ := input["messages"].([]interface{})
-		message, _ := messages[0].(map[string]interface{})
-		content, _ := message["content"].([]interface{})
-		if len(content) != 2 {
-			t.Errorf("content = %#v", content)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"output":{"choices":[{"message":{"content":[{"image":"`+testGeminiReferenceImageDataURL+`"}]}}]}}`)
 	}))
 	defer server.Close()
 
@@ -69,6 +82,9 @@ func TestBailianImageTaskUsesNativeWorkspaceEndpoint(t *testing.T) {
 	if len(images) != 1 || images[0]["dataUrl"] != testGeminiReferenceImageDataURL {
 		t.Fatalf("images = %#v", images)
 	}
+	if createCalls != 1 || pollCalls != 1 {
+		t.Fatalf("calls = create:%d poll:%d, want 1/1", createCalls, pollCalls)
+	}
 }
 
 func TestBailianImageEndpointReplacesCompatibleModePath(t *testing.T) {
@@ -76,9 +92,109 @@ func TestBailianImageEndpointReplacesCompatibleModePath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bailianImageEndpoint() error = %v", err)
 	}
-	want := "https://workspace.example.com/api/v1/services/aigc/multimodal-generation/generation"
+	want := "https://workspace.example.com/api/v1/services/aigc/image-generation/generation"
 	if got != want {
 		t.Fatalf("endpoint = %q, want %q", got, want)
+	}
+}
+
+func TestBailianImageTaskResumesExistingProviderTask(t *testing.T) {
+	createCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			createCalls++
+			t.Fatal("resumed task must not be submitted again")
+		}
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/tasks/task-resume" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"output":{"task_id":"task-resume","task_status":"SUCCEEDED","choices":[{"message":{"content":[{"image":"`+testGeminiReferenceImageDataURL+`"}]}}]}}`)
+	}))
+	defer server.Close()
+
+	config := providerConfig{BaseURL: server.URL + "/compatible-mode/v1", APIKey: "test-key", Model: "wan2.7-image", InterfaceType: "bailian-image", AllowLocalChannel: true}
+	ctx := context.WithValue(context.Background(), providerAnalyticsKey{}, providerAnalyticsContext{ProviderRequestID: "task-resume"})
+	ctx = withProviderOutboundPolicy(ctx, config)
+	result, err := runBailianImageTask(ctx, canvasGenerationInput{Mode: "image", Prompt: "恢复任务", Config: config})
+	if err != nil {
+		t.Fatalf("runBailianImageTask() error = %v", err)
+	}
+	images, _ := result["images"].([]map[string]string)
+	if createCalls != 0 || len(images) != 1 {
+		t.Fatalf("createCalls = %d, images = %#v", createCalls, images)
+	}
+}
+
+func TestBailianImageTaskReturnsFailedStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost {
+			_, _ = io.WriteString(w, `{"output":{"task_id":"task-failed","task_status":"PENDING"}}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"output":{"task_id":"task-failed","task_status":"FAILED","code":"InvalidParameter","message":"invalid size"}}`)
+	}))
+	defer server.Close()
+
+	config := providerConfig{BaseURL: server.URL + "/compatible-mode/v1", APIKey: "test-key", Model: "qwen-image-3.0", InterfaceType: "bailian-image", AllowLocalChannel: true}
+	ctx := withProviderOutboundPolicy(context.Background(), config)
+	_, err := runBailianImageTask(ctx, canvasGenerationInput{Mode: "image", Prompt: "失败任务", Config: config})
+	if err == nil || err.Error() != "模型服务拒绝了请求，请检查模型和参数" {
+		t.Fatalf("runBailianImageTask() error = %v", err)
+	}
+}
+
+func TestBailianImageConnectionTestDisablesModelSpecificThinking(t *testing.T) {
+	tests := []struct {
+		model        string
+		wantDisabled []string
+		wantAbsent   []string
+	}{
+		{model: "qwen-image-3.0-pro", wantDisabled: []string{"prompt_extend", "enable_thinking"}, wantAbsent: []string{"thinking_mode"}},
+		{model: "wan2.7-image-pro", wantDisabled: []string{"thinking_mode"}, wantAbsent: []string{"prompt_extend", "enable_thinking"}},
+	}
+	for _, test := range tests {
+		t.Run(test.model, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodPost {
+					var body map[string]interface{}
+					if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+						t.Fatalf("decode request: %v", err)
+					}
+					parameters, _ := body["parameters"].(map[string]interface{})
+					for _, key := range test.wantDisabled {
+						if value, exists := parameters[key]; !exists || value != false {
+							t.Errorf("parameters[%q] = %#v", key, value)
+						}
+					}
+					for _, key := range test.wantAbsent {
+						if _, exists := parameters[key]; exists {
+							t.Errorf("parameters[%q] must be absent", key)
+						}
+					}
+					_, _ = io.WriteString(w, `{"output":{"task_id":"task-test","task_status":"PENDING"}}`)
+					return
+				}
+				_, _ = io.WriteString(w, `{"output":{"task_id":"task-test","task_status":"SUCCEEDED","choices":[{"message":{"content":[{"image":"`+testGeminiReferenceImageDataURL+`"}]}}]}}`)
+			}))
+			defer server.Close()
+
+			config := providerConfig{BaseURL: server.URL + "/compatible-mode/v1", APIKey: "test-key", Model: test.model, InterfaceType: "bailian-image", AllowLocalChannel: true}
+			ctx := withProviderOutboundPolicy(context.Background(), config)
+			_, err := runBailianImageTask(ctx, canvasGenerationInput{Mode: "image", Prompt: "连接测试", Config: config, Metadata: map[string]interface{}{"source": "model-connection-test"}})
+			if err != nil {
+				t.Fatalf("runBailianImageTask() error = %v", err)
+			}
+		})
+	}
+}
+
+func TestEnrichAPICallLogReadsBailianNestedTaskState(t *testing.T) {
+	log := &model.ApiCallLog{Capability: "image", Path: "/api/v1/services/aigc/image-generation/generation"}
+	(&Service{}).EnrichAPICallLog(log, []byte(`{"output":{"task_id":"task-1","task_status":"PENDING"},"request_id":"request-1"}`))
+	if log.ProviderRequestID != "task-1" || log.ProviderStatus != "pending" {
+		t.Fatalf("EnrichAPICallLog() = %#v", log)
 	}
 }
 

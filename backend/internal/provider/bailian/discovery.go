@@ -320,7 +320,7 @@ func (d *Discovery) getExtendedModels() []provider.Model {
 			Provider:               "bailian",
 			Capability:             []string{"image"},
 			SupportedEndpointTypes: []string{"bailian-image"},
-			APIPath:                "/api/v1/services/aigc/multimodal-generation/generation",
+			APIPath:                "/api/v1/services/aigc/image-generation/generation",
 			Metadata: map[string]any{
 				"source":     "extended",
 				"model_type": "image_generation",
@@ -332,7 +332,7 @@ func (d *Discovery) getExtendedModels() []provider.Model {
 			Provider:               "bailian",
 			Capability:             []string{"image"},
 			SupportedEndpointTypes: []string{"bailian-image"},
-			APIPath:                "/api/v1/services/aigc/multimodal-generation/generation",
+			APIPath:                "/api/v1/services/aigc/image-generation/generation",
 			Metadata: map[string]any{
 				"source":     "extended",
 				"model_type": "image_generation",
@@ -344,7 +344,7 @@ func (d *Discovery) getExtendedModels() []provider.Model {
 			Provider:               "bailian",
 			Capability:             []string{"image"},
 			SupportedEndpointTypes: []string{"bailian-image"},
-			APIPath:                "/api/v1/services/aigc/multimodal-generation/generation",
+			APIPath:                "/api/v1/services/aigc/image-generation/generation",
 			Metadata: map[string]any{
 				"source":     "extended",
 				"model_type": "image_generation",
@@ -356,7 +356,7 @@ func (d *Discovery) getExtendedModels() []provider.Model {
 			Provider:               "bailian",
 			Capability:             []string{"image"},
 			SupportedEndpointTypes: []string{"bailian-image"},
-			APIPath:                "/api/v1/services/aigc/multimodal-generation/generation",
+			APIPath:                "/api/v1/services/aigc/image-generation/generation",
 			Metadata: map[string]any{
 				"source":     "extended",
 				"model_type": "image_generation",

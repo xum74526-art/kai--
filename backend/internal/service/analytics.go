@@ -966,6 +966,18 @@ func (s *Service) enrichAPICallLogPayload(log *model.ApiCallLog, payload map[str
 			}
 		}
 	}
+	// 百炼异步任务把任务号和状态放在 output 中。先记录供应商任务号，
+	// 避免根级 request_id 覆盖它，保证 worker 重启后能继续轮询而不是重复提交。
+	isBailianImage := log.Capability == "image" && (log.Path == "/api/v1/services/aigc/image-generation/generation" || strings.HasPrefix(log.Path, "/api/v1/tasks/"))
+	if output, ok := payload["output"].(map[string]any); isBailianImage && ok {
+		log.ProviderRequestID = firstNonEmpty(stringField(output, "task_id"), stringField(output, "id"), log.ProviderRequestID)
+		log.ProviderStatus = strings.ToLower(firstNonEmpty(stringField(output, "task_status"), stringField(output, "status"), log.ProviderStatus))
+		if log.ProviderStatus == "failed" || log.ProviderStatus == "canceled" || log.ProviderStatus == "cancelled" || log.ProviderStatus == "unknown" {
+			errorCode, errorMessage := providerFailureDetails(output)
+			log.ErrorCode = firstNonEmpty(errorCode, log.ErrorCode)
+			log.Error = firstNonEmpty(errorMessage, log.Error)
+		}
+	}
 	if log.Status == model.ApiCallStatusFailed {
 		errorCode, errorMessage := providerFailureDetails(payload)
 		log.ErrorCode = errorCode
@@ -1015,9 +1027,14 @@ func (s *Service) enrichAPICallLogPayload(log *model.ApiCallLog, payload map[str
 		}
 		log.CachedTokens = firstInt64(usageMetadata, "cachedContentTokenCount")
 	}
-	log.ProviderRequestID = firstNonEmpty(stringField(payload, "task_id"), stringField(payload, "id"), stringField(payload, "request_id"), stringField(payload, "name"), log.ProviderRequestID)
-	log.ProviderStatus = strings.ToLower(firstNonEmpty(stringField(payload, "status"), log.ProviderStatus))
-	if log.ProviderStatus == "failed" || log.ProviderStatus == "cancelled" || log.ProviderStatus == "expired" {
+	if isBailianImage {
+		log.ProviderRequestID = firstNonEmpty(stringField(payload, "task_id"), stringField(payload, "id"), stringField(payload, "name"), log.ProviderRequestID, stringField(payload, "request_id"))
+		log.ProviderStatus = strings.ToLower(firstNonEmpty(stringField(payload, "task_status"), stringField(payload, "status"), log.ProviderStatus))
+	} else {
+		log.ProviderRequestID = firstNonEmpty(stringField(payload, "task_id"), stringField(payload, "id"), stringField(payload, "request_id"), stringField(payload, "name"), log.ProviderRequestID)
+		log.ProviderStatus = strings.ToLower(firstNonEmpty(stringField(payload, "status"), log.ProviderStatus))
+	}
+	if log.ProviderStatus == "failed" || log.ProviderStatus == "canceled" || log.ProviderStatus == "cancelled" || log.ProviderStatus == "expired" || log.ProviderStatus == "unknown" {
 		log.Status = model.ApiCallStatusFailed
 		errorCode, errorMessage := providerFailureDetails(payload)
 		log.ErrorCode = firstNonEmpty(errorCode, log.ErrorCode)
