@@ -26,6 +26,10 @@ import (
 	"gorm.io/gorm"
 )
 
+const bailianImageMaxConsecutivePollRetries = 3
+
+var bailianImagePollRetryBaseDelay = time.Second
+
 type canvasGenerationInput struct {
 	Mode            string                 `json:"mode"`
 	Prompt          string                 `json:"prompt"`
@@ -1049,11 +1053,24 @@ func runBailianImageTask(ctx context.Context, input canvasGenerationInput) (map[
 		}
 	}
 
+	consecutivePollFailures := 0
 	for deadline := providerPollingDeadline(ctx); time.Now().Before(deadline); {
 		var payload map[string]interface{}
 		if err := getBailianImageJSON(withProviderRequestKind(ctx, "poll"), input.Config, taskID, &payload); err != nil {
-			return nil, err
+			if !isTransientBailianImagePollError(err) {
+				return nil, err
+			}
+			consecutivePollFailures++
+			if consecutivePollFailures > bailianImageMaxConsecutivePollRetries {
+				return nil, err
+			}
+			if err := sleepContext(ctx, bailianImagePollRetryDelay(err, consecutivePollFailures)); err != nil {
+				return nil, err
+			}
+			continue
 		}
+		// 只限制连续失败；上游一旦恢复，后续偶发故障重新获得完整重试预算。
+		consecutivePollFailures = 0
 		output, status, err := bailianImageTaskOutput(payload)
 		if err != nil {
 			return nil, err
@@ -1134,6 +1151,36 @@ func getBailianImageJSON(ctx context.Context, config providerConfig, taskID stri
 	req.Header.Set("Authorization", "Bearer "+config.APIKey)
 	ApplyOutboundHeaders(req, config.Headers)
 	return doJSON(req, target)
+}
+
+func isTransientBailianImagePollError(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var httpErr providerHTTPError
+	if errors.As(err, &httpErr) {
+		return httpErr.StatusCode == http.StatusTooManyRequests || httpErr.StatusCode >= http.StatusInternalServerError
+	}
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	var networkErr net.Error
+	if errors.As(err, &networkErr) {
+		return networkErr.Timeout() || networkErr.Temporary()
+	}
+	return false
+}
+
+func bailianImagePollRetryDelay(err error, consecutiveFailure int) time.Duration {
+	var httpErr providerHTTPError
+	if errors.As(err, &httpErr) && httpErr.RetryAfter > 0 {
+		return httpErr.RetryAfter
+	}
+	if consecutiveFailure < 1 {
+		consecutiveFailure = 1
+	}
+	delay := bailianImagePollRetryBaseDelay * time.Duration(1<<min(consecutiveFailure-1, 2))
+	return min(delay, 5*time.Second)
 }
 
 func bailianImageTaskOutput(payload map[string]interface{}) (map[string]interface{}, string, error) {

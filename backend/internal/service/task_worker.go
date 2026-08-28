@@ -148,11 +148,11 @@ func (w *taskWorkerCoordinator) processClaimedTask(task *model.Task) error {
 		}
 		if errors.Is(err, context.DeadlineExceeded) {
 			decryptedInput, decryptErr := s.decryptTaskInputJSON(task.InputJSON)
-			if decryptErr == nil && s.shouldDeferVideoProviderTask(*task, decryptedInput, err) {
+			if decryptErr == nil && s.shouldDeferProviderTask(*task, decryptedInput, err) {
 				if deferErr := s.repo.DeferRunningTaskForProviderPoll(task.ID, task.LeaseOwner, "后台仍在生成", 15*time.Second); deferErr != nil {
 					return deferErr
 				}
-				_ = s.log(task.UserID, task.ID, "info", "前台等待结束，上游视频仍在生成，将继续回查原任务", task.PollStage)
+				_ = s.log(task.UserID, task.ID, "info", "本轮等待结束，上游任务仍在生成，将继续回查原任务", task.PollStage)
 				return nil
 			}
 			err = errors.New(taskTimeoutMessage(task.Type))
@@ -207,8 +207,8 @@ func taskExecutionTimeoutWithPolicy(taskType string, policy RuntimeTaskPolicy) t
 	}
 }
 
-func (s *Service) shouldDeferVideoProviderTask(task model.Task, decryptedInput string, err error) bool {
-	if !errors.Is(err, context.DeadlineExceeded) || strings.TrimSpace(task.ProviderRequestID) == "" || (!strings.HasPrefix(task.Type, "canvas_video") && !strings.HasPrefix(task.Type, "video_")) {
+func (s *Service) shouldDeferProviderTask(task model.Task, decryptedInput string, err error) bool {
+	if !errors.Is(err, context.DeadlineExceeded) || strings.TrimSpace(task.ProviderRequestID) == "" {
 		return false
 	}
 	var input canvasGenerationInput
@@ -219,7 +219,13 @@ func (s *Service) shouldDeferVideoProviderTask(task model.Task, decryptedInput s
 	if resolveErr != nil {
 		return false
 	}
-	return resolved.InterfaceType == string(model.ChannelInterfaceNewAPIChannel2) || resolved.InterfaceType == string(model.ChannelInterfaceAIAPIWayVideo)
+	if strings.HasPrefix(task.Type, "canvas_image") {
+		return resolved.InterfaceType == string(model.ChannelInterfaceBailianImage)
+	}
+	if strings.HasPrefix(task.Type, "canvas_video") || strings.HasPrefix(task.Type, "video_") {
+		return resolved.InterfaceType == string(model.ChannelInterfaceNewAPIChannel2) || resolved.InterfaceType == string(model.ChannelInterfaceAIAPIWayVideo)
+	}
+	return false
 }
 
 func taskTimeoutMessage(taskType string) string {

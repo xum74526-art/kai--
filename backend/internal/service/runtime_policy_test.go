@@ -32,21 +32,37 @@ func TestOnlyResumableNewAPIChannel2VideoDeadlinesStayRunning(t *testing.T) {
 		t.Fatal(err)
 	}
 	base := model.Task{ID: "task-1", Type: "canvas_video", ProviderRequestID: "provider-task-1"}
-	if !svc.shouldDeferVideoProviderTask(base, string(input), context.DeadlineExceeded) {
+	if !svc.shouldDeferProviderTask(base, string(input), context.DeadlineExceeded) {
 		t.Fatal("resumable NewAPI Channel 2 deadline should remain running")
 	}
-	if svc.shouldDeferVideoProviderTask(model.Task{ID: "task-2", Type: "canvas_video"}, string(input), context.DeadlineExceeded) {
+	if svc.shouldDeferProviderTask(model.Task{ID: "task-2", Type: "canvas_video"}, string(input), context.DeadlineExceeded) {
 		t.Fatal("missing provider task id must not be deferred")
 	}
-	if svc.shouldDeferVideoProviderTask(base, string(input), context.Canceled) {
+	if svc.shouldDeferProviderTask(base, string(input), context.Canceled) {
 		t.Fatal("explicit cancellation must not be deferred")
 	}
 	other, err := json.Marshal(canvasGenerationInput{Mode: "video", Config: providerConfig{BaseURL: "https://example.com", InterfaceType: string(model.ChannelInterfaceNewAPIVideo)}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if svc.shouldDeferVideoProviderTask(base, string(other), context.DeadlineExceeded) {
+	if svc.shouldDeferProviderTask(base, string(other), context.DeadlineExceeded) {
 		t.Fatal("providers without a verified query-only resume contract must fail closed")
+	}
+}
+
+func TestBailianImageDeadlineStaysRunningForProviderPoll(t *testing.T) {
+	svc := &Service{}
+	input, err := json.Marshal(canvasGenerationInput{Mode: "image", Config: providerConfig{BaseURL: "https://example.com", InterfaceType: string(model.ChannelInterfaceBailianImage)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := model.Task{ID: "task-image", Type: "canvas_image", ProviderRequestID: "provider-image-task"}
+	if !svc.shouldDeferProviderTask(task, string(input), context.DeadlineExceeded) {
+		t.Fatal("accepted Bailian image task should resume polling after a local deadline")
+	}
+	task.Type = "canvas_text"
+	if svc.shouldDeferProviderTask(task, string(input), context.DeadlineExceeded) {
+		t.Fatal("non-image task must not use Bailian image recovery")
 	}
 }
 
@@ -78,7 +94,7 @@ func TestResumableVideoDeadlineUsesResolvedSystemChannelProtocol(t *testing.T) {
 	}
 	svc := New(repository.New(db), t.TempDir())
 	task := model.Task{ID: "task-system", Type: "canvas_video", ProviderRequestID: "provider-task-1"}
-	if !svc.shouldDeferVideoProviderTask(task, string(input), context.DeadlineExceeded) {
+	if !svc.shouldDeferProviderTask(task, string(input), context.DeadlineExceeded) {
 		t.Fatal("system-channel task must use the resolved model protocol when deciding query-only recovery")
 	}
 }

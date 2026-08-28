@@ -145,6 +145,94 @@ func TestBailianImageTaskReturnsFailedStatus(t *testing.T) {
 	}
 }
 
+func TestBailianImageTaskRetriesTransientPollFailures(t *testing.T) {
+	previousDelay := bailianImagePollRetryBaseDelay
+	bailianImagePollRetryBaseDelay = time.Millisecond
+	defer func() { bailianImagePollRetryBaseDelay = previousDelay }()
+
+	createCalls := 0
+	pollCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			createCalls++
+			_, _ = io.WriteString(w, `{"output":{"task_id":"task-retry","task_status":"PENDING"}}`)
+			return
+		}
+		pollCalls++
+		if pollCalls == 1 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = io.WriteString(w, `{"message":"rate limited"}`)
+			return
+		}
+		if pollCalls == 2 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = io.WriteString(w, `{"message":"temporary unavailable"}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"output":{"task_id":"task-retry","task_status":"SUCCEEDED","choices":[{"message":{"content":[{"image":"`+testGeminiReferenceImageDataURL+`"}]}}]}}`)
+	}))
+	defer server.Close()
+
+	config := providerConfig{BaseURL: server.URL + "/compatible-mode/v1", APIKey: "test-key", Model: "qwen-image-3.0", InterfaceType: "bailian-image", AllowLocalChannel: true}
+	ctx := withProviderOutboundPolicy(context.Background(), config)
+	result, err := runBailianImageTask(ctx, canvasGenerationInput{Mode: "image", Prompt: "暂态重试", Config: config})
+	if err != nil {
+		t.Fatalf("runBailianImageTask() error = %v", err)
+	}
+	images, _ := result["images"].([]map[string]string)
+	if createCalls != 1 || pollCalls != 3 || len(images) != 1 {
+		t.Fatalf("calls = create:%d poll:%d, images = %#v", createCalls, pollCalls, images)
+	}
+}
+
+func TestBailianImageTaskBoundsConsecutivePollRetries(t *testing.T) {
+	previousDelay := bailianImagePollRetryBaseDelay
+	bailianImagePollRetryBaseDelay = time.Millisecond
+	defer func() { bailianImagePollRetryBaseDelay = previousDelay }()
+
+	pollCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			_, _ = io.WriteString(w, `{"output":{"task_id":"task-down","task_status":"PENDING"}}`)
+			return
+		}
+		pollCalls++
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = io.WriteString(w, `{"message":"gateway unavailable"}`)
+	}))
+	defer server.Close()
+
+	config := providerConfig{BaseURL: server.URL + "/compatible-mode/v1", APIKey: "test-key", Model: "wan2.7-image", InterfaceType: "bailian-image", AllowLocalChannel: true}
+	ctx := withProviderOutboundPolicy(context.Background(), config)
+	_, err := runBailianImageTask(ctx, canvasGenerationInput{Mode: "image", Prompt: "持续故障", Config: config})
+	var httpErr providerHTTPError
+	if !errors.As(err, &httpErr) || httpErr.StatusCode != http.StatusBadGateway {
+		t.Fatalf("runBailianImageTask() error = %v", err)
+	}
+	if pollCalls != bailianImageMaxConsecutivePollRetries+1 {
+		t.Fatalf("pollCalls = %d, want %d", pollCalls, bailianImageMaxConsecutivePollRetries+1)
+	}
+}
+
+func TestBailianImagePollRetryPolicy(t *testing.T) {
+	if isTransientBailianImagePollError(context.Canceled) || isTransientBailianImagePollError(context.DeadlineExceeded) {
+		t.Fatal("context cancellation and deadlines must not be retried")
+	}
+	if !isTransientBailianImagePollError(providerHTTPError{StatusCode: http.StatusTooManyRequests}) || !isTransientBailianImagePollError(providerHTTPError{StatusCode: http.StatusInternalServerError}) {
+		t.Fatal("429 and 5xx poll failures must be retried")
+	}
+	if isTransientBailianImagePollError(providerHTTPError{StatusCode: http.StatusBadRequest}) {
+		t.Fatal("4xx poll failures other than 429 must not be retried")
+	}
+	if !isTransientBailianImagePollError(io.ErrUnexpectedEOF) {
+		t.Fatal("temporary truncated network responses must be retried")
+	}
+	retryAfter := 7 * time.Second
+	if got := bailianImagePollRetryDelay(providerHTTPError{StatusCode: http.StatusTooManyRequests, RetryAfter: retryAfter}, 1); got != retryAfter {
+		t.Fatalf("retry delay = %s, want Retry-After %s", got, retryAfter)
+	}
+}
+
 func TestBailianImageConnectionTestDisablesModelSpecificThinking(t *testing.T) {
 	tests := []struct {
 		model        string
