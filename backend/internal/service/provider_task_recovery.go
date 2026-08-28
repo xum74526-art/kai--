@@ -104,8 +104,8 @@ func (s *Service) queryFailedVideoTask(ctx context.Context, task *model.Task, cl
 	if err != nil {
 		return nil, err
 	}
-	if config.InterfaceType != string(model.ChannelInterfaceNewAPIChannel2) {
-		return nil, BadAuthRequest("该任务不使用 NewAPI Video Generations 协议")
+	if config.InterfaceType != string(model.ChannelInterfaceNewAPIChannel2) && config.InterfaceType != string(model.ChannelInterfaceAIAPIWayVideo) {
+		return nil, BadAuthRequest("该任务不使用可恢复的 Video Generations 协议")
 	}
 	input.Config = config
 	task.InputJSON = decryptedInput

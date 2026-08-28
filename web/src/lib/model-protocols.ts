@@ -11,6 +11,7 @@ export type ModelProtocol =
     | "newapi"
     | "newapi-channel-1"
     | "newapi-channel-2"
+    | "aiapiway-video"
     | "xai-video"
     | "volcengine-ark-video"
     | "volcengine-jimeng-video"
@@ -50,6 +51,15 @@ export const MODEL_PROTOCOLS: ModelProtocolDefinition[] = [
         poll: "GET /v1/video/generations/{task_id}",
         contentType: "application/json",
         media: "image_urls（首帧、尾帧、其他参考图） / video_urls / audio_urls",
+    },
+    {
+        value: "aiapiway-video",
+        label: "AI API WAY 视频",
+        capability: "video",
+        create: "POST /v1/video/generations",
+        poll: "GET /v1/video/generations/{task_id}",
+        contentType: "application/json",
+        media: "Seedance 视频生成，分辨率、时长、比例和声音参数通过 metadata 传递",
     },
     { value: "xai-video", label: "xAI 官方视频", capability: "video", create: "POST /v1/videos/generations", poll: "GET /v1/videos/{request_id}", contentType: "application/json", media: "单张起始图" },
     {

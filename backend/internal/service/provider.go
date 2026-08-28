@@ -306,7 +306,7 @@ func (s *Service) processCanvasGenerationTask(ctx context.Context, userID string
 		}
 	}
 	if resumedProviderRequestID(ctx) == "" {
-		requirePublicURL := input.Config.InterfaceType == "newapi-channel-1" || input.Config.InterfaceType == "newapi-channel-2" || input.Config.InterfaceType == string(model.ChannelInterfaceVolcengineArkVideo) || input.Config.InterfaceType == string(model.ChannelInterfaceMiniMaxVideo)
+		requirePublicURL := input.Config.InterfaceType == "newapi-channel-1" || input.Config.InterfaceType == "newapi-channel-2" || input.Config.InterfaceType == string(model.ChannelInterfaceAIAPIWayVideo) || input.Config.InterfaceType == string(model.ChannelInterfaceVolcengineArkVideo) || input.Config.InterfaceType == string(model.ChannelInterfaceMiniMaxVideo)
 		if err := s.hydrateGenerationMedia(userID, &input, requirePublicURL); err != nil {
 			return nil, err
 		}
@@ -1786,7 +1786,7 @@ func runVideoTask(ctx context.Context, input canvasGenerationInput) (map[string]
 	if input.Config.InterfaceType == string(model.ChannelInterfaceNovitaVideo) {
 		return runNovitaVideoTask(ctx, input)
 	}
-	if input.Config.InterfaceType == "newapi-channel-2" {
+	if input.Config.InterfaceType == "newapi-channel-2" || input.Config.InterfaceType == string(model.ChannelInterfaceAIAPIWayVideo) {
 		return runNewAPIChannel2VideoTask(ctx, input)
 	}
 	if input.Config.InterfaceType == "newapi-channel-1" {
@@ -2349,7 +2349,7 @@ func runNewAPIChannel2VideoTask(ctx context.Context, input canvasGenerationInput
 	id := resumedProviderRequestID(ctx)
 	var created map[string]interface{}
 	if id == "" {
-		body, err := newAPIChannel2VideoRequestBody(input)
+		body, err := videoGenerationsCreateBody(input)
 		if err != nil {
 			return nil, err
 		}
@@ -2470,6 +2470,113 @@ func logNewAPIChannel2QueryRetry(ctx context.Context, providerTaskID string, ret
 	}
 	payload := fmt.Sprintf("供应商任务 %s，第 %d/%d 次重试：%s", providerTaskID, retry, newAPIChannel2VideoMaxQueryRetries, safeProviderLogError(err))
 	_ = metadata.Service.log(metadata.UserID, metadata.TaskID, "warn", "上游任务查询失败，1 分钟后重试", payload)
+}
+
+func videoGenerationsCreateBody(input canvasGenerationInput) (interface{}, error) {
+	if input.Config.InterfaceType == string(model.ChannelInterfaceAIAPIWayVideo) {
+		return aiAPIWayVideoRequestBody(input)
+	}
+	return newAPIChannel2VideoRequestBody(input)
+}
+
+func aiAPIWayVideoRequestBody(input canvasGenerationInput) (aiAPIWayVideoRequest, error) {
+	if len(input.ReferenceImages) > 9 || len(input.ReferenceVideos) > 3 || len(input.ReferenceAudios) > 3 {
+		return aiAPIWayVideoRequest{}, errors.New("AI API WAY 视频最多支持 9 张参考图、3 个参考视频和 3 个参考音频")
+	}
+	duration := normalizeSeedanceVideosDuration(input.Config.VideoSeconds)
+	if duration < 1 || duration > 15 {
+		return aiAPIWayVideoRequest{}, errors.New("AI API WAY Seedance 2.0 视频时长需要在 1-15 秒之间")
+	}
+	resolution, err := normalizeAIAPIWayVideoResolution(input.Config.VQuality, input.Config.Model)
+	if err != nil {
+		return aiAPIWayVideoRequest{}, err
+	}
+	metadata := aiAPIWayVideoMetadata{
+		Resolution: resolution,
+		Duration:   duration,
+		Ratio:      normalizeSeedanceVideosRatio(input.Config.Size),
+	}
+	if videoCapabilitySupportsAudio(input) {
+		value := parseBool(input.Config.VideoGenerateAudio, true)
+		metadata.GenerateAudio = &value
+	}
+	if videoCapabilitySupportsWatermark(input) {
+		value := parseBool(input.Config.VideoWatermark, false)
+		metadata.Watermark = &value
+	}
+	if shouldSendNewAPIVideoImages(input) {
+		for _, image := range input.ReferenceImages {
+			value, mediaErr := resolveAIAPIWayVideoMediaURL(image)
+			if mediaErr != nil {
+				return aiAPIWayVideoRequest{}, mediaErr
+			}
+			metadata.Content = append(metadata.Content, aiAPIWayVideoContent{
+				Type:     "image_url",
+				Role:     seedanceImageRole(input, image),
+				ImageURL: &aiAPIWayMediaURL{URL: value},
+			})
+		}
+	}
+	for _, video := range input.ReferenceVideos {
+		value, mediaErr := resolveAIAPIWayVideoMediaURL(video)
+		if mediaErr != nil {
+			return aiAPIWayVideoRequest{}, mediaErr
+		}
+		metadata.Content = append(metadata.Content, aiAPIWayVideoContent{
+			Type:     "video_url",
+			Role:     "reference_video",
+			VideoURL: &aiAPIWayMediaURL{URL: value},
+		})
+	}
+	for _, audio := range input.ReferenceAudios {
+		value, mediaErr := resolveAIAPIWayVideoMediaURL(audio)
+		if mediaErr != nil {
+			return aiAPIWayVideoRequest{}, mediaErr
+		}
+		metadata.Content = append(metadata.Content, aiAPIWayVideoContent{
+			Type:     "audio_url",
+			Role:     "reference_audio",
+			AudioURL: &aiAPIWayMediaURL{URL: value},
+		})
+	}
+	if len(input.ReferenceAudios) > 0 && len(metadata.Content) == len(input.ReferenceAudios) {
+		return aiAPIWayVideoRequest{}, errors.New("AI API WAY 的参考音频不能单独使用，请同时提供参考图片或参考视频")
+	}
+	return aiAPIWayVideoRequest{
+		Model:    input.Config.Model,
+		Prompt:   strings.TrimSpace(input.Prompt),
+		Metadata: metadata,
+	}, nil
+}
+
+func resolveAIAPIWayVideoMediaURL(media providerMedia) (string, error) {
+	value := strings.TrimSpace(firstNonEmpty(media.URL, media.DataURL))
+	if isPublicMediaURL(value) || strings.HasPrefix(value, "data:") {
+		return value, nil
+	}
+	return "", errors.New("AI API WAY 的参考素材需要公网 URL 或 data URL；私有素材请先保存到对象存储")
+}
+
+func normalizeAIAPIWayVideoResolution(value string, modelName string) (string, error) {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	switch normalized {
+	case "480", "480p", "low":
+		return "480p", nil
+	case "", "720", "720p", "auto", "medium", "high":
+		return "720p", nil
+	case "1080", "1080p":
+		if strings.Contains(strings.ToLower(modelName), "fast") {
+			return "720p", nil
+		}
+		return "1080p", nil
+	case "2160", "2160p", "4k":
+		if strings.Contains(strings.ToLower(modelName), "filter-off") {
+			return "4k", nil
+		}
+		return "", errors.New("AI API WAY 的 4K 输出只支持 filter-off 海外版模型")
+	default:
+		return "720p", nil
+	}
 }
 
 func newAPIChannel2VideoRequestBody(input canvasGenerationInput) (newAPIVideoRequest, error) {
@@ -2771,7 +2878,7 @@ func validateGenerationInterface(mode string, interfaceType string) error {
 	allowed := map[string]map[string]bool{
 		"text":  {"chat-completion": true, "openai-response": true},
 		"image": {"openai-image": true, "grok-image": true, "volcengine-ark-image": true, "volcengine-jimeng-image": true, "gemini-image": true},
-		"video": {"newapi": true, "newapi-channel-1": true, "newapi-channel-2": true, "xai-video": true, "volcengine-ark-video": true, "volcengine-jimeng-video": true, "gemini-veo": true, "novita-video": true, "minimax-video": true},
+		"video": {"newapi": true, "newapi-channel-1": true, "newapi-channel-2": true, "aiapiway-video": true, "xai-video": true, "volcengine-ark-video": true, "volcengine-jimeng-video": true, "gemini-veo": true, "novita-video": true, "minimax-video": true},
 		"audio": {"openai-audio": true, "async-audio": true},
 	}
 	if allowed[mode] != nil && !allowed[mode][interfaceType] {

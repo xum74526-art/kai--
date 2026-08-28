@@ -26,6 +26,35 @@ type newAPIVideoRequest struct {
 	AudioURLs     []string `json:"audio_urls,omitempty"`
 }
 
+// AI API WAY 的 Seedance 网关与通用 Video Generations 共用任务路径，
+// 但生成参数必须放入 metadata，不能复用顶层 seconds/resolution 字段。
+type aiAPIWayVideoRequest struct {
+	Model    string                `json:"model"`
+	Prompt   string                `json:"prompt"`
+	Metadata aiAPIWayVideoMetadata `json:"metadata"`
+}
+
+type aiAPIWayVideoMetadata struct {
+	Resolution    string                 `json:"resolution"`
+	Duration      int                    `json:"duration"`
+	Ratio         string                 `json:"ratio"`
+	GenerateAudio *bool                  `json:"generate_audio,omitempty"`
+	Watermark     *bool                  `json:"watermark,omitempty"`
+	Content       []aiAPIWayVideoContent `json:"content,omitempty"`
+}
+
+type aiAPIWayVideoContent struct {
+	Type     string            `json:"type"`
+	Role     string            `json:"role"`
+	ImageURL *aiAPIWayMediaURL `json:"image_url,omitempty"`
+	VideoURL *aiAPIWayMediaURL `json:"video_url,omitempty"`
+	AudioURL *aiAPIWayMediaURL `json:"audio_url,omitempty"`
+}
+
+type aiAPIWayMediaURL struct {
+	URL string `json:"url"`
+}
+
 type seedanceVideosRequest struct {
 	Model              string   `json:"model"`
 	Prompt             string   `json:"prompt"`

@@ -1549,6 +1549,153 @@ func TestRunNewAPIChannel2VideoTaskDownloadsTemporaryResult(t *testing.T) {
 	}
 }
 
+func TestRunAIAPIWayVideoTaskUsesMetadataContractAndParsesSuccess(t *testing.T) {
+	t.Setenv("CANVAS_ALLOW_PRIVATE_UPSTREAMS", "true")
+	paths := make([]string, 0, 3)
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.Method+" "+r.URL.Path)
+		switch r.Method + " " + r.URL.Path {
+		case "POST /v1/video/generations":
+			var body map[string]interface{}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			if body["model"] != "doubao-seedance-2-0-fast-260128" || body["prompt"] != "make it move" {
+				t.Errorf("body identity = %#v", body)
+			}
+			for _, field := range []string{"seconds", "duration", "aspect_ratio", "resolution"} {
+				if _, exists := body[field]; exists {
+					t.Errorf("top-level %s must be absent: %#v", field, body)
+				}
+			}
+			metadata, ok := body["metadata"].(map[string]interface{})
+			if !ok {
+				t.Fatalf("metadata = %#v", body["metadata"])
+			}
+			if metadata["resolution"] != "720p" || metadata["duration"] != float64(6) || metadata["ratio"] != "16:9" || metadata["generate_audio"] != false || metadata["watermark"] != true {
+				t.Errorf("metadata = %#v", metadata)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"task_id":"aiapiway-task","status":"QUEUED"}`))
+		case "GET /v1/video/generations/aiapiway-task":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":{"task_id":"aiapiway-task","status":"SUCCESS","result_url":"` + server.URL + `/video.mp4"}}`))
+		case "GET /video.mp4":
+			w.Header().Set("Content-Type", "video/mp4")
+			_, _ = w.Write([]byte("video"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	profile := DefaultModelCapabilityConfigForModel("aiapiway-video", "doubao-seedance-2-0-fast-260128").Video
+	result, err := runVideoTask(context.Background(), canvasGenerationInput{
+		Prompt: "  make it move  ",
+		Config: providerConfig{
+			BaseURL:            server.URL + "/v1",
+			APIKey:             "test-key",
+			Model:              "doubao-seedance-2-0-fast-260128",
+			InterfaceType:      "aiapiway-video",
+			VideoSeconds:       "6",
+			Size:               "16:9",
+			VQuality:           "720",
+			VideoGenerateAudio: "false",
+			VideoWatermark:     "true",
+		},
+		VideoCapability: profile,
+	})
+	if err != nil {
+		t.Fatalf("runVideoTask() error = %v", err)
+	}
+	video := result["video"].(map[string]interface{})
+	if video["dataUrl"] != "data:video/mp4;base64,dmlkZW8=" {
+		t.Fatalf("video = %#v", video)
+	}
+	want := "POST /v1/video/generations,GET /v1/video/generations/aiapiway-task,GET /video.mp4"
+	if got := strings.Join(paths, ","); got != want {
+		t.Fatalf("paths = %q, want %q", got, want)
+	}
+}
+
+func TestAIAPIWayVideoTaskPreservesFailureReason(t *testing.T) {
+	t.Setenv("CANVAS_ALLOW_PRIVATE_UPSTREAMS", "true")
+	paths := make([]string, 0, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.Method+" "+r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method + " " + r.URL.Path {
+		case "POST /v1/video/generations":
+			_, _ = w.Write([]byte(`{"task_id":"failed-task"}`))
+		case "GET /v1/video/generations/failed-task":
+			_, _ = w.Write([]byte(`{"data":{"status":"FAILURE","fail_reason":"余额不足"}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	profile := DefaultModelCapabilityConfigForModel("aiapiway-video", "doubao-seedance-2-0-260128").Video
+	_, err := runVideoTask(context.Background(), canvasGenerationInput{
+		Prompt:          "make it move",
+		Config:          providerConfig{BaseURL: server.URL + "/v1", APIKey: "test-key", Model: "doubao-seedance-2-0-260128", InterfaceType: "aiapiway-video", VideoSeconds: "6", Size: "16:9", VQuality: "720"},
+		VideoCapability: profile,
+	})
+	if err == nil || !strings.Contains(err.Error(), "余额不足") {
+		t.Fatalf("runVideoTask() error = %v", err)
+	}
+	want := "POST /v1/video/generations,GET /v1/video/generations/failed-task"
+	if got := strings.Join(paths, ","); got != want {
+		t.Fatalf("paths = %q, want %q", got, want)
+	}
+}
+
+func TestAIAPIWayMetadataContractDoesNotChangeNewAPIChannel2Body(t *testing.T) {
+	profile := DefaultModelCapabilityConfigForModel("newapi-channel-2", "endpoint-video").Video
+	profile.Resolutions = []string{"720p"}
+	profile.DefaultResolution = "720p"
+	baseInput := canvasGenerationInput{
+		Prompt:          "make it move",
+		Config:          providerConfig{Model: "endpoint-video", VideoSeconds: "6", Size: "16:9", VQuality: "720"},
+		VideoCapability: profile,
+	}
+
+	aiInput := baseInput
+	aiInput.Config.InterfaceType = "aiapiway-video"
+	aiBody, err := videoGenerationsCreateBody(aiInput)
+	if err != nil {
+		t.Fatalf("videoGenerationsCreateBody(aiapiway) error = %v", err)
+	}
+	aiMap, err := requestAsMap(aiBody)
+	if err != nil {
+		t.Fatalf("requestAsMap(aiapiway) error = %v", err)
+	}
+	if _, ok := aiMap["metadata"].(map[string]interface{}); !ok {
+		t.Fatalf("aiapiway metadata = %#v", aiMap["metadata"])
+	}
+	if _, exists := aiMap["seconds"]; exists {
+		t.Fatalf("aiapiway body leaked legacy seconds: %#v", aiMap)
+	}
+
+	legacyInput := baseInput
+	legacyInput.Config.InterfaceType = "newapi-channel-2"
+	legacyBody, err := videoGenerationsCreateBody(legacyInput)
+	if err != nil {
+		t.Fatalf("videoGenerationsCreateBody(newapi-channel-2) error = %v", err)
+	}
+	legacyMap, err := requestAsMap(legacyBody)
+	if err != nil {
+		t.Fatalf("requestAsMap(newapi-channel-2) error = %v", err)
+	}
+	if legacyMap["seconds"] != "6" || legacyMap["aspect_ratio"] != "16:9" || legacyMap["resolution"] != "720p" {
+		t.Fatalf("legacy body = %#v", legacyMap)
+	}
+	if _, exists := legacyMap["metadata"]; exists {
+		t.Fatalf("legacy body unexpectedly uses metadata: %#v", legacyMap)
+	}
+}
+
 func TestRunNewAPIChannel2VideoTaskResumesOriginalProviderTaskWithoutAnotherPost(t *testing.T) {
 	t.Setenv("CANVAS_ALLOW_PRIVATE_UPSTREAMS", "true")
 	paths := make([]string, 0, 2)
