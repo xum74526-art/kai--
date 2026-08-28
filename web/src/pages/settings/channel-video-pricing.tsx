@@ -33,7 +33,9 @@ export function ChannelModelSettings({ channel, onChange }: { channel: ModelChan
     const testModel = async (model: string, capability: ModelCost["capability"], protocol: ModelProtocol) => {
         setTestingModel(model);
         try {
-            const detail = await testChannelModelConnection(channel, model, capability, protocol);
+            const detail = await testChannelModelConnection(channel, model, capability, protocol, {
+                onTaskCreated: (taskId) => message.info(`图片测试任务已提交（${taskId}），正在后台生成，可在任务中心查看`),
+            });
             message.success(`模型测试通过：${detail}`);
         } catch (error) {
             message.error(error instanceof Error ? error.message : "模型测试失败");
@@ -53,7 +55,7 @@ export function ChannelModelSettings({ channel, onChange }: { channel: ModelChan
             <div className="mb-2 flex items-center justify-between gap-3">
                 <div>
                     <div className="text-xs font-medium">模型能力与请求协议</div>
-                    <div className="mt-0.5 text-[var(--fs-tiny)] text-foreground/42">与运营后台使用同一能力目录；测试会发起真实请求并可能产生供应商费用</div>
+                    <div className="mt-0.5 text-[var(--fs-tiny)] text-foreground/42">与运营后台使用同一能力目录；测试会发起真实请求并可能产生供应商费用，图片测试在后台任务中执行</div>
                 </div>
                 <span className="text-[var(--fs-tiny)] text-foreground/35">{channel.models.length} 个模型</span>
             </div>

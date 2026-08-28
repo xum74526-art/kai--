@@ -1,10 +1,15 @@
 import { requestAudioGeneration } from "@/services/api/audio";
-import { requestGeneration, requestImageQuestion } from "@/services/api/image";
+import { runBackendGenerationTask } from "@/services/api/generation-task";
+import { requestImageQuestion } from "@/services/api/image";
 import { createVideoGenerationTask } from "@/services/api/video";
 import { defaultConfig, encodeChannelModel, type ModelCapability, type ModelChannel } from "@/stores/use-config-store";
 import type { ModelProtocol } from "@/lib/model-protocols";
 
-export async function testChannelModelConnection(channel: ModelChannel, model: string, capability: ModelCapability, protocol: ModelProtocol) {
+type ModelConnectionTestOptions = {
+    onTaskCreated?: (taskId: string) => void;
+};
+
+export async function testChannelModelConnection(channel: ModelChannel, model: string, capability: ModelCapability, protocol: ModelProtocol, options?: ModelConnectionTestOptions) {
     if (!channel.baseUrl.trim()) throw new Error("请先填写 Base URL");
     if (!channel.apiKey.trim()) throw new Error("请先填写 API Key");
     const selectedModel = encodeChannelModel(channel.id, model);
@@ -54,9 +59,24 @@ export async function testChannelModelConnection(channel: ModelChannel, model: s
         case "text":
             await requestImageQuestion(config, [{ role: "user", content: "Reply with OK." }], () => undefined);
             return "文本响应正常";
-        case "image":
-            await requestGeneration(config, "A simple gray circle on a white background.");
-            return "图片生成正常";
+        case "image": {
+            let taskId = "";
+            // 图片测试必须经过任务中心。供应商即使生成数分钟，浏览器也只发短轮询请求，
+            // 不再把整次生成绑定在反向代理的一条长连接上。
+            const result = await runBackendGenerationTask({
+                mode: "image",
+                prompt: "A simple gray circle on a white background.",
+                config,
+                metadata: { source: "model-connection-test" },
+                onTaskUpdate: (task) => {
+                    if (taskId) return;
+                    taskId = task.id;
+                    options?.onTaskCreated?.(task.id);
+                },
+            });
+            if (!result.images?.length) throw new Error("图片测试任务已完成，但没有返回可用图片");
+            return taskId ? `图片生成正常（任务 ${taskId}）` : "图片生成正常";
+        }
         case "audio":
             await requestAudioGeneration(config, "Model test.");
             return "音频生成正常";

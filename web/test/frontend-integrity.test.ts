@@ -3,8 +3,10 @@ import { expect, test } from "bun:test";
 import { apiClient } from "../src/services/api/request";
 import { getAuthSession, logout, register, type LocalUser } from "../src/services/api/auth";
 import { createImportedStorageKey, remapImportedStorageReferences } from "../src/lib/imported-storage";
+import { testChannelModelConnection } from "../src/lib/model-connection-test";
 import { uploadMediaFile } from "../src/services/file-storage";
 import { useCanvasStore } from "../src/stores/canvas/use-canvas-store";
+import { createModelChannel } from "../src/stores/use-config-store";
 import type { TimelineProject } from "../src/types/timeline";
 
 test.serial("register invalidates a cached guest session", async () => {
@@ -36,6 +38,61 @@ test.serial("register invalidates a cached guest session", async () => {
         expect(sessionRequests).toBe(2);
     } finally {
         apiClient.defaults.adapter = previousAdapter;
+    }
+});
+
+test.serial("image model connection tests use a queued backend task instead of a long custom relay request", async () => {
+    const previousAdapter = apiClient.defaults.adapter;
+    const previousWindow = (globalThis as { window?: unknown }).window;
+    const calls: string[] = [];
+    const taskId = "image-model-test-task";
+    const createdAt = "2026-08-28T00:00:00.000Z";
+    Object.defineProperty(globalThis, "window", {
+        configurable: true,
+        value: { dispatchEvent: () => true, location: { hostname: "localhost" } },
+    });
+    apiClient.defaults.adapter = async (config) => {
+        const method = String(config.method || "get").toLowerCase();
+        const url = String(config.url || "");
+        calls.push(`${method}:${url}`);
+        const task = {
+            id: taskId,
+            type: "canvas_image",
+            status: method === "post" ? "queued" : "succeeded",
+            prompt: "A simple gray circle on a white background.",
+            operation: "image",
+            model: "user-bailian::qwen-image-3.0-pro",
+            attempts: 1,
+            createdAt,
+            updatedAt: createdAt,
+            ...(method === "get" ? { resultJson: JSON.stringify({ mode: "image", images: [{ dataUrl: "data:image/png;base64,AA==" }] }) } : {}),
+        };
+        if (method === "post") {
+            const body = JSON.parse(String(config.data)) as { input?: { metadata?: { source?: string }; config?: { interfaceType?: string } } };
+            expect(body.input?.metadata?.source).toBe("model-connection-test");
+            expect(body.input?.config?.interfaceType).toBe("bailian-image");
+        }
+        return { data: { code: 0, data: task, msg: "" }, status: 200, statusText: "OK", headers: {}, config };
+    };
+    const channel = createModelChannel({
+        id: "user-bailian",
+        name: "Bailian",
+        baseUrl: "https://example.invalid/compatible-mode/v1",
+        apiKey: "synthetic-test-key",
+        models: ["qwen-image-3.0-pro"],
+        modelCosts: [{ model: "qwen-image-3.0-pro", capability: "image", protocol: "bailian-image", billingMode: "fixed_request", unitPriceMicrocredits: 0 }],
+    });
+    let queuedTaskId = "";
+    try {
+        const detail = await testChannelModelConnection(channel, "qwen-image-3.0-pro", "image", "bailian-image", { onTaskCreated: (id) => (queuedTaskId = id) });
+        expect(detail).toContain("图片生成正常");
+        expect(queuedTaskId).toBe(taskId);
+        expect(calls).toEqual(["post:/tasks", `get:/tasks/${taskId}`]);
+        expect(calls.some((call) => call.includes("/ai/custom"))).toBe(false);
+    } finally {
+        apiClient.defaults.adapter = previousAdapter;
+        if (previousWindow === undefined) delete (globalThis as { window?: unknown }).window;
+        else Object.defineProperty(globalThis, "window", { configurable: true, value: previousWindow });
     }
 });
 
