@@ -7501,16 +7501,23 @@ html:not(.dark) .creation-user-message-reference { background: rgba(28, 32, 37, 
 .creation-media-pending,
 .creation-media-empty { display: inline-flex; min-height: 42px; align-items: center; gap: 8px; margin: 14px 0 0 34px; border: 0; border-radius: 8px; background: rgba(255, 255, 255, .055); padding: 0 12px; color: var(--creation-muted); font-size: 12px; }
 .creation-media-empty button { border: 0; background: transparent; color: var(--creation-text); font-size: 12px; }
-.creation-media-result { max-width: 860px; padding: 14px 0 0 34px; }
-.creation-image-result-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
-.creation-image-result { position: relative; aspect-ratio: 1; overflow: hidden; border: 0; border-radius: 9px; background: #181a1e; }
-.creation-image-result img { width: 100%; height: 100%; object-fit: cover; transition: transform 220ms var(--motion-ease-out); }
+.creation-media-result { max-width: 680px; padding: var(--space-3) 0 0 var(--space-8); }
+.creation-image-result-grid { display: flex; max-width: 680px; flex-wrap: wrap; align-items: flex-start; gap: var(--space-2); }
+.creation-image-result,
+.creation-video-result { position: relative; display: block; width: min(100%, var(--creation-media-frame-width)); aspect-ratio: var(--creation-media-aspect); flex: 0 0 auto; overflow: hidden; border: 0; cursor: zoom-in; }
+.creation-image-result { border-radius: 9px; background: var(--creation-surface-muted); }
+.creation-image-result img,
+.creation-video-result video { display: block; width: 100%; height: 100%; object-fit: contain; }
+.creation-image-result img { transition: transform 220ms var(--motion-ease-out); }
 .creation-image-result span, .creation-video-result > span { position: absolute; right: 8px; bottom: 8px; display: grid; width: 27px; height: 27px; place-items: center; border-radius: 7px; background: rgba(13, 14, 16, .62); color: #fff; opacity: 0; transition: opacity 160ms ease; backdrop-filter: blur(8px); }
 .creation-image-result span svg, .creation-video-result span svg { width: 14px; height: 14px; }
 .creation-image-result:hover img { transform: scale(1.025); }
-.creation-image-result:hover span, .creation-video-result:hover > span { opacity: 1; }
+.creation-image-result:hover span, .creation-video-result:hover > span,
+.creation-image-result:focus-visible span, .creation-video-result:focus-visible > span { opacity: 1; }
+.creation-image-result:focus-visible,
+.creation-video-result:focus-visible { outline: 2px solid var(--creation-accent); outline-offset: 2px; }
 
-.creation-video-result { position: relative; display: block; width: min(920px, 100%); aspect-ratio: 16 / 9; overflow: hidden; border: 0; border-radius: 10px; background: #121316; }
+.creation-video-result { border-radius: 10px; background: #121316; }
 .creation-video-result > span { display: inline-flex; width: auto; height: 30px; align-items: center; gap: 5px; padding: 0 9px; font-size: 11px; }
 .creation-media-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 10px; color: var(--creation-faint); font-size: 11px; }
 .creation-media-actions > span { margin-right: 2px; }
@@ -7520,8 +7527,12 @@ html:not(.dark) .creation-user-message-reference { background: rgba(28, 32, 37, 
 
 .creation-media-preview-modal .ant-modal-container { overflow: hidden; border: 0; border-radius: 12px; background: #111215; padding: 0; }
 .creation-media-preview-modal .ant-modal-close { color: #fff; }
-.creation-media-preview-image, .creation-media-preview-video { display: block; max-width: 100%; max-height: 82vh; margin: 0 auto; object-fit: contain; }
-.creation-media-preview-video { width: 100%; background: #050505; }
+.creation-video-preview-stage { position: relative; display: grid; max-height: calc(100dvh - 32px); place-items: center; background: #050505; }
+.creation-media-preview-video { display: block; width: 100%; max-width: 100%; max-height: calc(100dvh - 32px); margin: 0 auto; object-fit: contain; background: #050505; }
+.creation-video-preview-fullscreen { position: absolute; top: var(--space-3); left: var(--space-3); display: inline-flex; min-height: 34px; align-items: center; gap: var(--space-2); border: 0; border-radius: var(--r-sm); background: color-mix(in srgb, var(--background) 84%, transparent); color: var(--foreground); padding: 0 var(--space-3); font-size: var(--fs-caption); cursor: pointer; backdrop-filter: blur(10px); }
+.creation-video-preview-fullscreen:hover { background: color-mix(in srgb, var(--background) 88%, var(--foreground) 12%); }
+.creation-video-preview-fullscreen:focus-visible { outline: 2px solid var(--control-focus-ring); outline-offset: 2px; }
+.creation-video-preview-fullscreen svg { width: 15px; height: 15px; }
 
 html:not(.dark) .creation-user-message { background: rgba(28, 32, 37, .07); }
 html:not(.dark) .creation-video-result,
@@ -7541,7 +7552,6 @@ html:not(.dark) .creation-media-preview-modal .ant-modal-container { background:
     .creation-assistant-message { max-width: 100%; }
     .creation-message-content, .creation-message-error, .creation-media-result { padding-left: 0; }
     .creation-media-pending, .creation-media-empty { margin-left: 0; }
-    .creation-image-result-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 /* 旧创作规则位于 utilities 层且使用 !important；必须在同层覆盖。 */
@@ -10590,13 +10600,6 @@ html:not(.dark) .creation-home .creation-user-message { background: transparent;
     font-size: var(--fs-label);
     cursor: pointer;
 }
-
-.creation-home .creation-media-result { max-width: 680px; padding: var(--space-3) 0 0 var(--space-8); }
-.creation-home .creation-image-result-grid { display: flex; max-width: 680px; flex-wrap: wrap; gap: var(--space-2); }
-.creation-home .creation-image-result { width: min(320px, 100%); aspect-ratio: auto; background: var(--creation-surface-muted); }
-.creation-home .creation-image-result img { display: block; width: 100%; height: auto; max-height: 360px; object-fit: contain; }
-.creation-home .creation-video-result { width: min(680px, 100%); }
-.creation-home .creation-video-result video { display: block; width: 100%; height: 100%; object-fit: contain; }
 
 .creation-home .creation-media-error {
     display: flex;
