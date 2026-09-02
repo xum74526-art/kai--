@@ -23,3 +23,26 @@ func TestIsTextReplayTaskRequest(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateTextReplayTaskRequest(t *testing.T) {
+	valid := CreateTaskRequest{Type: "text"}
+	if err := validateTextReplayTaskRequest(valid, valid.Type, map[string]any{"replay": true, "mode": "text"}); err != nil {
+		t.Fatalf("valid replay request error = %v", err)
+	}
+	cases := []struct {
+		name  string
+		req   CreateTaskRequest
+		type_ string
+		input map[string]any
+	}{
+		{name: "非文本任务", req: CreateTaskRequest{Type: "canvas_image"}, type_: "canvas_image", input: map[string]any{"replay": true, "mode": "text"}},
+		{name: "绑定逻辑模型", req: CreateTaskRequest{Type: "text", LogicalModelID: "logical-1"}, type_: "text", input: map[string]any{"replay": true, "mode": "text"}},
+		{name: "模式错误", req: valid, type_: "text", input: map[string]any{"replay": true, "mode": "image"}},
+		{name: "内嵌媒体", req: valid, type_: "text", input: map[string]any{"replay": true, "mode": "text", "image": "data:image/png;base64,AA=="}},
+	}
+	for _, tc := range cases {
+		if err := validateTextReplayTaskRequest(tc.req, tc.type_, tc.input); err == nil {
+			t.Errorf("%s: expected replay validation error", tc.name)
+		}
+	}
+}

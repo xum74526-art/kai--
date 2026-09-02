@@ -13,18 +13,22 @@ type Resource struct {
 	Endpoint string         `json:"endpoint"`
 	Bucket   string         `json:"bucket" gorm:"size:160"`
 	// 用户 OSS 每次修改都会生成新版本，资源固定引用创建时的存储与密钥；只有同一存储位置才可复用当前 CDN。
-	StorageSettingID string    `json:"-" gorm:"index;size:36"`
-	ObjectKey        string    `json:"objectKey" gorm:"index"`
-	PublicURL        string    `json:"publicUrl"`
-	MimeType         string    `json:"mimeType" gorm:"size:120"`
-	Size             int64     `json:"size"`
-	Width            int       `json:"width"`
-	Height           int       `json:"height"`
-	DurationMs       int64     `json:"durationMs"`
-	ETag             string    `json:"etag" gorm:"size:160"`
-	Error            string    `json:"error"`
-	CreatedAt        time.Time `json:"createdAt" gorm:"index:idx_resources_user_created,priority:2"`
-	UpdatedAt        time.Time `json:"updatedAt"`
+	StorageSettingID string `json:"-" gorm:"index;size:36"`
+	// ProducerTaskID 与 ProducerLeaseOwner 仅标记生成任务临时写入的媒体。
+	// 任务完成事务会把同一租约的资源从 pending 提升为 ready，避免中断时暴露孤立媒体。
+	ProducerTaskID     string    `json:"-" gorm:"index:idx_resources_producer,priority:1;size:36"`
+	ProducerLeaseOwner string    `json:"-" gorm:"index:idx_resources_producer,priority:2;size:120"`
+	ObjectKey          string    `json:"objectKey" gorm:"index"`
+	PublicURL          string    `json:"publicUrl"`
+	MimeType           string    `json:"mimeType" gorm:"size:120"`
+	Size               int64     `json:"size"`
+	Width              int       `json:"width"`
+	Height             int       `json:"height"`
+	DurationMs         int64     `json:"durationMs"`
+	ETag               string    `json:"etag" gorm:"size:160"`
+	Error              string    `json:"error"`
+	CreatedAt          time.Time `json:"createdAt" gorm:"index:idx_resources_user_created,priority:2"`
+	UpdatedAt          time.Time `json:"updatedAt"`
 }
 
 type Asset struct {

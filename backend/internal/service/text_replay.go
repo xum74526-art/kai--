@@ -46,6 +46,23 @@ func isTextReplayTaskRequest(input map[string]any) bool {
 	}
 }
 
+func validateTextReplayTaskRequest(req CreateTaskRequest, taskType string, input map[string]any) error {
+	if taskType != "text" && taskType != "canvas_text" {
+		return BadAuthRequest("文本回放只支持文本生成任务")
+	}
+	if strings.TrimSpace(req.LogicalModelID) != "" {
+		return BadAuthRequest("文本回放不能绑定后端逻辑模型")
+	}
+	mode, _ := input["mode"].(string)
+	if strings.TrimSpace(mode) != "text" {
+		return BadAuthRequest("文本回放必须使用 text 模式")
+	}
+	if containsInlineMediaDataURL(input) {
+		return BadAuthRequest("文本回放输入不能包含内嵌媒体")
+	}
+	return nil
+}
+
 // CompleteTextReplayTask 在文本生成结束后把最终正文写入任务，收尾为 succeeded，
 // 关闭 delta 写入窗口并触发 text-deltas 归并，使 queryTaskTextReplay 能读到 finalText。
 func (s *Service) CompleteTextReplayTask(userID string, taskID string, text string) (*model.Task, error) {
@@ -76,6 +93,9 @@ func (s *Service) AppendTaskTextDelta(userID string, taskID string, content stri
 	task, err := s.repo.TaskForUser(userID, taskID)
 	if err != nil {
 		return nil, err
+	}
+	if task.Status != model.TaskStatusTextReplay {
+		return nil, BadAuthRequest("只有进行中的文本回放任务支持写入增量")
 	}
 	if capabilityFromTaskType(task.Type) != "text" {
 		return nil, BadAuthRequest("只有文本生成任务支持增量回放")

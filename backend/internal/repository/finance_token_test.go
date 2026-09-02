@@ -84,6 +84,9 @@ func TestSettleArkVideoTokenOrderFromPollUsage(t *testing.T) {
 	if err := repo.SettleBillingOrder("order-1", "ark-task-1"); err != nil {
 		t.Fatalf("SettleBillingOrder() error = %v", err)
 	}
+	if err := repo.SettleBillingOrder("order-1", "ark-task-1"); err != nil {
+		t.Fatalf("repeated SettleBillingOrder() error = %v", err)
+	}
 	var order model.BillingOrder
 	if err := db.First(&order, "id = ?", "order-1").Error; err != nil {
 		t.Fatal(err)
@@ -97,5 +100,52 @@ func TestSettleArkVideoTokenOrderFromPollUsage(t *testing.T) {
 	}
 	if account.AvailableMicrocredits != 174_240 || account.ReservedMicrocredits != 0 {
 		t.Fatalf("settled account = %#v", account)
+	}
+	var ledgerCount int64
+	if err := db.Model(&model.CreditLedgerEntry{}).Where("billing_order_id = ?", "order-1").Count(&ledgerCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if ledgerCount != 2 {
+		t.Fatalf("billing ledger count = %d, want consume plus token refund", ledgerCount)
+	}
+}
+
+func TestRefundBillingOrderReleasesOnlyItsReservationOnce(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:finance-refund-once?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&model.CreditAccount{}, &model.BillingOrder{}, &model.CreditLedgerEntry{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&model.CreditAccount{UserID: "user-1", AvailableMicrocredits: 50, ReservedMicrocredits: 320}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&model.BillingOrder{
+		ID: "order-1", UserID: "user-1", IdempotencyKey: "task:task-1", AmountMicrocredits: 100,
+		ReservedAmountMicrocredits: 120, Status: model.BillingStatusRunning,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	repo := New(db)
+	if err := repo.RefundBillingOrder("order-1", "上游未发出请求"); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.RefundBillingOrder("order-1", "重复回调"); err != nil {
+		t.Fatal(err)
+	}
+	var account model.CreditAccount
+	if err := db.First(&account, "user_id = ?", "user-1").Error; err != nil {
+		t.Fatal(err)
+	}
+	if account.AvailableMicrocredits != 170 || account.ReservedMicrocredits != 200 {
+		t.Fatalf("refunded account = %#v", account)
+	}
+	var ledgerCount int64
+	if err := db.Model(&model.CreditLedgerEntry{}).Where("billing_order_id = ? AND type = ?", "order-1", model.CreditLedgerRefund).Count(&ledgerCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if ledgerCount != 1 {
+		t.Fatalf("refund ledger count = %d, want 1", ledgerCount)
 	}
 }

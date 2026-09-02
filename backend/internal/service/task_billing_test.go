@@ -43,7 +43,7 @@ func (r *taskBillingRepositoryStub) BillingOrder(string) (*model.BillingOrder, e
 	return r.order, r.orderErr
 }
 
-func (r *taskBillingRepositoryStub) TaskHasSuccessfulBillableCall(string) (bool, error) {
+func (r *taskBillingRepositoryStub) BillingOrderHasSuccessfulBillableCall(string) (bool, error) {
 	return r.hasSuccessfulCall, r.callErr
 }
 
@@ -81,7 +81,8 @@ func TestTaskBillingCoordinatorRetryEligibility(t *testing.T) {
 		wantReview bool
 	}{
 		{name: "empty order", wantErr: false},
-		{name: "running order", orderID: "order-1", order: &model.BillingOrder{Status: model.BillingStatusRunning}, wantErr: false},
+		{name: "reserved order", orderID: "order-1", order: &model.BillingOrder{Status: model.BillingStatusReserved}, wantErr: true, wantReview: true},
+		{name: "running order", orderID: "order-1", order: &model.BillingOrder{Status: model.BillingStatusRunning}, wantErr: true, wantReview: true},
 		{name: "settled order", orderID: "order-1", order: &model.BillingOrder{Status: model.BillingStatusSettled}, wantErr: false},
 		{name: "refunded order", orderID: "order-1", order: &model.BillingOrder{Status: model.BillingStatusRefunded}, wantErr: false},
 		{name: "uncertain order", orderID: "order-1", order: &model.BillingOrder{Status: model.BillingStatusUncertain}, wantErr: true, wantReview: true},

@@ -133,8 +133,10 @@ type providerAnalyticsKey struct{}
 type providerOutboundPolicyKey struct{}
 
 type providerOutboundPolicyContext struct {
-	scheme string
-	host   string
+	scheme                string
+	host                  string
+	allowLoopback         bool
+	allowEnvironmentProxy bool
 }
 
 type providerAnalyticsContext struct {
@@ -976,6 +978,10 @@ func runImageTask(ctx context.Context, input canvasGenerationInput) (map[string]
 	if err != nil {
 		return nil, err
 	}
+	images, err = materializeProviderImageDataURLs(ctx, input.Config, images, "图片")
+	if err != nil {
+		return nil, err
+	}
 	return map[string]interface{}{"mode": "image", "images": images}, nil
 }
 
@@ -1439,6 +1445,10 @@ func runGrokImageTask(ctx context.Context, input canvasGenerationInput) (map[str
 	if err != nil {
 		return nil, err
 	}
+	images, err = materializeProviderImageDataURLs(ctx, input.Config, images, "Grok 图片")
+	if err != nil {
+		return nil, err
+	}
 	return map[string]interface{}{"mode": "image", "images": images}, nil
 }
 
@@ -1573,29 +1583,7 @@ func volcengineArkImageDataURLs(ctx context.Context, config providerConfig, payl
 	if err != nil {
 		return nil, err
 	}
-	for _, image := range images {
-		value := strings.TrimSpace(image["dataUrl"])
-		if strings.HasPrefix(value, "data:image/") {
-			continue
-		}
-		if !isPublicMediaURL(value) {
-			return nil, errors.New("火山方舟图片接口没有返回可下载的图片")
-		}
-		// 方舟默认返回临时 CDN 地址。必须由后端下载成内联结果，后续资源持久化才能
-		// 原子地写入服务器或用户配置的对象存储，且不依赖浏览器跨域访问方舟 CDN。
-		data, mimeType, err := getProviderExternalBinary(withProviderRequestKind(ctx, "download"), config, value)
-		if err != nil {
-			return nil, fmt.Errorf("火山方舟图片结果下载失败：%w", err)
-		}
-		detected := strings.ToLower(strings.TrimSpace(strings.Split(http.DetectContentType(data), ";")[0]))
-		mimeType = strings.ToLower(normalizedMediaMimeType(mimeType, data))
-		if len(data) == 0 || strings.Contains(detected, "json") || strings.HasPrefix(detected, "text/") || !strings.HasPrefix(mimeType, "image/") {
-			return nil, fmt.Errorf("火山方舟图片结果无效：%s", defaultString(detected, mimeType))
-		}
-		image["dataUrl"] = dataURL(mimeType, data)
-		image["mimeType"] = mimeType
-	}
-	return images, nil
+	return materializeProviderImageDataURLs(ctx, config, images, "火山方舟图片")
 }
 
 func volcengineArkImageBody(input canvasGenerationInput) (map[string]interface{}, error) {
@@ -3707,25 +3695,39 @@ func doJSON(req *http.Request, target interface{}) error {
 }
 
 func withProviderOutboundPolicy(ctx context.Context, config providerConfig) context.Context {
-	if !config.AllowLocalChannel {
-		return ctx
-	}
 	parsed, err := url.Parse(strings.TrimSpace(config.BaseURL))
-	if err != nil || !isExactDesktopLoopbackHost(parsed.Hostname()) {
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
 		return ctx
 	}
-	return context.WithValue(ctx, providerOutboundPolicyKey{}, providerOutboundPolicyContext{scheme: strings.ToLower(parsed.Scheme), host: strings.ToLower(parsed.Host)})
+	policy := providerOutboundPolicyContext{
+		scheme:                strings.ToLower(parsed.Scheme),
+		host:                  strings.ToLower(parsed.Host),
+		allowLoopback:         config.AllowLocalChannel && isExactDesktopLoopbackHost(parsed.Hostname()),
+		allowEnvironmentProxy: strings.TrimSpace(config.ChannelID) != "",
+	}
+	return context.WithValue(ctx, providerOutboundPolicyKey{}, policy)
 }
 
 func providerLoopbackPolicyForRequest(req *http.Request) (OutboundPolicy, bool) {
 	policyContext, ok := req.Context().Value(providerOutboundPolicyKey{}).(providerOutboundPolicyContext)
-	if !ok || policyContext.scheme == "" || policyContext.host == "" {
+	if !ok || !policyContext.allowLoopback || policyContext.scheme == "" || policyContext.host == "" {
 		return OutboundPolicy{}, false
 	}
 	if strings.ToLower(req.URL.Scheme) != policyContext.scheme || strings.ToLower(req.URL.Host) != policyContext.host {
 		return OutboundPolicy{}, false
 	}
 	return desktopLoopbackOutboundPolicy(nil), true
+}
+
+func providerEnvironmentProxyAllowed(req *http.Request) bool {
+	if req == nil || req.URL == nil {
+		return false
+	}
+	policyContext, ok := req.Context().Value(providerOutboundPolicyKey{}).(providerOutboundPolicyContext)
+	if !ok || !policyContext.allowEnvironmentProxy {
+		return false
+	}
+	return strings.EqualFold(req.URL.Scheme, policyContext.scheme) && strings.EqualFold(req.URL.Host, policyContext.host)
 }
 
 func doBinary(req *http.Request) ([]byte, string, error) {
@@ -3782,9 +3784,13 @@ func doBinary(req *http.Request) ([]byte, string, error) {
 		return nil, "", err
 	}
 	ApplyDefaultOutboundHeaders(req)
-	client := OutboundHTTPClient(requestTimeout)
+	// 默认直连并在本进程内解析/钉扎地址；只有数据库中的系统渠道访问其配置同源
+	// 上游时才允许使用运维环境代理，供应商返回的跨域下载地址仍保持直连。
+	client := DirectOutboundHTTPClient(requestTimeout)
 	if loopback {
 		client = outboundHTTPClientWithPolicy(requestTimeout, policy)
+	} else if providerEnvironmentProxyAllowed(req) {
+		client = OutboundHTTPClient(requestTimeout)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -4034,6 +4040,32 @@ func imageDataURLs(payload imageResponse) ([]map[string]string, error) {
 	}
 	if len(images) == 0 {
 		return nil, errors.New("接口没有返回可用图片")
+	}
+	return images, nil
+}
+
+// materializeProviderImageDataURLs 将上游临时 URL 收敛为任务可持久化的 data URL。
+// 浏览器不能直接依赖供应商 CDN 的短期签名地址；下载仍经过统一的 SSRF、大小和渠道策略校验。
+func materializeProviderImageDataURLs(ctx context.Context, config providerConfig, images []map[string]string, providerName string) ([]map[string]string, error) {
+	for _, image := range images {
+		value := strings.TrimSpace(image["dataUrl"])
+		if strings.HasPrefix(strings.ToLower(value), "data:image/") {
+			continue
+		}
+		if !isPublicMediaURL(value) {
+			return nil, fmt.Errorf("%s接口返回了无效的图片地址", providerName)
+		}
+		data, mimeType, err := getProviderExternalBinary(withProviderRequestKind(ctx, "download"), config, value)
+		if err != nil {
+			return nil, fmt.Errorf("下载%s结果失败：%w", providerName, err)
+		}
+		detected := strings.ToLower(strings.TrimSpace(strings.Split(http.DetectContentType(data), ";")[0]))
+		mimeType = strings.ToLower(normalizedMediaMimeType(mimeType, data))
+		if len(data) == 0 || strings.Contains(detected, "json") || strings.HasPrefix(detected, "text/") || !strings.HasPrefix(mimeType, "image/") {
+			return nil, fmt.Errorf("%s结果无效：%s", providerName, defaultString(detected, mimeType))
+		}
+		image["dataUrl"] = dataURL(mimeType, data)
+		image["mimeType"] = mimeType
 	}
 	return images, nil
 }

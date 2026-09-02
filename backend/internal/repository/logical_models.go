@@ -244,11 +244,12 @@ func (r *Repository) RouteAttempts(taskID string, routeRun int) ([]model.RouteAt
 
 // SwitchTaskLogicalRoute 同时更新任务执行目标和账单。跟随供应价格时会原子调整预留积分，
 // 保证明确未创建上游任务后的故障切线不会沿用上一条线路的价格快照。
-func (r *Repository) SwitchTaskLogicalRoute(taskID string, expectedRouteID string, routeID string, inputJSON string, billingOrderID string, channelID string, channelModelID string, replacement *model.BillingOrder) error {
+func (r *Repository) SwitchTaskLogicalRoute(taskID string, expectedRouteID string, expectedLeaseOwner string, expectedAttempts int, routeID string, inputJSON string, billingOrderID string, channelID string, channelModelID string, replacement *model.BillingOrder) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
+		now := time.Now()
 		updated := tx.Model(&model.Task{}).
-			Where("id = ? AND status = ? AND route_id = ?", taskID, model.TaskStatusRunning, expectedRouteID).
-			Updates(map[string]any{"route_id": routeID, "channel_model_id": channelModelID, "input_json": inputJSON, "updated_at": time.Now()})
+			Where("id = ? AND status = ? AND route_id = ? AND lease_owner = ? AND attempts = ? AND lease_expires_at IS NOT NULL AND lease_expires_at > ?", taskID, model.TaskStatusRunning, expectedRouteID, expectedLeaseOwner, expectedAttempts, now).
+			Updates(map[string]any{"route_id": routeID, "channel_model_id": channelModelID, "input_json": inputJSON, "updated_at": now})
 		if updated.Error != nil {
 			return updated.Error
 		}
@@ -262,7 +263,6 @@ func (r *Repository) SwitchTaskLogicalRoute(taskID string, expectedRouteID strin
 		if err := tx.First(&order, "id = ? AND task_id = ? AND status IN ?", billingOrderID, taskID, []model.BillingStatus{model.BillingStatusReserved, model.BillingStatusRunning}).Error; err != nil {
 			return err
 		}
-		now := time.Now()
 		updates := map[string]any{"channel_id": channelID, "channel_model_id": channelModelID, "updated_at": now}
 		if replacement != nil {
 			if replacement.UserID != order.UserID || replacement.TaskID != taskID || replacement.AmountMicrocredits <= 0 {
@@ -443,28 +443,105 @@ func (r *Repository) ArchiveLogicalModel(id string, audit *model.AdminAuditEvent
 	})
 }
 
-// requireActiveLogicalModelForTask 与归档共用主体行锁，保证新任务只引用仍在目录中的当前 revision。
+// requireActiveLogicalModelForTask 保证新任务只引用当前可用的完整路由快照。
 func (r *Repository) requireActiveLogicalModelForTask(tx *gorm.DB, task *model.Task) error {
+	return r.requireLogicalModelForTask(tx, task, false)
+}
+
+// requireRetryLogicalModelForTask 允许已归档任务按原快照重试，但不允许切换到其他历史路由。
+func (r *Repository) requireRetryLogicalModelForTask(tx *gorm.DB, task *model.Task) error {
+	return r.requireLogicalModelForTask(tx, task, true)
+}
+
+// requireLogicalModelForTask 与渠道删除统一使用父子锁顺序：
+// logical model -> revision -> route -> model channel -> channel model。
+func (r *Repository) requireLogicalModelForTask(tx *gorm.DB, task *model.Task, allowArchivedSnapshot bool) error {
 	if task == nil || task.LogicalModelID == "" {
 		return nil
 	}
-	var item model.LogicalModel
-	query := tx.Select("id").Where(
-		"id = ? AND enabled = ? AND archived_at IS NULL AND active_revision_id = ?",
-		task.LogicalModelID,
-		true,
-		task.LogicalModelRevisionID,
-	)
-	if r.Dialect() == "postgres" {
-		query = query.Clauses(clause.Locking{Strength: "UPDATE"})
+
+	var logicalModel model.LogicalModel
+	query := taskAdmissionRow(tx).Select("id", "enabled", "archived_at", "active_revision_id").Where("id = ?", task.LogicalModelID)
+	if err := query.First(&logicalModel).Error; err != nil {
+		return logicalModelAdmissionError(err)
 	}
-	if err := query.First(&item).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
+	if logicalModel.ArchivedAt == nil {
+		if !logicalModel.Enabled || logicalModel.ActiveRevisionID != task.LogicalModelRevisionID {
 			return ErrLogicalModelUnavailable
 		}
-		return err
+	} else {
+		if !allowArchivedSnapshot {
+			return ErrLogicalModelUnavailable
+		}
+		// 归档后不再路由到当前目录；重试只能使用任务原来持久化的精确快照。
+		var persisted model.Task
+		if err := tx.Select("logical_model_id", "logical_model_revision_id", "route_id", "channel_model_id").
+			Where("id = ? AND user_id = ?", task.ID, task.UserID).
+			First(&persisted).Error; err != nil {
+			return logicalModelAdmissionError(err)
+		}
+		if persisted.LogicalModelID != task.LogicalModelID ||
+			persisted.LogicalModelRevisionID != task.LogicalModelRevisionID ||
+			persisted.RouteID != task.RouteID ||
+			persisted.ChannelModelID != task.ChannelModelID {
+			return ErrLogicalModelUnavailable
+		}
+	}
+
+	var revision model.LogicalModelRevision
+	query = taskAdmissionRow(tx).Select("id").Where("id = ? AND logical_model_id = ?", task.LogicalModelRevisionID, task.LogicalModelID)
+	if err := query.First(&revision).Error; err != nil {
+		return logicalModelAdmissionError(err)
+	}
+
+	var route model.LogicalModelRoute
+	query = taskAdmissionRow(tx).Select("id").Where(
+		"id = ? AND logical_model_revision_id = ? AND channel_model_id = ? AND enabled = ? AND weight > ?",
+		task.RouteID,
+		task.LogicalModelRevisionID,
+		task.ChannelModelID,
+		true,
+		0,
+	)
+	if err := query.First(&route).Error; err != nil {
+		return logicalModelAdmissionError(err)
+	}
+
+	// 先只读取父 ID，不锁子行；真正的行锁仍保持父渠道在子模型之前。
+	var relation struct{ ChannelID string }
+	if err := tx.Model(&model.ChannelModel{}).
+		Select("channel_id").
+		Where("id = ?", task.ChannelModelID).
+		Take(&relation).Error; err != nil {
+		return logicalModelAdmissionError(err)
+	}
+
+	var channel model.ModelChannel
+	query = taskAdmissionRow(tx).Select("id").Where("id = ? AND scope = ? AND enabled = ?", relation.ChannelID, model.ChannelScopeSystem, true)
+	if err := query.First(&channel).Error; err != nil {
+		return logicalModelAdmissionError(err)
+	}
+
+	var channelModel model.ChannelModel
+	query = taskAdmissionRow(tx).Select("id").Where("id = ? AND channel_id = ? AND enabled = ?", task.ChannelModelID, relation.ChannelID, true)
+	if err := query.First(&channelModel).Error; err != nil {
+		return logicalModelAdmissionError(err)
 	}
 	return nil
+}
+
+func taskAdmissionRow(tx *gorm.DB) *gorm.DB {
+	if tx.Dialector.Name() == "postgres" {
+		return tx.Clauses(clause.Locking{Strength: "UPDATE"})
+	}
+	return tx
+}
+
+func logicalModelAdmissionError(err error) error {
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return ErrLogicalModelUnavailable
+	}
+	return err
 }
 
 func (r *Repository) DeleteLogicalModelRoute(id string) error {

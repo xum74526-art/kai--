@@ -245,6 +245,37 @@ func (r *Repository) lockReadyResourceReferences(tx *gorm.DB, userID string, res
 	return nil
 }
 
+// lockTaskCompletionResourceReferences 允许任务完成事务提升本次租约写入的 pending 生成资源。
+// 其他写路径仍只能引用 ready 资源，避免借由普通保存接口暴露未提交媒体。
+func (r *Repository) lockTaskCompletionResourceReferences(tx *gorm.DB, userID string, taskID string, leaseOwner string, resourceIDs []string) ([]string, error) {
+	resourceIDs = normalizedResourceIDs(resourceIDs)
+	stagedResourceIDs := make([]string, 0)
+	for _, resourceID := range resourceIDs {
+		var resource model.Resource
+		query := tx.Select("id", "status", "producer_task_id", "producer_lease_owner").Where("id = ? AND user_id = ?", resourceID, userID)
+		if r.Dialect() == "postgres" {
+			query = query.Clauses(clause.Locking{Strength: "UPDATE"})
+		}
+		if err := query.First(&resource).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, ErrResourceReferenceUnavailable
+			}
+			return nil, err
+		}
+		switch resource.Status {
+		case model.ResourceStatusReady:
+			continue
+		case model.ResourceStatusPending:
+			if resource.ProducerTaskID == taskID && resource.ProducerLeaseOwner == leaseOwner {
+				stagedResourceIDs = append(stagedResourceIDs, resource.ID)
+				continue
+			}
+		}
+		return nil, ErrResourceReferenceUnavailable
+	}
+	return stagedResourceIDs, nil
+}
+
 func normalizedResourceIDs(resourceIDs []string) []string {
 	seen := make(map[string]struct{}, len(resourceIDs))
 	result := make([]string, 0, len(resourceIDs))

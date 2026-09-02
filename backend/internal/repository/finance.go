@@ -18,6 +18,7 @@ var (
 	ErrRedeemCodeInvalid       = errors.New("redeem code invalid")
 	ErrActiveTaskLimit         = errors.New("active task limit reached")
 	ErrTaskNotRetryable        = errors.New("task is not retryable")
+	ErrBillingRetryBlocked     = errors.New("previous billing order is not finalized")
 	ErrBillingStateConflict    = errors.New("billing state conflict")
 	ErrBillingUsageUnavailable = errors.New("billing usage unavailable")
 	ErrBillingUnderreserved    = errors.New("billing amount exceeds reservation")
@@ -86,7 +87,18 @@ func (r *Repository) ChannelModelByID(channelID string, id string) (*model.Chann
 
 func (r *Repository) ChannelModelByKey(channelID string, modelKey string) (*model.ChannelModel, error) {
 	var item model.ChannelModel
-	if err := r.db.First(&item, "channel_id = ? AND model_key = ? AND enabled = ?", channelID, modelKey, true).Error; err != nil {
+	if err := r.db.Model(&model.ChannelModel{}).
+		Select("channel_models.*").
+		Joins("JOIN model_channels ON model_channels.id = channel_models.channel_id").
+		Where(
+			"channel_models.channel_id = ? AND channel_models.model_key = ? AND channel_models.enabled = ? AND model_channels.scope = ? AND model_channels.enabled = ? AND model_channels.deleted_at IS NULL",
+			channelID,
+			modelKey,
+			true,
+			model.ChannelScopeSystem,
+			true,
+		).
+		First(&item).Error; err != nil {
 		return nil, err
 	}
 	return &item, nil
@@ -106,6 +118,18 @@ func (r *Repository) SaveChannelModel(item *model.ChannelModel) error {
 
 func (r *Repository) DeleteChannelModel(channelID string, id string, modelsJSON string, now time.Time) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
+		// 系统渠道删除和任务准入都先锁父渠道，再锁子模型，避免 PostgreSQL 反序死锁。
+		var channel model.ModelChannel
+		query := taskAdmissionRow(tx).Select("id").Where("id = ? AND scope = ?", channelID, model.ChannelScopeSystem)
+		if err := query.First(&channel).Error; err != nil {
+			return err
+		}
+		var channelModel model.ChannelModel
+		query = taskAdmissionRow(tx).Select("id").Where("id = ? AND channel_id = ?", id, channelID)
+		if err := query.First(&channelModel).Error; err != nil {
+			return err
+		}
+
 		var activeReferences int64
 		if err := tx.Table("logical_model_routes AS route").
 			Joins("JOIN logical_models AS logical_model ON logical_model.active_revision_id = route.logical_model_revision_id").
@@ -211,6 +235,9 @@ func (r *Repository) CreditLedgerReferenceExists(referenceKey string) (bool, err
 
 func (r *Repository) CreateTaskWithCreditReservation(task *model.Task, order *model.BillingOrder, activeTaskLimit int, projectRequirement TaskProjectRequirement, resourceIDBatches ...[]string) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := lockUserTaskAdmission(tx, task.UserID); err != nil {
+			return err
+		}
 		if err := r.lockReadyResourceReferences(tx, task.UserID, optionalResourceIDs(resourceIDBatches)); err != nil {
 			return err
 		}
@@ -218,6 +245,9 @@ func (r *Repository) CreateTaskWithCreditReservation(task *model.Task, order *mo
 			return err
 		}
 		if err := r.requireActiveTaskProject(tx, task, projectRequirement); err != nil {
+			return err
+		}
+		if err := r.requireTaskSessionScope(tx, task); err != nil {
 			return err
 		}
 		if err := enforceActiveTaskLimit(tx, task.UserID, activeTaskLimit); err != nil {
@@ -232,6 +262,9 @@ func (r *Repository) CreateTaskWithCreditReservation(task *model.Task, order *mo
 
 func (r *Repository) CreateTaskWithActiveLimit(task *model.Task, activeTaskLimit int, projectRequirement TaskProjectRequirement, resourceIDBatches ...[]string) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := lockUserTaskAdmission(tx, task.UserID); err != nil {
+			return err
+		}
 		if err := r.lockReadyResourceReferences(tx, task.UserID, optionalResourceIDs(resourceIDBatches)); err != nil {
 			return err
 		}
@@ -239,6 +272,9 @@ func (r *Repository) CreateTaskWithActiveLimit(task *model.Task, activeTaskLimit
 			return err
 		}
 		if err := r.requireActiveTaskProject(tx, task, projectRequirement); err != nil {
+			return err
+		}
+		if err := r.requireTaskSessionScope(tx, task); err != nil {
 			return err
 		}
 		if err := enforceActiveTaskLimit(tx, task.UserID, activeTaskLimit); err != nil {
@@ -252,10 +288,22 @@ func (r *Repository) RetryTaskWithBilling(userID string, prepared *model.Task, o
 	var task model.Task
 	taskID := prepared.ID
 	err := r.db.Transaction(func(tx *gorm.DB) error {
+		if err := lockUserTaskAdmission(tx, userID); err != nil {
+			return err
+		}
+		if err := requireFinalizedRetryBillingOrder(tx, userID, taskID, prepared.BillingOrderID); err != nil {
+			return err
+		}
 		if err := r.lockReadyResourceReferences(tx, userID, optionalResourceIDs(resourceIDBatches)); err != nil {
 			return err
 		}
+		if err := r.requireRetryLogicalModelForTask(tx, prepared); err != nil {
+			return err
+		}
 		if err := r.requireActiveTaskProject(tx, prepared, projectRequirement); err != nil {
+			return err
+		}
+		if err := r.requireTaskSessionScope(tx, prepared); err != nil {
 			return err
 		}
 		if err := enforceActiveTaskLimit(tx, userID, activeTaskLimit); err != nil {
@@ -285,13 +333,16 @@ func (r *Repository) RetryTaskWithBilling(userID string, prepared *model.Task, o
 			updates["billing_order_id"] = ""
 		}
 		updated := tx.Model(&model.Task{}).
-			Where("id = ? AND user_id = ? AND status IN ?", taskID, userID, []model.TaskStatus{model.TaskStatusFailed, model.TaskStatusCancelled}).
+			Where("id = ? AND user_id = ? AND status IN ? AND billing_order_id = ? AND route_run = ?", taskID, userID, []model.TaskStatus{model.TaskStatusFailed, model.TaskStatusCancelled}, prepared.BillingOrderID, prepared.RouteRun).
 			Updates(updates)
 		if updated.Error != nil {
 			return updated.Error
 		}
 		if updated.RowsAffected != 1 {
 			return ErrTaskNotRetryable
+		}
+		if err := r.resetTaskSessionForRetry(tx, prepared); err != nil {
+			return err
 		}
 		if err := tx.Delete(&model.TaskTextDelta{}, "user_id = ? AND task_id = ?", userID, taskID).Error; err != nil {
 			return err
@@ -308,6 +359,34 @@ func enforceActiveTaskLimit(tx *gorm.DB, userID string, activeTaskLimit int) err
 	}
 	if count >= int64(activeTaskLimit) {
 		return ErrActiveTaskLimit
+	}
+	return nil
+}
+
+// PostgreSQL 多实例下先锁定用户行，再执行 active task 的 count-and-create。
+// SQLite 本地模式由单文件写事务串行化，不发送其不支持的 FOR UPDATE。
+func lockUserTaskAdmission(tx *gorm.DB, userID string) error {
+	if tx.Dialector.Name() != "postgres" {
+		return nil
+	}
+	var user model.User
+	return tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id").First(&user, "id = ?", userID).Error
+}
+
+func requireFinalizedRetryBillingOrder(tx *gorm.DB, userID string, taskID string, orderID string) error {
+	if strings.TrimSpace(orderID) == "" {
+		return nil
+	}
+	var order model.BillingOrder
+	query := tx.Select("id", "status").Where("id = ? AND user_id = ? AND task_id = ?", orderID, userID, taskID)
+	if tx.Dialector.Name() == "postgres" {
+		query = query.Clauses(clause.Locking{Strength: "UPDATE"})
+	}
+	if err := query.First(&order).Error; err != nil {
+		return err
+	}
+	if order.Status != model.BillingStatusSettled && order.Status != model.BillingStatusRefunded {
+		return ErrBillingRetryBlocked
 	}
 	return nil
 }
@@ -369,18 +448,18 @@ func (r *Repository) BillingOrder(id string) (*model.BillingOrder, error) {
 	return &order, nil
 }
 
-func (r *Repository) BillingOrdersByTaskIDs(userID string, taskIDs []string) (map[string]model.BillingOrder, error) {
-	result := make(map[string]model.BillingOrder, len(taskIDs))
-	if len(taskIDs) == 0 {
+func (r *Repository) BillingOrdersByIDs(userID string, orderIDs []string) (map[string]model.BillingOrder, error) {
+	result := make(map[string]model.BillingOrder, len(orderIDs))
+	if len(orderIDs) == 0 {
 		return result, nil
 	}
 	var orders []model.BillingOrder
-	if err := r.db.Where("user_id = ? AND task_id IN ?", userID, taskIDs).Find(&orders).Error; err != nil {
+	if err := r.db.Where("user_id = ? AND id IN ?", userID, orderIDs).Find(&orders).Error; err != nil {
 		return nil, err
 	}
 	for _, order := range orders {
-		if order.TaskID != "" {
-			result[order.TaskID] = order
+		if order.ID != "" {
+			result[order.ID] = order
 		}
 	}
 	return result, nil
@@ -415,10 +494,10 @@ func (r *Repository) AdminBillingOrders(status string, keyword string, limit int
 	return items, total, nil
 }
 
-func (r *Repository) TaskHasSuccessfulBillableCall(taskID string) (bool, error) {
+func (r *Repository) BillingOrderHasSuccessfulBillableCall(orderID string) (bool, error) {
 	var count int64
 	err := r.db.Model(&model.ApiCallLog{}).
-		Where("task_id = ? AND billable = ? AND status = ?", taskID, true, model.ApiCallStatusSucceeded).
+		Where("billing_order_id = ? AND billable = ? AND status = ?", orderID, true, model.ApiCallStatusSucceeded).
 		Count(&count).Error
 	return count > 0, err
 }
@@ -446,12 +525,6 @@ func billingUsage(db *gorm.DB, orderID string) (*BillingUsage, error) {
 		return nil, err
 	}
 	return &BillingUsage{InputTokens: log.InputTokens, OutputTokens: log.OutputTokens, CachedTokens: log.CachedTokens}, nil
-}
-
-func (r *Repository) RecordBillingResolution(id string, actorUserID string, note string) error {
-	return r.db.Model(&model.BillingOrder{}).Where("id = ?", id).Updates(map[string]any{
-		"resolved_by": actorUserID, "resolution_note": note, "updated_at": time.Now(),
-	}).Error
 }
 
 func (r *Repository) UpdateBillingProviderRequestID(id string, providerRequestID string) error {
@@ -482,6 +555,9 @@ func (r *Repository) MarkBillingRunning(id string) error {
 		return result.Error
 	}
 	if result.RowsAffected != 1 {
+		if err := r.db.Select("status").First(&order, "id = ?", id).Error; err == nil && order.Status == model.BillingStatusRunning {
+			return nil
+		}
 		return ErrBillingStateConflict
 	}
 	return nil
@@ -489,90 +565,86 @@ func (r *Repository) MarkBillingRunning(id string) error {
 
 func (r *Repository) MarkBillingUncertain(id string, errorText string) error {
 	// uncertain 保留冻结积分，直到人工核对；这里故意不自动结算或退款。
-	return r.db.Model(&model.BillingOrder{}).
+	var order model.BillingOrder
+	if err := r.db.Select("id", "status").First(&order, "id = ?", id).Error; err != nil {
+		return err
+	}
+	if order.Status == model.BillingStatusUncertain {
+		return nil
+	}
+	result := r.db.Model(&model.BillingOrder{}).
 		Where("id = ? AND status IN ?", id, []model.BillingStatus{model.BillingStatusReserved, model.BillingStatusRunning}).
-		Updates(map[string]any{"status": model.BillingStatusUncertain, "error": errorText, "updated_at": time.Now()}).Error
+		Updates(map[string]any{"status": model.BillingStatusUncertain, "error": errorText, "updated_at": time.Now()})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		if err := r.db.Select("status").First(&order, "id = ?", id).Error; err == nil && order.Status == model.BillingStatusUncertain {
+			return nil
+		}
+		return ErrBillingStateConflict
+	}
+	return nil
 }
 
 func (r *Repository) SettleBillingOrder(id string, providerRequestID string) error {
-	return r.db.Transaction(func(tx *gorm.DB) error {
-		var order model.BillingOrder
-		if err := tx.First(&order, "id = ?", id).Error; err != nil {
+	err := r.db.Transaction(func(tx *gorm.DB) error {
+		return settleBillingOrder(tx, id, providerRequestID)
+	})
+	if errors.Is(err, ErrBillingStateConflict) {
+		if order, readErr := r.BillingOrder(id); readErr == nil && order.Status == model.BillingStatusSettled {
+			return nil
+		}
+	}
+	return err
+}
+
+func settleBillingOrder(tx *gorm.DB, id string, providerRequestID string) error {
+	order, err := billingOrderForUpdate(tx, id)
+	if err != nil {
+		return err
+	}
+	if order.Status == model.BillingStatusSettled {
+		return nil
+	}
+	if order.Status == model.BillingStatusRefunded {
+		return errors.New("billing order already refunded")
+	}
+	if order.BillingMode == "token" {
+		usage, err := billingUsage(tx, id)
+		if err != nil {
 			return err
 		}
-		if order.Status == model.BillingStatusSettled {
-			return nil
+		reserved := order.ReservedAmountMicrocredits
+		if reserved <= 0 {
+			reserved = order.AmountMicrocredits
 		}
-		if order.Status == model.BillingStatusRefunded {
-			return errors.New("billing order already refunded")
+		actual, err := tokenUsageAmount(*order, usage)
+		if err != nil {
+			return err
 		}
-		if order.BillingMode == "token" {
-			usage, err := billingUsage(tx, id)
-			if err != nil {
-				return err
-			}
-			reserved := order.ReservedAmountMicrocredits
-			if reserved <= 0 {
-				reserved = order.AmountMicrocredits
-			}
-			actual, err := tokenUsageAmount(order, usage)
-			if err != nil {
-				return err
-			}
-			if actual > reserved {
-				return ErrBillingUnderreserved
-			}
-			refund := reserved - actual
-			updated := tx.Model(&model.CreditAccount{}).
-				Where("user_id = ? AND reserved_microcredits >= ?", order.UserID, reserved).
-				Updates(map[string]any{
-					"available_microcredits": gorm.Expr("available_microcredits + ?", refund),
-					"reserved_microcredits":  gorm.Expr("reserved_microcredits - ?", reserved),
-					"version":                gorm.Expr("version + 1"), "updated_at": time.Now(),
-				})
-			if updated.Error != nil {
-				return updated.Error
-			}
-			if updated.RowsAffected != 1 {
-				return errors.New("reserved credit balance is inconsistent")
-			}
-			var account model.CreditAccount
-			if err := tx.First(&account, "user_id = ?", order.UserID).Error; err != nil {
-				return err
-			}
-			now := time.Now()
-			updates := map[string]any{"status": model.BillingStatusSettled, "settled_at": &now, "updated_at": now,
-				"actual_amount_microcredits": actual, "refunded_amount_microcredits": refund,
-				"input_tokens": usage.InputTokens, "output_tokens": usage.OutputTokens, "cached_tokens": usage.CachedTokens,
-				"usage_available": true}
-			if providerRequestID != "" {
-				updates["provider_request_id"] = providerRequestID
-			}
-			if err := tx.Model(&order).Updates(updates).Error; err != nil {
-				return err
-			}
-			if err := tx.Create(&model.CreditLedgerEntry{ID: newRepositoryID(), UserID: order.UserID, Type: model.CreditLedgerConsume,
-				AmountMicrocredits: -actual, ReservedDeltaMicrocredits: -reserved,
-				AvailableAfterMicrocredits: account.AvailableMicrocredits, ReservedAfterMicrocredits: account.ReservedMicrocredits,
-				BillingOrderID: order.ID, Model: order.Model, ChannelID: order.ChannelID, Scene: order.Scene}).Error; err != nil {
-				return err
-			}
-			if refund > 0 {
-				if err := tx.Create(&model.CreditLedgerEntry{ID: newRepositoryID(), UserID: order.UserID, Type: model.CreditLedgerRefund,
-					AmountMicrocredits: refund, AvailableDeltaMicrocredits: refund,
-					AvailableAfterMicrocredits: account.AvailableMicrocredits, ReservedAfterMicrocredits: account.ReservedMicrocredits,
-					BillingOrderID: order.ID, Model: order.Model, ChannelID: order.ChannelID, Scene: order.Scene, Note: "Token 预授权差额退回"}).Error; err != nil {
-					return err
-				}
-			}
-			return nil
+		if actual > reserved {
+			return ErrBillingUnderreserved
+		}
+		refund := reserved - actual
+		now := time.Now()
+		updates := map[string]any{"status": model.BillingStatusSettled, "settled_at": &now, "updated_at": now,
+			"actual_amount_microcredits": actual, "refunded_amount_microcredits": refund,
+			"input_tokens": usage.InputTokens, "output_tokens": usage.OutputTokens, "cached_tokens": usage.CachedTokens,
+			"usage_available": true}
+		if providerRequestID != "" {
+			updates["provider_request_id"] = providerRequestID
+		}
+		// 先抢占账单终态，再变更余额；并发事务只有一个能继续记账。
+		if err := transitionBillingOrder(tx, id, order.Status, updates); err != nil {
+			return err
 		}
 		updated := tx.Model(&model.CreditAccount{}).
-			Where("user_id = ? AND reserved_microcredits >= ?", order.UserID, order.AmountMicrocredits).
+			Where("user_id = ? AND reserved_microcredits >= ?", order.UserID, reserved).
 			Updates(map[string]any{
-				"reserved_microcredits": gorm.Expr("reserved_microcredits - ?", order.AmountMicrocredits),
-				"version":               gorm.Expr("version + 1"),
-				"updated_at":            time.Now(),
+				"available_microcredits": gorm.Expr("available_microcredits + ?", refund),
+				"reserved_microcredits":  gorm.Expr("reserved_microcredits - ?", reserved),
+				"version":                gorm.Expr("version + 1"), "updated_at": time.Now(),
 			})
 		if updated.Error != nil {
 			return updated.Error
@@ -584,81 +656,202 @@ func (r *Repository) SettleBillingOrder(id string, providerRequestID string) err
 		if err := tx.First(&account, "user_id = ?", order.UserID).Error; err != nil {
 			return err
 		}
-		now := time.Now()
-		orderUpdates := map[string]any{"status": model.BillingStatusSettled, "actual_amount_microcredits": order.AmountMicrocredits, "settled_at": &now, "updated_at": now}
-		if providerRequestID != "" {
-			orderUpdates["provider_request_id"] = providerRequestID
-		}
-		if err := tx.Model(&order).Updates(orderUpdates).Error; err != nil {
+		if err := tx.Create(&model.CreditLedgerEntry{ID: newRepositoryID(), UserID: order.UserID, Type: model.CreditLedgerConsume,
+			AmountMicrocredits: -actual, ReservedDeltaMicrocredits: -reserved,
+			AvailableAfterMicrocredits: account.AvailableMicrocredits, ReservedAfterMicrocredits: account.ReservedMicrocredits,
+			BillingOrderID: order.ID, Model: order.Model, ChannelID: order.ChannelID, Scene: order.Scene,
+			ReferenceKey: billingLedgerReference(order.ID, "consume")}).Error; err != nil {
 			return err
 		}
-		return tx.Create(&model.CreditLedgerEntry{
-			ID:                         newRepositoryID(),
-			UserID:                     order.UserID,
-			Type:                       model.CreditLedgerConsume,
-			AmountMicrocredits:         -order.AmountMicrocredits,
-			ReservedDeltaMicrocredits:  -order.AmountMicrocredits,
-			AvailableAfterMicrocredits: account.AvailableMicrocredits,
-			ReservedAfterMicrocredits:  account.ReservedMicrocredits,
-			BillingOrderID:             order.ID,
-			Model:                      order.Model,
-			ChannelID:                  order.ChannelID,
-			Scene:                      order.Scene,
-		}).Error
-	})
+		if refund > 0 {
+			if err := tx.Create(&model.CreditLedgerEntry{ID: newRepositoryID(), UserID: order.UserID, Type: model.CreditLedgerRefund,
+				AmountMicrocredits: refund, AvailableDeltaMicrocredits: refund,
+				AvailableAfterMicrocredits: account.AvailableMicrocredits, ReservedAfterMicrocredits: account.ReservedMicrocredits,
+				BillingOrderID: order.ID, Model: order.Model, ChannelID: order.ChannelID, Scene: order.Scene, Note: "Token 预授权差额退回",
+				ReferenceKey: billingLedgerReference(order.ID, "refund")}).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	now := time.Now()
+	orderUpdates := map[string]any{"status": model.BillingStatusSettled, "actual_amount_microcredits": order.AmountMicrocredits, "settled_at": &now, "updated_at": now}
+	if providerRequestID != "" {
+		orderUpdates["provider_request_id"] = providerRequestID
+	}
+	// 固定价账单同样先以状态 CAS 取得唯一结算权。
+	if err := transitionBillingOrder(tx, id, order.Status, orderUpdates); err != nil {
+		return err
+	}
+	updated := tx.Model(&model.CreditAccount{}).
+		Where("user_id = ? AND reserved_microcredits >= ?", order.UserID, order.AmountMicrocredits).
+		Updates(map[string]any{
+			"reserved_microcredits": gorm.Expr("reserved_microcredits - ?", order.AmountMicrocredits),
+			"version":               gorm.Expr("version + 1"),
+			"updated_at":            time.Now(),
+		})
+	if updated.Error != nil {
+		return updated.Error
+	}
+	if updated.RowsAffected != 1 {
+		return errors.New("reserved credit balance is inconsistent")
+	}
+	var account model.CreditAccount
+	if err := tx.First(&account, "user_id = ?", order.UserID).Error; err != nil {
+		return err
+	}
+	return tx.Create(&model.CreditLedgerEntry{
+		ID:                         newRepositoryID(),
+		UserID:                     order.UserID,
+		Type:                       model.CreditLedgerConsume,
+		AmountMicrocredits:         -order.AmountMicrocredits,
+		ReservedDeltaMicrocredits:  -order.AmountMicrocredits,
+		AvailableAfterMicrocredits: account.AvailableMicrocredits,
+		ReservedAfterMicrocredits:  account.ReservedMicrocredits,
+		BillingOrderID:             order.ID,
+		Model:                      order.Model,
+		ChannelID:                  order.ChannelID,
+		Scene:                      order.Scene,
+		ReferenceKey:               billingLedgerReference(order.ID, "consume"),
+	}).Error
 }
 
 func (r *Repository) RefundBillingOrder(id string, errorText string) error {
-	return r.db.Transaction(func(tx *gorm.DB) error {
-		var order model.BillingOrder
-		if err := tx.First(&order, "id = ?", id).Error; err != nil {
-			return err
-		}
-		if order.Status == model.BillingStatusRefunded {
+	err := r.db.Transaction(func(tx *gorm.DB) error {
+		return refundBillingOrder(tx, id, errorText)
+	})
+	if errors.Is(err, ErrBillingStateConflict) {
+		if order, readErr := r.BillingOrder(id); readErr == nil && order.Status == model.BillingStatusRefunded {
 			return nil
 		}
-		if order.Status == model.BillingStatusSettled {
-			return errors.New("settled billing order requires a manual refund")
+	}
+	return err
+}
+
+func refundBillingOrder(tx *gorm.DB, id string, errorText string) error {
+	order, err := billingOrderForUpdate(tx, id)
+	if err != nil {
+		return err
+	}
+	if order.Status == model.BillingStatusRefunded {
+		return nil
+	}
+	if order.Status == model.BillingStatusSettled {
+		return errors.New("settled billing order requires a manual refund")
+	}
+	reserved := order.ReservedAmountMicrocredits
+	if reserved <= 0 {
+		reserved = order.AmountMicrocredits
+	}
+	now := time.Now()
+	updates := map[string]any{"status": model.BillingStatusRefunded, "error": errorText, "refunded_amount_microcredits": reserved, "refunded_at": &now, "updated_at": now}
+	// 退款也先抢占终态，避免同一冻结额被多个事务重复释放。
+	if err := transitionBillingOrder(tx, id, order.Status, updates); err != nil {
+		return err
+	}
+	updated := tx.Model(&model.CreditAccount{}).
+		Where("user_id = ? AND reserved_microcredits >= ?", order.UserID, reserved).
+		Updates(map[string]any{
+			"available_microcredits": gorm.Expr("available_microcredits + ?", reserved),
+			"reserved_microcredits":  gorm.Expr("reserved_microcredits - ?", reserved),
+			"version":                gorm.Expr("version + 1"),
+			"updated_at":             time.Now(),
+		})
+	if updated.Error != nil {
+		return updated.Error
+	}
+	if updated.RowsAffected != 1 {
+		return errors.New("reserved credit balance is inconsistent")
+	}
+	var account model.CreditAccount
+	if err := tx.First(&account, "user_id = ?", order.UserID).Error; err != nil {
+		return err
+	}
+	return tx.Create(&model.CreditLedgerEntry{
+		ID:                         newRepositoryID(),
+		UserID:                     order.UserID,
+		Type:                       model.CreditLedgerRefund,
+		AmountMicrocredits:         reserved,
+		AvailableDeltaMicrocredits: reserved,
+		ReservedDeltaMicrocredits:  -reserved,
+		AvailableAfterMicrocredits: account.AvailableMicrocredits,
+		ReservedAfterMicrocredits:  account.ReservedMicrocredits,
+		BillingOrderID:             order.ID,
+		Model:                      order.Model,
+		ChannelID:                  order.ChannelID,
+		Scene:                      order.Scene,
+		Note:                       errorText,
+		ReferenceKey:               billingLedgerReference(order.ID, "refund"),
+	}).Error
+}
+
+// ResolveBillingOrder 把人工资金处理、核对人和审计事件收进同一事务。
+// 任一步失败都会回滚余额和账单终态，避免管理员看到“处理失败”但资金已经变化。
+func (r *Repository) ResolveBillingOrder(id string, action string, actorUserID string, note string, providerRequestID string, audit *model.AdminAuditEvent) error {
+	if audit == nil {
+		return errors.New("billing resolution audit is required")
+	}
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		order, err := billingOrderForUpdate(tx, id)
+		if err != nil {
+			return err
 		}
-		updated := tx.Model(&model.CreditAccount{}).
-			Where("user_id = ? AND reserved_microcredits >= ?", order.UserID, order.AmountMicrocredits).
-			Updates(map[string]any{
-				"available_microcredits": gorm.Expr("available_microcredits + ?", order.AmountMicrocredits),
-				"reserved_microcredits":  gorm.Expr("reserved_microcredits - ?", order.AmountMicrocredits),
-				"version":                gorm.Expr("version + 1"),
-				"updated_at":             time.Now(),
-			})
+		if order.Status != model.BillingStatusReserved && order.Status != model.BillingStatusRunning && order.Status != model.BillingStatusUncertain {
+			return ErrBillingStateConflict
+		}
+		terminalStatus := model.BillingStatusSettled
+		switch action {
+		case "settle":
+			if err := settleBillingOrder(tx, id, providerRequestID); err != nil {
+				return err
+			}
+		case "refund":
+			terminalStatus = model.BillingStatusRefunded
+			if err := refundBillingOrder(tx, id, note); err != nil {
+				return err
+			}
+		default:
+			return errors.New("invalid billing resolution action")
+		}
+		updated := tx.Model(&model.BillingOrder{}).
+			Where("id = ? AND status = ? AND resolved_by = ''", id, terminalStatus).
+			Updates(map[string]any{"resolved_by": actorUserID, "resolution_note": note, "updated_at": time.Now()})
 		if updated.Error != nil {
 			return updated.Error
 		}
 		if updated.RowsAffected != 1 {
-			return errors.New("reserved credit balance is inconsistent")
+			return ErrBillingStateConflict
 		}
-		var account model.CreditAccount
-		if err := tx.First(&account, "user_id = ?", order.UserID).Error; err != nil {
-			return err
-		}
-		now := time.Now()
-		updates := map[string]any{"status": model.BillingStatusRefunded, "error": errorText, "refunded_amount_microcredits": order.AmountMicrocredits, "refunded_at": &now, "updated_at": now}
-		if err := tx.Model(&order).Updates(updates).Error; err != nil {
-			return err
-		}
-		return tx.Create(&model.CreditLedgerEntry{
-			ID:                         newRepositoryID(),
-			UserID:                     order.UserID,
-			Type:                       model.CreditLedgerRefund,
-			AmountMicrocredits:         order.AmountMicrocredits,
-			AvailableDeltaMicrocredits: order.AmountMicrocredits,
-			ReservedDeltaMicrocredits:  -order.AmountMicrocredits,
-			AvailableAfterMicrocredits: account.AvailableMicrocredits,
-			ReservedAfterMicrocredits:  account.ReservedMicrocredits,
-			BillingOrderID:             order.ID,
-			Model:                      order.Model,
-			ChannelID:                  order.ChannelID,
-			Scene:                      order.Scene,
-			Note:                       errorText,
-		}).Error
+		return tx.Create(audit).Error
 	})
+}
+
+func billingOrderForUpdate(tx *gorm.DB, id string) (*model.BillingOrder, error) {
+	var order model.BillingOrder
+	query := tx.Where("id = ?", id)
+	if tx.Dialector.Name() == "postgres" {
+		query = query.Clauses(clause.Locking{Strength: "UPDATE"})
+	}
+	if err := query.First(&order).Error; err != nil {
+		return nil, err
+	}
+	return &order, nil
+}
+
+func transitionBillingOrder(tx *gorm.DB, id string, expected model.BillingStatus, updates map[string]any) error {
+	result := tx.Model(&model.BillingOrder{}).Where("id = ? AND status = ?", id, expected).Updates(updates)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return ErrBillingStateConflict
+	}
+	return nil
+}
+
+func billingLedgerReference(orderID string, phase string) *string {
+	value := "billing:" + orderID + ":" + phase
+	return &value
 }
 
 func tokenUsageAmount(order model.BillingOrder, usage *BillingUsage) (int64, error) {

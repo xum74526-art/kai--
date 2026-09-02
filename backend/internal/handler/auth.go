@@ -740,6 +740,20 @@ func proxySystemRequest(c *gin.Context, svc *service.Service, user *model.User, 
 			}
 			protocol = model.ChannelInterfaceMiniMaxVideo
 			capability = "video"
+			providerRequestID, valid := systemMiniMaxProviderRequestID(path)
+			if !valid {
+				fail(c, http.StatusBadRequest, errors.New("上游视频任务 ID 无效"))
+				return
+			}
+			owned, ownershipErr := svc.SystemProviderRequestOwned(user.ID, channel.ID, providerRequestID)
+			if ownershipErr != nil {
+				failService(c, ownershipErr)
+				return
+			}
+			if !owned {
+				fail(c, http.StatusForbidden, errors.New("上游视频任务不存在或无权访问"))
+				return
+			}
 		} else {
 			var modelErr error
 			channelModel, modelErr = svc.SystemChannelModel(channel.ID, modelName)
@@ -950,6 +964,9 @@ func apiCallLog(user *model.User, channel *model.ModelChannel, billingOrderID st
 func logSystemProxyCall(svc *service.Service, log model.ApiCallLog, responseBody []byte) error {
 	log.ResponseBody = service.SanitizeAPICallPayload(responseBody, "")
 	svc.EnrichAPICallLog(&log, responseBody)
+	if err := svc.RememberSystemProviderRequestOwnership(log); err != nil {
+		return err
+	}
 	return svc.LogAPICall(log)
 }
 

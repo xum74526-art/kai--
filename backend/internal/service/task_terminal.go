@@ -26,7 +26,7 @@ type taskTerminalCoordinator struct {
 
 type taskTerminalRepository interface {
 	Task(id string) (*model.Task, error)
-	UpdateTaskTerminalState(id string, expected model.TaskStatus, status model.TaskStatus, stage string, errorText string, completedAt time.Time) (bool, error)
+	UpdateTaskTerminalState(id string, expected model.TaskStatus, expectedOwner string, expectedAttempts int, status model.TaskStatus, stage string, errorText string, completedAt time.Time) (bool, error)
 }
 
 type taskBillingLifecycle interface {
@@ -222,8 +222,12 @@ func (c *taskTerminalCoordinator) handleSuccess(task *model.Task) error {
 func (c *taskTerminalCoordinator) markTerminalState(task *model.Task) error {
 	completedAt := time.Now()
 	task.CompletedAt = &completedAt
-	if _, err := c.repo.UpdateTaskTerminalState(task.ID, model.TaskStatusRunning, task.Status, task.Stage, task.Error, completedAt); err != nil {
+	updated, err := c.repo.UpdateTaskTerminalState(task.ID, model.TaskStatusRunning, task.LeaseOwner, task.Attempts, task.Status, task.Stage, task.Error, completedAt)
+	if err != nil {
 		return fmt.Errorf("写入任务终态失败：%w", err)
+	}
+	if !updated {
+		return fmt.Errorf("写入任务终态失败：%w", repository.ErrTaskStateConflict)
 	}
 	return nil
 }

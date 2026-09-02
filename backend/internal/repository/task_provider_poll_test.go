@@ -20,13 +20,13 @@ func TestDeferredProviderPollKeepsOriginalTaskIdentityWithoutImmediateReclaim(t 
 	}
 	task := model.Task{
 		ID: "task-1", UserID: "user-1", Type: "canvas_video", Status: model.TaskStatusRunning,
-		LeaseOwner: "worker-1", LeaseExpiresAt: ptrTime(time.Now().Add(time.Minute)), ProviderRequestID: "provider-task-1",
+		LeaseOwner: "worker-1", LeaseExpiresAt: ptrTime(time.Now().Add(time.Minute)), Attempts: 1, ProviderRequestID: "provider-task-1",
 	}
 	if err := db.Create(&task).Error; err != nil {
 		t.Fatal(err)
 	}
 	repo := New(db)
-	if err := repo.DeferRunningTaskForProviderPoll(task.ID, task.LeaseOwner, "后台仍在生成", time.Minute); err != nil {
+	if err := repo.DeferRunningTaskForProviderPoll(task.ID, task.LeaseOwner, task.Attempts, "后台仍在生成", time.Minute); err != nil {
 		t.Fatal(err)
 	}
 	claimed, err := repo.ClaimNextTask("worker-2", 45*time.Second)

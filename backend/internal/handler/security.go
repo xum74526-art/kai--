@@ -41,6 +41,19 @@ var (
 	}
 )
 
+func systemMiniMaxProviderRequestID(requestPath string) (string, bool) {
+	const prefix = "/v2/query/video_generation/"
+	if !systemMiniMaxTaskPath.MatchString(requestPath) || !strings.HasPrefix(requestPath, prefix) {
+		return "", false
+	}
+	value, err := url.PathUnescape(strings.TrimPrefix(requestPath, prefix))
+	value = strings.TrimSpace(value)
+	if err != nil || value == "" || len(value) > 160 || strings.Contains(value, "/") || value == "." || value == ".." {
+		return "", false
+	}
+	return value, true
+}
+
 func ConfigureRuntime(svc *service.Service) {
 	runtimeService = svc
 }

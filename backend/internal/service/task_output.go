@@ -23,6 +23,8 @@ type TaskSummary struct {
 	Provider                  string                     `json:"provider,omitempty"`
 	Model                     string                     `json:"model,omitempty"`
 	ProviderRequestID         string                     `json:"providerRequestId,omitempty"`
+	PollStage                 string                     `json:"pollStage,omitempty"`
+	NextPollAt                *time.Time                 `json:"nextPollAt,omitempty"`
 	ProviderCancelStatus      model.ProviderCancelStatus `json:"providerCancelStatus,omitempty"`
 	ProviderCancelError       string                     `json:"providerCancelError,omitempty"`
 	ProviderCancelAttempts    int                        `json:"providerCancelAttempts,omitempty"`
@@ -60,7 +62,7 @@ func taskSummariesForOutputWithBilling(tasks []model.Task, orders map[string]mod
 	result := make([]TaskSummary, 0, len(tasks))
 	for _, task := range tasks {
 		summary := taskSummaryForOutput(task)
-		if order, ok := orders[task.ID]; ok {
+		if order, ok := orders[task.BillingOrderID]; ok {
 			summary.Billing = &TaskBillingSummary{AmountMicrocredits: order.AmountMicrocredits, Status: order.Status}
 			if summary.ProviderRequestID == "" {
 				summary.ProviderRequestID = order.ProviderRequestID
@@ -71,18 +73,18 @@ func taskSummariesForOutputWithBilling(tasks []model.Task, orders map[string]mod
 	return result
 }
 
-func taskBillingTaskIDs(tasks []model.Task) []string {
+func taskBillingOrderIDs(tasks []model.Task) []string {
 	ids := make([]string, 0, len(tasks))
 	seen := map[string]struct{}{}
 	for _, task := range tasks {
 		if task.BillingOrderID == "" {
 			continue
 		}
-		if _, ok := seen[task.ID]; ok {
+		if _, ok := seen[task.BillingOrderID]; ok {
 			continue
 		}
-		seen[task.ID] = struct{}{}
-		ids = append(ids, task.ID)
+		seen[task.BillingOrderID] = struct{}{}
+		ids = append(ids, task.BillingOrderID)
 	}
 	return ids
 }
@@ -106,6 +108,8 @@ func taskSummaryForOutput(task model.Task) TaskSummary {
 		Provider:                  task.Provider,
 		Model:                     task.Model,
 		ProviderRequestID:         task.ProviderRequestID,
+		PollStage:                 task.PollStage,
+		NextPollAt:                task.NextPollAt,
 		ProviderCancelStatus:      task.ProviderCancelStatus,
 		ProviderCancelError:       task.ProviderCancelError,
 		ProviderCancelAttempts:    task.ProviderCancelAttempts,

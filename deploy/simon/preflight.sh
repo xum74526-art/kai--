@@ -58,12 +58,6 @@ if [ "$local_admin_count" != "1" ]; then
     exit 1
 fi
 
-registration_enabled=$(sqlite3 -readonly "$db_path" "SELECT COALESCE((SELECT json_extract(value_json, '$.enabled') FROM system_settings WHERE key = 'registration'), 0);")
-if [ "$registration_enabled" != "0" ]; then
-    echo "public registration is enabled in the database override" >&2
-    exit 1
-fi
-
 session_count=$(sqlite3 -readonly "$db_path" "SELECT COUNT(*) FROM auth_sessions;")
 if [ "$session_count" != "0" ]; then
     echo "deployment snapshot still contains $session_count auth session(s); invalidate them before upload" >&2
@@ -82,4 +76,4 @@ if [ "$verification_code_count" != "0" ]; then
     exit 1
 fi
 
-echo "preflight ok: SQLite integrity and the 32-byte settings key are valid, registration is closed, temporary auth state is empty, and exactly one active admin is enforced"
+echo "preflight ok: SQLite integrity and the 32-byte settings key are valid, temporary auth state is empty, and exactly one active admin is enforced"

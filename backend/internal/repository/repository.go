@@ -376,6 +376,8 @@ func (r *Repository) ClaimNextTask(owner string, leaseDuration time.Duration) (*
 	var task model.Task
 	now := time.Now()
 	leaseExpiresAt := now.Add(leaseDuration)
+	// 每次领取都使用独立 token；同一进程重新领取时，旧执行协程不能复用进程级 worker ID 写回。
+	leaseOwner := owner + ":" + newRepositoryID()
 	err := r.db.Transaction(func(tx *gorm.DB) error {
 		query := tx.Where("(status = ? OR (status = ? AND (lease_expires_at IS NULL OR lease_expires_at <= ?))) AND (next_poll_at IS NULL OR next_poll_at <= ?)", model.TaskStatusQueued, model.TaskStatusRunning, now, now).
 			Order("created_at asc").Limit(1)
@@ -401,7 +403,7 @@ func (r *Repository) ClaimNextTask(owner string, leaseDuration time.Duration) (*
 				"progress":         15,
 				"attempts":         gorm.Expr("attempts + ?", 1),
 				"started_at":       gorm.Expr("COALESCE(started_at, ?)", now),
-				"lease_owner":      owner,
+				"lease_owner":      leaseOwner,
 				"lease_expires_at": leaseExpiresAt,
 				"next_poll_at":     nil,
 				"updated_at":       now,
@@ -421,15 +423,16 @@ func (r *Repository) ClaimNextTask(owner string, leaseDuration time.Duration) (*
 	return &task, nil
 }
 
-func (r *Repository) RenewTaskLease(id string, owner string, leaseDuration time.Duration) error {
+func (r *Repository) RenewTaskLease(id string, owner string, attempts int, leaseDuration time.Duration) error {
+	now := time.Now()
 	result := r.db.Model(&model.Task{}).
-		Where("id = ? AND status = ? AND lease_owner = ?", id, model.TaskStatusRunning, owner).
-		Updates(map[string]any{"lease_expires_at": time.Now().Add(leaseDuration), "updated_at": time.Now()})
+		Where("id = ? AND status = ? AND lease_owner = ? AND attempts = ? AND lease_expires_at IS NOT NULL AND lease_expires_at > ?", id, model.TaskStatusRunning, owner, attempts, now).
+		Updates(map[string]any{"lease_expires_at": now.Add(leaseDuration), "updated_at": now})
 	if result.Error != nil {
 		return result.Error
 	}
 	if result.RowsAffected != 1 {
-		return errors.New("任务租约已失效")
+		return ErrTaskStateConflict
 	}
 	return nil
 }
@@ -442,10 +445,30 @@ func (r *Repository) UpdateTaskProviderState(id string, providerRequestID string
 	return r.db.Model(&model.Task{}).Where("id = ?", id).Updates(updates).Error
 }
 
-func (r *Repository) DeferRunningTaskForProviderPoll(id string, owner string, stage string, delay time.Duration) error {
+// UpdateTaskProviderStateWithLease 只允许当前领取者补齐可恢复的上游任务状态，
+// 防止旧 worker 在租约换手后把过期的 providerRequestID 写回新执行。
+func (r *Repository) UpdateTaskProviderStateWithLease(id string, owner string, attempts int, providerRequestID string, pollStage string, nextPollAt *time.Time) error {
+	now := time.Now()
+	updates := map[string]any{"poll_stage": pollStage, "next_poll_at": nextPollAt, "updated_at": now}
+	if strings.TrimSpace(providerRequestID) != "" {
+		updates["provider_request_id"] = strings.TrimSpace(providerRequestID)
+	}
+	result := r.db.Model(&model.Task{}).
+		Where("id = ? AND status = ? AND lease_owner = ? AND attempts = ? AND lease_expires_at IS NOT NULL AND lease_expires_at > ?", id, model.TaskStatusRunning, owner, attempts, now).
+		Updates(updates)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return ErrTaskStateConflict
+	}
+	return nil
+}
+
+func (r *Repository) DeferRunningTaskForProviderPoll(id string, owner string, attempts int, stage string, delay time.Duration) error {
 	now := time.Now()
 	result := r.db.Model(&model.Task{}).
-		Where("id = ? AND status = ? AND lease_owner = ?", id, model.TaskStatusRunning, owner).
+		Where("id = ? AND status = ? AND lease_owner = ? AND attempts = ? AND lease_expires_at IS NOT NULL AND lease_expires_at > ?", id, model.TaskStatusRunning, owner, attempts, now).
 		Updates(map[string]any{
 			"stage": stage, "error": "", "completed_at": nil, "next_poll_at": now.Add(delay),
 			"lease_owner": "", "lease_expires_at": nil, "updated_at": now,
@@ -489,25 +512,71 @@ func (r *Repository) ReleaseTaskProviderRecovery(id string, owner string) error 
 		Updates(map[string]any{"lease_owner": "", "lease_expires_at": nil, "updated_at": time.Now()}).Error
 }
 
-func (r *Repository) UpdateTaskProgress(id string, stage string, progress int) error {
-	return r.db.Model(&model.Task{}).Where("id = ? AND status = ?", id, model.TaskStatusRunning).Updates(map[string]any{
-		"stage": stage, "progress": progress, "updated_at": time.Now(),
-	}).Error
+func (r *Repository) AssertTaskLease(id string, owner string, attempts int) error {
+	var count int64
+	now := time.Now()
+	if err := r.db.Model(&model.Task{}).
+		Where("id = ? AND status = ? AND lease_owner = ? AND attempts = ? AND lease_expires_at IS NOT NULL AND lease_expires_at > ?", id, model.TaskStatusRunning, owner, attempts, now).
+		Count(&count).Error; err != nil {
+		return err
+	}
+	if count != 1 {
+		return ErrTaskStateConflict
+	}
+	return nil
+}
+
+func (r *Repository) UpdateTaskProgress(id string, owner string, attempts int, stage string, progress int) error {
+	now := time.Now()
+	result := r.db.Model(&model.Task{}).
+		Where("id = ? AND status = ? AND lease_owner = ? AND attempts = ? AND lease_expires_at IS NOT NULL AND lease_expires_at > ?", id, model.TaskStatusRunning, owner, attempts, now).
+		Updates(map[string]any{
+			"stage": stage, "progress": progress, "updated_at": now,
+		})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return ErrTaskStateConflict
+	}
+	return nil
 }
 
 func (r *Repository) SaveTaskCompletion(task *model.Task, expected model.TaskStatus, session *model.Session, message *model.Message, results []model.Result, resourceIDBatches ...[]string) error {
-	return r.db.Transaction(func(tx *gorm.DB) error {
-		if err := r.lockReadyResourceReferences(tx, task.UserID, optionalResourceIDs(resourceIDBatches)); err != nil {
+	expectedLeaseOwner := task.LeaseOwner
+	expectedAttempts := task.Attempts
+	err := r.db.Transaction(func(tx *gorm.DB) error {
+		stagedResourceIDs, err := r.lockTaskCompletionResourceReferences(tx, task.UserID, task.ID, expectedLeaseOwner, optionalResourceIDs(resourceIDBatches))
+		if err != nil {
 			return err
 		}
+		now := time.Now()
+		completed := *task
+		completed.LeaseOwner = ""
+		completed.LeaseExpiresAt = nil
 		updated := tx.Model(&model.Task{}).
-			Where("id = ? AND status = ?", task.ID, expected).
-			Select("*").Omit("id", "created_at").Updates(task)
+			Where("id = ? AND status = ? AND lease_owner = ? AND attempts = ? AND lease_expires_at IS NOT NULL AND lease_expires_at > ?", task.ID, expected, expectedLeaseOwner, expectedAttempts, now).
+			Select("*").Omit("id", "created_at").Updates(&completed)
 		if updated.Error != nil {
 			return updated.Error
 		}
 		if updated.RowsAffected != 1 {
 			return ErrTaskStateConflict
+		}
+		if len(stagedResourceIDs) > 0 {
+			promoted := tx.Model(&model.Resource{}).
+				Where("id IN ? AND user_id = ? AND status = ? AND producer_task_id = ? AND producer_lease_owner = ?", stagedResourceIDs, task.UserID, model.ResourceStatusPending, task.ID, expectedLeaseOwner).
+				Updates(map[string]any{
+					"status":               model.ResourceStatusReady,
+					"producer_lease_owner": "",
+					"updated_at":           now,
+				})
+			if promoted.Error != nil {
+				return promoted.Error
+			}
+			if promoted.RowsAffected != int64(len(stagedResourceIDs)) {
+				return ErrResourceReferenceUnavailable
+			}
 		}
 		if session != nil {
 			if err := tx.Save(session).Error; err != nil {
@@ -526,14 +595,20 @@ func (r *Repository) SaveTaskCompletion(task *model.Task, expected model.TaskSta
 		}
 		return nil
 	})
+	if err == nil {
+		task.LeaseOwner = ""
+		task.LeaseExpiresAt = nil
+	}
+	return err
 }
 
-func (r *Repository) UpdateTaskTerminalState(id string, expected model.TaskStatus, status model.TaskStatus, stage string, errorText string, completedAt time.Time) (bool, error) {
+func (r *Repository) UpdateTaskTerminalState(id string, expected model.TaskStatus, expectedOwner string, expectedAttempts int, status model.TaskStatus, stage string, errorText string, completedAt time.Time) (bool, error) {
+	now := time.Now()
 	result := r.db.Model(&model.Task{}).
-		Where("id = ? AND status = ?", id, expected).
+		Where("id = ? AND status = ? AND lease_owner = ? AND attempts = ? AND lease_expires_at IS NOT NULL AND lease_expires_at > ?", id, expected, expectedOwner, expectedAttempts, now).
 		Updates(map[string]any{
 			"status": status, "stage": stage, "error": errorText, "completed_at": &completedAt,
-			"lease_owner": "", "lease_expires_at": nil, "updated_at": completedAt,
+			"lease_owner": "", "lease_expires_at": nil, "updated_at": now,
 		})
 	return result.RowsAffected == 1, result.Error
 }
@@ -633,7 +708,7 @@ func (r *Repository) Tasks(userID string, limit int, projectID string, activeOnl
 	if limit <= 0 || limit > 100 {
 		limit = 50
 	}
-	query := r.db.Select("id", "session_id", "project_id", "type", "status", "stage", "progress", "prompt", "operation", "provider", "model", "input_json", "result_json", "billing_order_id", "provider_request_id", "provider_cancel_status", "provider_cancel_error", "provider_cancel_attempts", "provider_cancel_requested_at", "provider_cancelled_at", "provider_cancel_next_check_at", "attempts", "started_at", "completed_at", "created_at", "updated_at").
+	query := r.db.Select("id", "session_id", "project_id", "type", "status", "stage", "progress", "prompt", "operation", "provider", "model", "input_json", "result_json", "billing_order_id", "provider_request_id", "poll_stage", "next_poll_at", "provider_cancel_status", "provider_cancel_error", "provider_cancel_attempts", "provider_cancel_requested_at", "provider_cancelled_at", "provider_cancel_next_check_at", "attempts", "started_at", "completed_at", "created_at", "updated_at").
 		Where("user_id = ?", userID)
 	if strings.TrimSpace(projectID) != "" {
 		query = query.Where("project_id = ?", strings.TrimSpace(projectID))
@@ -935,7 +1010,28 @@ func (r *Repository) Resources(userID string, limit int) ([]model.Resource, erro
 	if limit <= 0 || limit > 500 {
 		limit = 200
 	}
-	err := r.db.Where("user_id = ? AND status <> ?", userID, model.ResourceStatusDeleted).Order("created_at desc").Limit(limit).Find(&resources).Error
+	// 生成任务的临时媒体在任务完成事务中才提升为 ready，列表不能暴露尚未提交的结果。
+	err := r.db.Where("user_id = ? AND status = ?", userID, model.ResourceStatusReady).Order("created_at desc").Limit(limit).Find(&resources).Error
+	return resources, err
+}
+
+// StaleGeneratedTaskResources 仅返回已不属于当前有效任务租约的暂存生成资源。
+// 普通上传没有 ProducerTaskID，不能被这个回收器误删。
+func (r *Repository) StaleGeneratedTaskResources(now time.Time, limit int) ([]model.Resource, error) {
+	var resources []model.Resource
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	err := r.db.Table("resources").
+		Select("resources.*").
+		Joins("LEFT JOIN tasks ON tasks.id = resources.producer_task_id").
+		Where("resources.producer_task_id <> '' AND resources.status IN ?", []model.ResourceStatus{model.ResourceStatusPending, model.ResourceStatusFailed}).
+		// 人工恢复可在 failed 任务上持有新的有效租约，不能只按任务状态回收。
+		// 只有生产租约已消失、换手或过期时，暂存资源才不会再被当前执行提交。
+		Where("tasks.id IS NULL OR tasks.lease_owner <> resources.producer_lease_owner OR tasks.lease_expires_at IS NULL OR tasks.lease_expires_at <= ?", now).
+		Order("resources.updated_at asc").
+		Limit(limit).
+		Find(&resources).Error
 	return resources, err
 }
 

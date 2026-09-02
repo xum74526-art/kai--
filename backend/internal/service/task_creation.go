@@ -25,6 +25,16 @@ func (s *Service) CreateTask(userID string, req CreateTaskRequest) (*model.Task,
 	if err != nil {
 		return nil, err
 	}
+	if err := s.ensureTaskSessionScope(userID, req.SessionID, req.ProjectID); err != nil {
+		return nil, err
+	}
+	// 文本回放只是前端直连模型后的存档通道，必须在逻辑路由与计费前单独收口。
+	if isTextReplayTaskRequest(normalizedInput) {
+		if err := validateTextReplayTaskRequest(req, taskType, normalizedInput); err != nil {
+			return nil, err
+		}
+		return s.createTextReplayTask(userID, req, normalizedInput)
+	}
 	var routed *RoutedModel
 	logicalModelID := strings.TrimSpace(req.LogicalModelID)
 	if logicalModelID != "" {
@@ -40,10 +50,6 @@ func (s *Service) CreateTask(userID string, req CreateTaskRequest) (*model.Task,
 			return nil, errors.New("视频任务必须使用 video 模式")
 		}
 		return nil, errors.New("视频任务缺少可执行的模型配置")
-	}
-	// 前端自管的文本持久化任务：直连模型生成、增量上报 text-deltas，不排入 worker 队列生成。
-	if isTextReplayTaskRequest(normalizedInput) {
-		return s.createTextReplayTask(userID, req, normalizedInput)
 	}
 	if err := s.requireCustomChannelsForTaskInput(normalizedInput); err != nil {
 		return nil, err
@@ -106,6 +112,12 @@ func (s *Service) CreateTask(userID string, req CreateTaskRequest) (*model.Task,
 	}
 	if errors.Is(err, repository.ErrTaskProjectUnavailable) {
 		return nil, BadAuthRequest("项目已归档或删除，无法创建生成任务")
+	}
+	if errors.Is(err, repository.ErrTaskSessionUnavailable) {
+		return nil, BadAuthRequest("会话不存在或无权访问")
+	}
+	if errors.Is(err, repository.ErrTaskSessionProjectMismatch) {
+		return nil, BadAuthRequest("会话与任务所属项目不一致")
 	}
 	if err != nil {
 		return nil, err
@@ -194,7 +206,7 @@ func (s *Service) createTextReplayTask(userID string, req CreateTaskRequest, nor
 	task := model.Task{
 		ID: newID(), UserID: userID, SessionID: req.SessionID, ProjectID: req.ProjectID,
 		Type: taskType, Status: model.TaskStatusTextReplay, Stage: "文本持久化（前端自管）", Progress: 5,
-		Prompt: prompt, Operation: req.Operation, Provider: req.Provider, Model: strings.TrimSpace(req.Model),
+		Prompt: prompt, Operation: req.Operation, Provider: "client-replay", Model: "",
 	}
 	projectRequirement, err := s.ensureTaskProjectActive(userID, req.ProjectID)
 	if err != nil {
@@ -212,6 +224,12 @@ func (s *Service) createTextReplayTask(userID string, req CreateTaskRequest, nor
 	if err := s.createTaskWithinStorageQuota(&task, nil, policy, projectRequirement); err != nil {
 		if errors.Is(err, repository.ErrTaskProjectUnavailable) {
 			return nil, BadAuthRequest("项目已归档或删除，无法创建生成任务")
+		}
+		if errors.Is(err, repository.ErrTaskSessionUnavailable) {
+			return nil, BadAuthRequest("会话不存在或无权访问")
+		}
+		if errors.Is(err, repository.ErrTaskSessionProjectMismatch) {
+			return nil, BadAuthRequest("会话与任务所属项目不一致")
 		}
 		return nil, err
 	}

@@ -353,8 +353,8 @@ export function splitGenerationTaskObservationIds(ids: readonly string[]) {
 }
 
 type GenerationTaskSubscriptionDependencies = {
-    queryTask(id: string): Promise<GenerationTask>;
-    waitTask(id: string, options?: { initialTask?: GenerationTask; onTaskUpdate?: (task: GenerationTask) => void }): Promise<GenerationTask>;
+    queryTask(id: string, options?: { signal?: AbortSignal }): Promise<GenerationTask>;
+    waitTask(id: string, options?: { signal?: AbortSignal; initialTask?: GenerationTask; onTaskUpdate?: (task: GenerationTask) => void }): Promise<GenerationTask>;
 };
 
 export function createGenerationTaskSubscriptionService(dependencies: GenerationTaskSubscriptionDependencies) {
@@ -362,44 +362,88 @@ export function createGenerationTaskSubscriptionService(dependencies: Generation
         listeners: Set<(task: GenerationTask) => void>;
         latest?: GenerationTask;
         observation?: Promise<void>;
+        controller?: AbortController;
+        retryTimer?: ReturnType<typeof setTimeout>;
+        retryCount: number;
     };
     const entries = new Map<string, Entry>();
+    const isTerminal = (task?: GenerationTask) => task?.status === "succeeded" || task?.status === "failed" || task?.status === "cancelled";
     const publish = (entry: Entry, task: GenerationTask) => {
         entry.latest = task;
         for (const listener of entry.listeners) listener(task);
     };
-    const observe = (id: string, entry: Entry) => {
-        if (entry.observation) return;
-        entry.observation = (async () => {
-            const initial = await dependencies.queryTask(id);
+    const disposeIdleEntry = (id: string, entry: Entry) => {
+        if (entries.get(id) === entry && entry.listeners.size === 0 && !entry.observation && !entry.retryTimer) entries.delete(id);
+    };
+    let observe: (id: string, entry: Entry) => void;
+    const scheduleRetry = (id: string, entry: Entry) => {
+        if (entry.listeners.size === 0 || entry.retryTimer || isTerminal(entry.latest)) return;
+        const delay = Math.min(1_000 * 2 ** entry.retryCount, 30_000);
+        entry.retryCount += 1;
+        entry.retryTimer = setTimeout(() => {
+            entry.retryTimer = undefined;
+            observe(id, entry);
+        }, delay);
+    };
+    observe = (id: string, entry: Entry) => {
+        if (entry.observation || entry.retryTimer || entry.listeners.size === 0 || isTerminal(entry.latest)) return;
+        const controller = new AbortController();
+        entry.controller = controller;
+        const observation = (async () => {
+            const initial = await dependencies.queryTask(id, { signal: controller.signal });
+            entry.retryCount = 0;
             publish(entry, initial);
-            if (initial.status === "succeeded" || initial.status === "failed" || initial.status === "cancelled") return;
+            if (isTerminal(initial)) return;
             const terminal = await dependencies.waitTask(id, {
+                signal: controller.signal,
                 initialTask: initial,
                 onTaskUpdate: (task) => publish(entry, task),
             });
             publish(entry, terminal);
-        })().catch(() => undefined);
+        })();
+        entry.observation = observation;
+        void observation.catch(() => {
+            if (!controller.signal.aborted) scheduleRetry(id, entry);
+        }).finally(() => {
+            if (entry.observation === observation) {
+                entry.observation = undefined;
+                entry.controller = undefined;
+            }
+            if (entry.listeners.size > 0 && !entry.retryTimer && !isTerminal(entry.latest)) observe(id, entry);
+            disposeIdleEntry(id, entry);
+        });
     };
     return {
         subscribe(ids: readonly string[], listener: (task: GenerationTask) => void) {
             const uniqueIds = [...new Set(ids)];
             for (const id of uniqueIds) {
-                const entry = entries.get(id) ?? { listeners: new Set<(task: GenerationTask) => void>() };
+                const entry = entries.get(id) ?? { listeners: new Set<(task: GenerationTask) => void>(), retryCount: 0 };
                 entries.set(id, entry);
                 entry.listeners.add(listener);
                 if (entry.latest) listener(entry.latest);
                 observe(id, entry);
             }
             return () => {
-                for (const id of uniqueIds) entries.get(id)?.listeners.delete(listener);
+                for (const id of uniqueIds) {
+                    const entry = entries.get(id);
+                    if (!entry) continue;
+                    entry.listeners.delete(listener);
+                    if (entry.listeners.size === 0) {
+                        entry.controller?.abort();
+                        if (entry.retryTimer) {
+                            clearTimeout(entry.retryTimer);
+                            entry.retryTimer = undefined;
+                        }
+                    }
+                    disposeIdleEntry(id, entry);
+                }
             };
         },
     };
 }
 
 const generationTaskSubscriptionService = createGenerationTaskSubscriptionService({
-    queryTask: (id) => queryGenerationTask(id),
+    queryTask: (id, options) => queryGenerationTask(id, options),
     waitTask: (id, options) => waitForGenerationTask(id, options),
 });
 

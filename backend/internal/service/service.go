@@ -158,7 +158,7 @@ func (s *Service) TasksWithOptions(userID string, options TaskListOptions) ([]Ta
 	if err != nil {
 		return nil, err
 	}
-	orders, err := s.repo.BillingOrdersByTaskIDs(userID, taskBillingTaskIDs(tasks))
+	orders, err := s.repo.BillingOrdersByIDs(userID, taskBillingOrderIDs(tasks))
 	if err != nil {
 		return nil, err
 	}
@@ -184,7 +184,7 @@ func (s *Service) hydrateTaskProviderRequestID(task *model.Task) {
 		}
 	}
 	if task.ProviderRequestID == "" {
-		if providerRequestID, err := s.repo.LatestProviderRequestIDForTask(task.ID); err == nil {
+		if providerRequestID, err := s.repo.LatestProviderRequestIDForTask(task.ID, task.BillingOrderID); err == nil {
 			task.ProviderRequestID = providerRequestID
 		}
 	}

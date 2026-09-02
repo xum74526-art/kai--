@@ -372,19 +372,15 @@ func (s *Service) resolveBillingOrder(actor *model.User, id string, action strin
 	if order.Status != model.BillingStatusUncertain && order.Status != model.BillingStatusRunning && order.Status != model.BillingStatusReserved {
 		return nil, BadAuthRequest("当前订单不需要人工核对")
 	}
-	switch action {
-	case "settle":
-		err = s.SettleBilling(id, order.ProviderRequestID)
-	case "refund":
-		err = s.RefundBilling(id, note)
-	}
+	resolutionNote := truncateRunes(note, 500)
+	audit, err := newAdminAuditEvent(actor, "billing.resolve", "user", order.UserID, "人工核对用户计费订单", map[string]any{"billingOrderId": id, "action": action, "note": resolutionNote})
 	if err != nil {
 		return nil, err
 	}
-	if err := s.repo.RecordBillingResolution(id, actor.ID, truncateRunes(note, 500)); err != nil {
-		return nil, err
-	}
-	if err := s.appendAdminAudit(actor, "billing.resolve", "user", order.UserID, "人工核对用户计费订单", map[string]any{"billingOrderId": id, "action": action, "note": truncateRunes(note, 500)}); err != nil {
+	if err := s.repo.ResolveBillingOrder(id, action, actor.ID, resolutionNote, order.ProviderRequestID, audit); err != nil {
+		if errors.Is(err, repository.ErrBillingStateConflict) {
+			return nil, BadAuthRequest("当前订单已被其他管理员处理，请刷新后查看")
+		}
 		return nil, err
 	}
 	return s.repo.BillingOrder(id)

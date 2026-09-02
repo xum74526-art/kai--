@@ -311,7 +311,13 @@ func (s *Service) AcquireChannelSlot(ctx context.Context, channelID string, fall
 }
 
 func (s *Service) ValidateRuntime() error {
-	return s.runtimeErr
+	if s.runtimeErr != nil {
+		return s.runtimeErr
+	}
+	if allowPrivateUpstreams() {
+		return errors.New("CANVAS_ALLOW_PRIVATE_UPSTREAMS 不再允许全量放开私网，请改用 CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS 精确配置可信主机")
+	}
+	return nil
 }
 
 func (s *Service) AllowRequest(ctx context.Context, key string, limit int, window time.Duration) (bool, error) {

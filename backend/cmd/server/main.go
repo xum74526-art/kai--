@@ -151,13 +151,12 @@ func env(key string, fallback string) string {
 	return value
 }
 
-const corsAllowedHeaders = "Accept, Content-Type, Authorization, X-Requested-With, X-Canvas-Scene, X-Idempotency-Key, X-Canvas-Upstream-URL, X-Canvas-Upstream-Format, X-Canvas-Allow-Local-Channel, X-Canvas-Upstream-Base-URL"
+const corsAllowedHeaders = "Accept, Content-Type, Authorization, X-Requested-With, X-Canvas-Scene, X-Idempotency-Key, X-Canvas-Upstream-URL, X-Canvas-Upstream-Format, X-Canvas-Upstream-Headers, X-Canvas-Allow-Local-Channel, X-Canvas-Upstream-Base-URL"
 
 const corsAllowedMethods = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
 
 type corsPolicy struct {
-	origins  map[string]struct{}
-	allowAny bool
+	origins map[string]struct{}
 }
 
 func cors() (gin.HandlerFunc, error) {
@@ -167,6 +166,10 @@ func cors() (gin.HandlerFunc, error) {
 	}
 	return func(c *gin.Context) {
 		origin := strings.TrimSpace(c.GetHeader("Origin"))
+		if origin == "" && credentialedUnsafeRequest(c) {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"code": http.StatusForbidden, "data": nil, "msg": "登录态写请求必须携带有效来源"})
+			return
+		}
 		if origin != "" && !allowedOriginWithPolicy(c, origin, policy) {
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"code": http.StatusForbidden, "data": nil, "msg": "不允许的跨域来源"})
 			return
@@ -203,8 +206,7 @@ func parseCORSPolicy(raw string) (corsPolicy, error) {
 			continue
 		}
 		if value == "*" {
-			policy.allowAny = true
-			continue
+			return corsPolicy{}, fmt.Errorf("CANVAS_CORS_ORIGINS cannot use * when credentialed requests are enabled")
 		}
 		normalized, err := normalizeCORSOrigin(value)
 		if err != nil {
@@ -235,25 +237,61 @@ func allowedOriginWithPolicy(c *gin.Context, origin string, policy corsPolicy) b
 	if err != nil {
 		return false
 	}
+	if _, ok := policy.origins[normalizedOrigin]; ok {
+		return true
+	}
 	parsed, err := url.Parse(normalizedOrigin)
 	if err != nil {
 		return false
 	}
-	// 反向代理应像仓库 nginx 配置一样把外部 Host 写入 Request.Host；
-	// 未验证的 X-Forwarded-Host 可由客户端伪造，不能参与 CORS 同源判断。
-	requestHost := c.Request.Host
-	if strings.EqualFold(parsed.Host, strings.TrimSpace(requestHost)) {
-		return true
-	}
-	if policy.allowAny {
-		return true
-	}
-	if _, ok := policy.origins[normalizedOrigin]; ok {
+	// 反向代理应把外部 Host 写入 Request.Host。协议优先读取真实 TLS；代理场景只信任
+	// 部署者配置的公网地址，不读取客户端可伪造的 X-Forwarded-Proto/Host。
+	requestOrigin, ok := requestOriginForCORS(c)
+	if ok && normalizedOrigin == requestOrigin {
 		return true
 	}
 	if len(policy.origins) > 0 {
 		return false
 	}
-	host := strings.ToLower(parsed.Hostname())
-	return (host == "localhost" || host == "127.0.0.1" || host == "::1") && (parsed.Scheme == "http" || parsed.Scheme == "https")
+	// 未显式配置 CORS 时只给纯本地开发兜底；公网 API 不能因为访问者的页面
+	// 来自 localhost 就信任该来源。
+	originHost := strings.ToLower(parsed.Hostname())
+	requestHost := ""
+	if c != nil && c.Request != nil {
+		requestURL := &url.URL{Scheme: "http", Host: strings.TrimSpace(c.Request.Host)}
+		requestHost = strings.ToLower(requestURL.Hostname())
+	}
+	return localCORSHost(originHost) && localCORSHost(requestHost)
+}
+
+func localCORSHost(host string) bool {
+	host = strings.TrimSpace(strings.ToLower(host))
+	return host == "localhost" || host == "127.0.0.1" || host == "::1"
+}
+
+func credentialedUnsafeRequest(c *gin.Context) bool {
+	if c == nil || c.Request == nil {
+		return false
+	}
+	switch c.Request.Method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+	default:
+		return false
+	}
+	value, err := c.Cookie(service.SessionCookieName)
+	return err == nil && strings.TrimSpace(value) != ""
+}
+
+func requestOriginForCORS(c *gin.Context) (string, bool) {
+	if c == nil || c.Request == nil || strings.TrimSpace(c.Request.Host) == "" {
+		return "", false
+	}
+	scheme := "http"
+	if c.Request.TLS != nil {
+		scheme = "https"
+	} else if configured, err := url.Parse(strings.TrimSpace(os.Getenv("CANVAS_PUBLIC_BASE_URL"))); err == nil && configured != nil && (configured.Scheme == "http" || configured.Scheme == "https") && strings.EqualFold(configured.Host, strings.TrimSpace(c.Request.Host)) {
+		scheme = strings.ToLower(configured.Scheme)
+	}
+	normalized, err := normalizeCORSOrigin(scheme + "://" + strings.TrimSpace(c.Request.Host))
+	return normalized, err == nil
 }

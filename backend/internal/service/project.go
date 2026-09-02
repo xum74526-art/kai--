@@ -555,8 +555,8 @@ func IsProjectNotFound(err error) bool {
 	return errors.Is(err, gorm.ErrRecordNotFound)
 }
 
-// 任务仍以画布 ID 作为 projectId；写入前必须解析到业务项目并阻止归档项目继续生成。
-// 返回值只表示本次预检是否识别到真实 scope，供 repository 事务关闭“预检后被删除”的窗口。
+// 任务仍以画布 ID 作为 projectId；非空范围必须属于当前用户并解析到现有画布或项目。
+// 返回值用于 repository 事务关闭“预检后被删除”的窗口，不能把未知 ID 当成旧数据继续写入。
 func (s *Service) ensureTaskProjectActive(userID string, canvasOrProjectID string) (repository.TaskProjectRequirement, error) {
 	id := strings.TrimSpace(canvasOrProjectID)
 	if id == "" {
@@ -580,7 +580,7 @@ func (s *Service) ensureTaskProjectActive(userID string, canvasOrProjectID strin
 	project, err := s.repo.ProjectForUser(userID, id)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return repository.TaskProjectRequirement{}, nil
+			return repository.TaskProjectRequirement{}, BadAuthRequest("项目或画布不存在，无法创建生成任务")
 		}
 		return repository.TaskProjectRequirement{}, err
 	}

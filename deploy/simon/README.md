@@ -8,7 +8,7 @@
 - 前端必须使用当前分支的子路径适配，并以 `VITE_APP_BASE_PATH=/kai/` 构建。
 - 数据目录必须是本地数据的独立部署副本。不要让服务器容器直接挂载开发机目录，也不要在数据库运行时只复制 `.db` 主文件。
 - `.settings-key` 必须与数据库成套迁移，否则已加密的系统设置无法解密。使用本地文件存储时，相应资源文件也必须与数据库副本保持一致。
-- Compose 把公开注册的环境默认值固定为关闭；预检还会拒绝数据库中显式开启注册的副本。
+- 公开注册由服务器私有 `.env` 的 `CANVAS_REGISTRATION_ENABLED` 与后台设置共同决定；无论是否开放注册，预检始终要求管理员数量恰好为 1，新注册账号只能是普通用户。
 - Compose 把服务器本地资源公网基址固定为 `https://simon.kai.com/kai`，生成的签名资源链接会进入 `/kai/api/public/resources/...`。
 - 当前代码的数据库迁移会在后端首次启动时执行。启动前必须再保留一份不可写的部署副本，以便回滚。
 
@@ -18,14 +18,14 @@
 
 优先在源端使用 SQLite Online Backup API，例如 `sqlite3 source.db ".backup '/secure/stage/open_ai_canvas.db'"`。也可以先完全停止源后端，再复制数据库及同目录数据。不要从仍在写入的 WAL 数据库中单独复制 `open_ai_canvas.db`。
 
-下面的清理只对离线部署副本执行，用于失效本地登录会话并关闭公开注册：
+下面的清理只对离线部署副本执行，用于失效本地登录会话；它会保留现有公开注册设置：
 
 ```sh
 sqlite3 -bail /secure/stage/open_ai_canvas.db < deploy/simon/snapshot-public-safety.sql
 sh deploy/simon/preflight.sh /secure/stage/open_ai_canvas.db
 ```
 
-预检要求：`PRAGMA quick_check` 为 `ok`、无外键违规、同目录存在恰好 32 字节的 `.settings-key`、数据库存在单管理员唯一索引、管理员数量恰好为 1 且处于启用状态并保留本地密码、公开注册关闭、登录会话与临时 OAuth/邮箱验证码均为 0。它不会修改数据库。后端的单管理员约束仍应由当前代码和数据库迁移负责，预检不能替代运行时权限检查。
+预检要求：`PRAGMA quick_check` 为 `ok`、无外键违规、同目录存在恰好 32 字节的 `.settings-key`、数据库存在单管理员唯一索引、管理员数量恰好为 1 且处于启用状态并保留本地密码、登录会话与临时 OAuth/邮箱验证码均为 0。它不会修改数据库。是否开放公开注册由服务器私有 `.env` 与后台设置决定；后端的单管理员约束仍应由当前代码和数据库迁移负责，预检不能替代运行时权限检查。
 
 把通过预检的整套数据放到服务器私有目录，例如 `/srv/beidou-kai/data`。目录不得由 Web 根目录提供，也不要加入 Git 或镜像。确认运行后端镜像的 `app` 用户对该目录可读写。
 
@@ -33,7 +33,7 @@ sh deploy/simon/preflight.sh /secure/stage/open_ai_canvas.db
 
 ```sh
 cp deploy/simon/.env.example deploy/simon/.env
-# 编辑 deploy/simon/.env，至少确认 KAI_DATA_PATH 是绝对路径，并为每次上线设置新的 KAI_IMAGE_TAG。
+# 编辑 deploy/simon/.env，至少确认 KAI_DATA_PATH 是绝对路径、公开注册策略以及每次上线的 KAI_IMAGE_TAG。
 
 docker compose --env-file deploy/simon/.env -f deploy/simon/compose.yml config
 sh deploy/simon/preflight.sh "$(grep '^KAI_DATA_PATH=' deploy/simon/.env | cut -d= -f2-)/open_ai_canvas.db"
@@ -70,7 +70,7 @@ curl --fail https://simon.kai.com/kai/api/health
 
 1. 访问 `/kai/`、`/kai/login` 和一个刷新后的登录态路由，确认没有回到根站点。
 2. 检查浏览器网络请求只访问 `/kai/assets/...` 与 `/kai/api/...`，不存在误发到根路径的 `/assets` 或 `/api`。
-3. 登录保留的管理员账号，确认管理员入口可用；访问注册页应显示注册关闭。
+3. 登录保留的管理员账号，确认管理员入口可用；若 `CANVAS_REGISTRATION_ENABLED=true`，用一个普通测试账号确认注册成功且角色不是管理员。
 4. 在数据库中再次执行 `SELECT COUNT(*) FROM users WHERE role='admin';`，结果必须为 `1`。
 5. 检查上传、媒体读取、文本 SSE、登出后的 Cookie 清除以及容器重启后的数据持久化。
 

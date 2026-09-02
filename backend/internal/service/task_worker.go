@@ -30,6 +30,7 @@ func (s *Service) taskWorker() *taskWorkerCoordinator {
 
 func (w *taskWorkerCoordinator) start() {
 	s := w.service
+	s.startStagedGeneratedResourceCleanup()
 	s.startTextReplayCleanup()
 	s.startProviderCancellationReconciliation()
 	s.startBillingReviewAudit()
@@ -83,6 +84,16 @@ func (w *taskWorkerCoordinator) processClaimedTask(task *model.Task) error {
 	s := w.service
 	terminal := s.terminalCoordinator()
 	_ = s.log(task.UserID, task.ID, "info", "后端任务开始处理", "")
+	// 进程可能在上游已受理、Task 尚未来得及写入请求 ID 时中断。
+	// 先从账单或调用日志补齐，再按当前租约回写，避免重启后重复提交上游任务。
+	if strings.TrimSpace(task.ProviderRequestID) == "" {
+		s.hydrateTaskProviderRequestID(task)
+		if strings.TrimSpace(task.ProviderRequestID) != "" {
+			if err := s.repo.UpdateTaskProviderStateWithLease(task.ID, task.LeaseOwner, task.Attempts, task.ProviderRequestID, task.PollStage, task.NextPollAt); err != nil {
+				return fmt.Errorf("恢复上游任务标识失败：%w", err)
+			}
+		}
+	}
 	policy, err := s.RuntimePolicy()
 	if err != nil {
 		return err
@@ -97,7 +108,7 @@ func (w *taskWorkerCoordinator) processClaimedTask(task *model.Task) error {
 		for {
 			select {
 			case <-ticker.C:
-				if err := s.repo.RenewTaskLease(task.ID, s.workerID, 45*time.Second); err != nil {
+				if err := s.repo.RenewTaskLease(task.ID, task.LeaseOwner, task.Attempts, 45*time.Second); err != nil {
 					leaseLost <- err
 					cancel()
 					return
@@ -113,7 +124,7 @@ func (w *taskWorkerCoordinator) processClaimedTask(task *model.Task) error {
 
 	task.Stage = "调用生成模型"
 	task.Progress = 35
-	if err := s.repo.UpdateTaskProgress(task.ID, task.Stage, task.Progress); err != nil {
+	if err := s.repo.UpdateTaskProgress(task.ID, task.LeaseOwner, task.Attempts, task.Stage, task.Progress); err != nil {
 		return fmt.Errorf("更新任务进度失败，任务暂未调用上游：%w", err)
 	}
 	routeAttempt, err := s.beginTaskRouteAttempt(task)
@@ -130,7 +141,14 @@ func (w *taskWorkerCoordinator) processClaimedTask(task *model.Task) error {
 	result, canvasOps, err := routeResult.result, routeResult.canvasOps, routeResult.err
 	providerSucceeded := routeResult.providerSucceeded
 	if err == nil {
-		result, err = s.persistGeneratedMediaResult(task.UserID, result)
+		// 上游调用可能跨越一次租约换手；落地媒体前确认仍持有本轮执行权，并给持久化留出完整租期。
+		err = s.repo.RenewTaskLease(task.ID, task.LeaseOwner, task.Attempts, 45*time.Second)
+	}
+	if err == nil {
+		result, err = s.persistGeneratedTaskMediaResult(task, result)
+	}
+	if err == nil {
+		err = s.repo.RenewTaskLease(task.ID, task.LeaseOwner, task.Attempts, 45*time.Second)
 	}
 	if err == nil {
 		_, err = s.finalizeCharacterTurnaroundTask(*task, result)
@@ -149,7 +167,7 @@ func (w *taskWorkerCoordinator) processClaimedTask(task *model.Task) error {
 		if errors.Is(err, context.DeadlineExceeded) {
 			decryptedInput, decryptErr := s.decryptTaskInputJSON(task.InputJSON)
 			if decryptErr == nil && s.shouldDeferProviderTask(*task, decryptedInput, err) {
-				if deferErr := s.repo.DeferRunningTaskForProviderPoll(task.ID, task.LeaseOwner, "后台仍在生成", 15*time.Second); deferErr != nil {
+				if deferErr := s.repo.DeferRunningTaskForProviderPoll(task.ID, task.LeaseOwner, task.Attempts, "后台仍在生成", 15*time.Second); deferErr != nil {
 					return deferErr
 				}
 				_ = s.log(task.UserID, task.ID, "info", "本轮等待结束，上游任务仍在生成，将继续回查原任务", task.PollStage)
@@ -219,13 +237,34 @@ func (s *Service) shouldDeferProviderTask(task model.Task, decryptedInput string
 	if resolveErr != nil {
 		return false
 	}
-	if strings.HasPrefix(task.Type, "canvas_image") {
-		return resolved.InterfaceType == string(model.ChannelInterfaceBailianImage)
+	return providerPollResumeSupported(task.Type, resolved)
+}
+
+// providerPollResumeSupported 只列出已实现“带既有上游 ID 查询”的协议。
+// 不能因为任务有 ProviderRequestID 就默认重试，否则未知渠道可能把 ID 当新请求重复提交。
+func providerPollResumeSupported(taskType string, config providerConfig) bool {
+	if strings.HasPrefix(taskType, "canvas_image") {
+		return config.InterfaceType == string(model.ChannelInterfaceBailianImage)
 	}
-	if strings.HasPrefix(task.Type, "canvas_video") || strings.HasPrefix(task.Type, "video_") {
-		return resolved.InterfaceType == string(model.ChannelInterfaceNewAPIChannel2) || resolved.InterfaceType == string(model.ChannelInterfaceAIAPIWayVideo)
+	if strings.HasPrefix(taskType, "canvas_audio") {
+		return config.InterfaceType == string(model.ChannelInterfaceAsyncAudio)
 	}
-	return false
+	if !strings.HasPrefix(taskType, "canvas_video") && !strings.HasPrefix(taskType, "video_") {
+		return false
+	}
+	switch config.InterfaceType {
+	case string(model.ChannelInterfaceNewAPIChannel1),
+		string(model.ChannelInterfaceNewAPIChannel2),
+		string(model.ChannelInterfaceAIAPIWayVideo),
+		string(model.ChannelInterfaceVolcengineArkVideo),
+		string(model.ChannelInterfaceVolcengineJiMengVideo),
+		string(model.ChannelInterfaceGeminiVeo),
+		string(model.ChannelInterfaceNovitaVideo),
+		string(model.ChannelInterfaceMiniMaxVideo):
+		return true
+	default:
+		return isArkPlanVideoConfig(config) || isSeedanceVideoConfig(config)
+	}
 }
 
 func taskTimeoutMessage(taskType string) string {

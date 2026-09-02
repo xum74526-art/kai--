@@ -14,6 +14,7 @@ type taskTerminalRepositoryStub struct {
 	taskError     error
 	terminalCalls int
 	terminalError error
+	terminalMiss  bool
 }
 
 func (r *taskTerminalRepositoryStub) Task(string) (*model.Task, error) {
@@ -27,10 +28,13 @@ func (r *taskTerminalRepositoryStub) Task(string) (*model.Task, error) {
 	return &copy, nil
 }
 
-func (r *taskTerminalRepositoryStub) UpdateTaskTerminalState(_ string, _ model.TaskStatus, status model.TaskStatus, stage string, errorText string, completedAt time.Time) (bool, error) {
+func (r *taskTerminalRepositoryStub) UpdateTaskTerminalState(_ string, _ model.TaskStatus, _ string, _ int, status model.TaskStatus, stage string, errorText string, completedAt time.Time) (bool, error) {
 	r.terminalCalls++
 	if r.terminalError != nil {
 		return false, r.terminalError
+	}
+	if r.terminalMiss {
+		return false, nil
 	}
 	if r.task != nil {
 		r.task.Status = status
@@ -186,6 +190,25 @@ func TestTaskTerminalCoordinatorReturnsTerminalStateWriteError(t *testing.T) {
 	providerError := errors.New("provider unavailable")
 	if err := coordinator.handleExecutionFailure(task, providerError, false, true); !errors.Is(err, providerError) || !errors.Is(err, terminalError) {
 		t.Fatalf("handleExecutionFailure() error = %v, want provider and terminal errors", err)
+	}
+}
+
+func TestTaskTerminalCoordinatorStopsSideEffectsWhenLeaseWasLost(t *testing.T) {
+	task := &model.Task{ID: "task-1", UserID: "user-1", BillingOrderID: "order-1", LeaseOwner: "old-lease", Attempts: 1}
+	repo := &taskTerminalRepositoryStub{task: task, terminalMiss: true}
+	billing := &taskTerminalBillingStub{}
+	replay := &taskTerminalReplayStub{}
+	sessions := &taskTerminalSessionStub{}
+	logger := &taskTerminalLoggerStub{}
+	coordinator := newTaskTerminalCoordinatorForTest(repo, billing, replay, sessions, logger, &taskTerminalOutputStub{})
+
+	providerError := errors.New("provider unavailable")
+	err := coordinator.handleExecutionFailure(task, providerError, false, true)
+	if !errors.Is(err, providerError) {
+		t.Fatalf("handleExecutionFailure() error = %v, want provider error", err)
+	}
+	if len(billing.refund) != 0 || len(billing.uncertain) != 0 || len(replay.statuses) != 0 || len(sessions.messages) != 0 || len(logger.messages) != 0 {
+		t.Fatalf("lost lease must stop side effects: billing=%#v/%#v replay=%#v sessions=%#v logs=%#v", billing.refund, billing.uncertain, replay.statuses, sessions.messages, logger.messages)
 	}
 }
 

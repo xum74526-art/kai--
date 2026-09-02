@@ -950,6 +950,36 @@ func TestGeneratedMediaRejectsInvalidDataURL(t *testing.T) {
 	}
 }
 
+func TestPersistGeneratedTaskMediaStaysPendingUntilTaskCompletion(t *testing.T) {
+	svc := newResourceTestService(t)
+	task := &model.Task{ID: "task-generated", UserID: "user-1", LeaseOwner: "worker:lease-1"}
+	result, err := svc.persistGeneratedTaskMediaResult(task, map[string]interface{}{
+		"image": map[string]interface{}{"dataUrl": "data:image/png;base64,YQ=="},
+	})
+	if err != nil {
+		t.Fatalf("persistGeneratedTaskMediaResult() error = %v", err)
+	}
+	image, ok := result["image"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("image = %#v", result["image"])
+	}
+	resourceID := stringField(image, "resourceId")
+	resource, err := svc.repo.ResourceForUser(task.UserID, resourceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resource.Status != model.ResourceStatusPending || resource.ProducerTaskID != task.ID || resource.ProducerLeaseOwner != task.LeaseOwner {
+		t.Fatalf("resource = %#v, want pending resource owned by current task lease", resource)
+	}
+	resources, err := svc.repo.Resources(task.UserID, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resources) != 0 {
+		t.Fatalf("ready resources = %#v, pending task output must stay hidden", resources)
+	}
+}
+
 func TestPersistGeneratedMediaAppliesStoredFileQuota(t *testing.T) {
 	svc := newResourceTestService(t)
 	if err := svc.repo.Create(&model.Resource{

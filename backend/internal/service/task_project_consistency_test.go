@@ -42,7 +42,7 @@ func TestTaskProjectPrecheckStillRejectsProjectDeletedBeforeCreateTransaction(t 
 	}
 }
 
-func TestUnknownTaskProjectScopeKeepsCompatibilityMarker(t *testing.T) {
+func TestUnknownTaskProjectScopeIsRejectedForNewTask(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {
 		t.Fatal(err)
@@ -51,11 +51,7 @@ func TestUnknownTaskProjectScopeKeepsCompatibilityMarker(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc := &Service{repo: repository.New(db)}
-	requirement, err := svc.ensureTaskProjectActive("user-1", "legacy-unknown")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if requirement.MustExist {
-		t.Fatal("unknown historical scope must not become required")
+	if _, err := svc.ensureTaskProjectActive("user-1", "unknown-project"); err == nil {
+		t.Fatal("unknown project scope must be rejected for a new task")
 	}
 }

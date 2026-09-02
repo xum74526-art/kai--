@@ -79,7 +79,7 @@ type ApiCallLog struct {
 	MediaPreviewURL     string        `json:"mediaPreviewUrl,omitempty" gorm:"-"`
 	MediaPreviewKind    string        `json:"mediaPreviewKind,omitempty" gorm:"-"`
 	VideoSeconds        int           `json:"videoSeconds"`
-	ProviderRequestID   string        `json:"providerRequestId" gorm:"size:160"`
+	ProviderRequestID   string        `json:"providerRequestId" gorm:"size:160;index"`
 	EstimatedCostMicros int64         `json:"estimatedCostMicros"`
 	CostAvailable       bool          `json:"costAvailable"`
 	Currency            string        `json:"currency" gorm:"size:12"`
@@ -92,4 +92,16 @@ type ApiCallLog struct {
 	ResponseBody        string        `json:"responseBody,omitempty" gorm:"type:text"`
 	StartedAt           time.Time     `json:"startedAt"`
 	CreatedAt           time.Time     `json:"createdAt" gorm:"index;index:idx_api_logs_user_created,priority:2;index:idx_api_logs_channel_created,priority:2;index:idx_api_logs_model_created,priority:2;index:idx_api_logs_status_created,priority:2"`
+}
+
+// ProviderRequestOwnership 是异步供应商任务的轻量归属记录。
+// 它不依赖可能因存储配额被拒绝的大体积调用日志，轮询权限因此不会随日志保存结果变化。
+type ProviderRequestOwnership struct {
+	ID                string    `json:"id" gorm:"primaryKey;size:36"`
+	UserID            string    `json:"userId" gorm:"size:36;index"`
+	ChannelID         string    `json:"channelId" gorm:"size:36;uniqueIndex:idx_provider_request_ownership,priority:1"`
+	ProviderRequestID string    `json:"providerRequestId" gorm:"size:160;uniqueIndex:idx_provider_request_ownership,priority:2"`
+	TaskID            string    `json:"taskId,omitempty" gorm:"size:36;index"`
+	BillingOrderID    string    `json:"billingOrderId,omitempty" gorm:"size:36;index"`
+	CreatedAt         time.Time `json:"createdAt" gorm:"index"`
 }

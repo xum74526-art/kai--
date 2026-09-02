@@ -17,7 +17,11 @@ func TestNormalizeTaskInputMakesTypedProviderConfigBillable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&model.SystemSetting{}, &model.ChannelModel{}); err != nil {
+	if err := db.AutoMigrate(&model.SystemSetting{}, &model.ModelChannel{}, &model.ChannelModel{}); err != nil {
+		t.Fatal(err)
+	}
+	channel := model.ModelChannel{ID: "channel-1", Scope: model.ChannelScopeSystem, Enabled: true}
+	if err := db.Create(&channel).Error; err != nil {
 		t.Fatal(err)
 	}
 	channelModel := model.ChannelModel{
@@ -41,6 +45,38 @@ func TestNormalizeTaskInputMakesTypedProviderConfigBillable(t *testing.T) {
 	}
 	if order == nil || order.ChannelID != "channel-1" || order.AmountMicrocredits != 100_000 {
 		t.Fatalf("taskBillingOrder() = %#v", order)
+	}
+}
+
+func TestTaskBillingOrderRejectsDisabledSystemChannel(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&model.SystemSetting{}, &model.ModelChannel{}, &model.ChannelModel{}); err != nil {
+		t.Fatal(err)
+	}
+	channel := model.ModelChannel{ID: "channel-disabled", Scope: model.ChannelScopeSystem, Enabled: false}
+	channelModel := model.ChannelModel{
+		ID: "model-disabled-parent", ChannelID: channel.ID, ModelKey: "text-model", Capability: "text",
+		BillingMode: "fixed_request", UnitPriceMicrocredits: 100_000, PriceConfigured: true, Enabled: true,
+	}
+	if err := db.Create(&channel).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&channelModel).Error; err != nil {
+		t.Fatal(err)
+	}
+	svc := &Service{repo: repository.New(db)}
+	input, err := normalizeTaskInput(map[string]any{
+		"mode":   "text",
+		"config": providerConfig{ChannelID: channel.ID, Model: channelModel.ModelKey, APIKey: "system"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.taskBillingOrder("user-1", &model.Task{ID: "task-disabled-parent", Type: "agent_storyboard"}, input); err == nil {
+		t.Fatal("taskBillingOrder() error = nil, want disabled parent rejection")
 	}
 }
 

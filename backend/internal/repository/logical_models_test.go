@@ -141,3 +141,219 @@ func TestCreateTaskRejectsArchivedLogicalModel(t *testing.T) {
 		t.Fatalf("CreateTaskWithActiveLimit() error = %v, want ErrLogicalModelUnavailable", err)
 	}
 }
+
+func TestCreateTaskRequiresCompleteLogicalModelRoute(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*gorm.DB, *model.Task) error
+	}{
+		{
+			name: "revision_ownership",
+			mutate: func(db *gorm.DB, task *model.Task) error {
+				return db.Model(&model.LogicalModelRevision{}).
+					Where("id = ?", task.LogicalModelRevisionID).
+					Update("logical_model_id", "LMODEL_OTHER").Error
+			},
+		},
+		{
+			name: "disabled_route",
+			mutate: func(db *gorm.DB, task *model.Task) error {
+				return db.Model(&model.LogicalModelRoute{}).Where("id = ?", task.RouteID).Update("enabled", false).Error
+			},
+		},
+		{
+			name: "disabled_parent_channel",
+			mutate: func(db *gorm.DB, _ *model.Task) error {
+				return db.Model(&model.ModelChannel{}).Where("id = ?", "CHANNEL_ADMISSION").Update("enabled", false).Error
+			},
+		},
+		{
+			name: "disabled_channel_model",
+			mutate: func(db *gorm.DB, task *model.Task) error {
+				return db.Model(&model.ChannelModel{}).Where("id = ?", task.ChannelModelID).Update("enabled", false).Error
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo, db, task := newLogicalTaskAdmissionFixture(t, "logical-admission-"+tt.name)
+			if err := tt.mutate(db, task); err != nil {
+				t.Fatal(err)
+			}
+			if err := repo.CreateTaskWithActiveLimit(task, 5, TaskProjectRequirement{}); !errors.Is(err, ErrLogicalModelUnavailable) {
+				t.Fatalf("CreateTaskWithActiveLimit() error = %v, want ErrLogicalModelUnavailable", err)
+			}
+			var taskCount int64
+			if err := db.Model(&model.Task{}).Count(&taskCount).Error; err != nil {
+				t.Fatal(err)
+			}
+			if taskCount != 0 {
+				t.Fatalf("task count = %d, want 0", taskCount)
+			}
+		})
+	}
+}
+
+func TestCreateTaskAcceptsCompleteLogicalModelRoute(t *testing.T) {
+	repo, _, task := newLogicalTaskAdmissionFixture(t, "logical-admission-valid")
+	if err := repo.CreateTaskWithActiveLimit(task, 5, TaskProjectRequirement{}); err != nil {
+		t.Fatalf("CreateTaskWithActiveLimit() error = %v", err)
+	}
+}
+
+func TestCreateTaskValidatesLogicalModelBeforeCreditReservation(t *testing.T) {
+	repo, db, task := newLogicalTaskAdmissionFixture(t, "logical-admission-credit")
+	if err := db.Model(&model.ModelChannel{}).Where("id = ?", "CHANNEL_ADMISSION").Update("enabled", false).Error; err != nil {
+		t.Fatal(err)
+	}
+	account := model.CreditAccount{UserID: task.UserID, AvailableMicrocredits: 1_000, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	if err := db.Create(&account).Error; err != nil {
+		t.Fatal(err)
+	}
+	order := &model.BillingOrder{
+		ID: "ORDER_ADMISSION", UserID: task.UserID, IdempotencyKey: "logical-admission-credit", TaskID: task.ID,
+		AmountMicrocredits: 100, ReservedAmountMicrocredits: 100, Status: model.BillingStatusReserved,
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	if err := repo.CreateTaskWithCreditReservation(task, order, 5, TaskProjectRequirement{}); !errors.Is(err, ErrLogicalModelUnavailable) {
+		t.Fatalf("CreateTaskWithCreditReservation() error = %v, want ErrLogicalModelUnavailable", err)
+	}
+	var preserved model.CreditAccount
+	if err := db.First(&preserved, "user_id = ?", task.UserID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if preserved.AvailableMicrocredits != account.AvailableMicrocredits || preserved.ReservedMicrocredits != 0 {
+		t.Fatalf("credit account changed before admission: %#v", preserved)
+	}
+	var orderCount int64
+	if err := db.Model(&model.BillingOrder{}).Count(&orderCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if orderCount != 0 {
+		t.Fatalf("billing order count = %d, want 0", orderCount)
+	}
+	var taskCount int64
+	if err := db.Model(&model.Task{}).Count(&taskCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if taskCount != 0 {
+		t.Fatalf("task count = %d, want 0", taskCount)
+	}
+	var ledgerCount int64
+	if err := db.Model(&model.CreditLedgerEntry{}).Count(&ledgerCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if ledgerCount != 0 {
+		t.Fatalf("credit ledger count = %d, want 0", ledgerCount)
+	}
+}
+
+func TestRetryArchivedLogicalModelRequiresOriginalSnapshot(t *testing.T) {
+	t.Run("original snapshot", func(t *testing.T) {
+		repo, db, task := newLogicalTaskAdmissionFixture(t, "logical-retry-archived-valid")
+		task.Status = model.TaskStatusFailed
+		if err := db.Create(task).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := repo.ArchiveLogicalModel(task.LogicalModelID, nil, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := repo.RetryTaskWithBilling(task.UserID, task, nil, 5, TaskProjectRequirement{}); err != nil {
+			t.Fatalf("RetryTaskWithBilling() error = %v", err)
+		}
+		var queued model.Task
+		if err := db.First(&queued, "id = ?", task.ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		if queued.Status != model.TaskStatusQueued || queued.RouteRun != 2 {
+			t.Fatalf("retried task = %#v, want queued route run 2", queued)
+		}
+	})
+
+	t.Run("changed snapshot", func(t *testing.T) {
+		repo, db, task := newLogicalTaskAdmissionFixture(t, "logical-retry-archived-changed")
+		task.Status = model.TaskStatusFailed
+		if err := db.Create(task).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := repo.ArchiveLogicalModel(task.LogicalModelID, nil, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		prepared := *task
+		prepared.RouteID = "ROUTE_MISSING"
+		if _, err := repo.RetryTaskWithBilling(task.UserID, &prepared, nil, 5, TaskProjectRequirement{}); !errors.Is(err, ErrLogicalModelUnavailable) {
+			t.Fatalf("RetryTaskWithBilling() error = %v, want ErrLogicalModelUnavailable", err)
+		}
+		var preserved model.Task
+		if err := db.First(&preserved, "id = ?", task.ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		if preserved.Status != model.TaskStatusFailed || preserved.RouteRun != task.RouteRun {
+			t.Fatalf("rejected retry changed task = %#v", preserved)
+		}
+	})
+}
+
+func newLogicalTaskAdmissionFixture(t *testing.T, databaseName string) (*Repository, *gorm.DB, *model.Task) {
+	t.Helper()
+	db, err := gorm.Open(sqlite.Open("file:"+databaseName+"?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(
+		&model.LogicalModel{},
+		&model.LogicalModelRevision{},
+		&model.LogicalModelRoute{},
+		&model.ModelChannel{},
+		&model.ChannelModel{},
+		&model.Task{},
+		&model.TaskTextDelta{},
+		&model.CreditAccount{},
+		&model.BillingOrder{},
+		&model.CreditLedgerEntry{},
+	); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	logicalModel := model.LogicalModel{
+		ID:               "LMODEL_ADMISSION",
+		Code:             "admission",
+		Name:             "Admission",
+		Capability:       "image",
+		Enabled:          true,
+		ActiveRevisionID: "REVISION_ADMISSION",
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+	revision := model.LogicalModelRevision{ID: logicalModel.ActiveRevisionID, LogicalModelID: logicalModel.ID, CreatedAt: now}
+	channel := model.ModelChannel{ID: "CHANNEL_ADMISSION", Scope: model.ChannelScopeSystem, Enabled: true, CreatedAt: now, UpdatedAt: now}
+	channelModel := model.ChannelModel{ID: "CMODEL_ADMISSION", ChannelID: channel.ID, ModelKey: "image-model", Capability: "image", Enabled: true, CreatedAt: now, UpdatedAt: now}
+	route := model.LogicalModelRoute{
+		ID:                     "ROUTE_ADMISSION",
+		LogicalModelRevisionID: revision.ID,
+		ChannelModelID:         channelModel.ID,
+		Enabled:                true,
+		Weight:                 1,
+		CreatedAt:              now,
+		UpdatedAt:              now,
+	}
+	for _, item := range []any{&logicalModel, &revision, &channel, &channelModel, &route} {
+		if err := db.Create(item).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	task := &model.Task{
+		ID:                     "TASK_ADMISSION",
+		UserID:                 "USER_ADMISSION",
+		LogicalModelID:         logicalModel.ID,
+		LogicalModelRevisionID: revision.ID,
+		RouteID:                route.ID,
+		ChannelModelID:         channelModel.ID,
+		RouteRun:               1,
+		Status:                 model.TaskStatusQueued,
+		CreatedAt:              now,
+		UpdatedAt:              now,
+	}
+	return New(db), db, task
+}

@@ -115,11 +115,11 @@ Docker 配置位于仓库根目录，Simon 子路径部署说明见 [`deploy/sim
 
 1. 只对外暴露 Web 入口，后端服务留在容器网络内。
 2. 使用 HTTPS，并保留 `Host`、`X-Forwarded-For` 和 `X-Forwarded-Proto`。
-3. 为 `CANVAS_CORS_ORIGINS` 配置明确的前端 Origin，不在公网使用 `*`。
+3. 为 `CANVAS_CORS_ORIGINS` 配置明确的完整前端 Origin；凭证请求会拒绝 `*`，跨域写请求必须通过 Origin 校验。
 4. 为服务器本地资源配置同源 HTTPS `CANVAS_PUBLIC_BASE_URL`，确保签名资源链接和外部模型取材可用。
 5. 保护数据库、上传目录、备份和 `.settings-key`，并建立可恢复的定期备份。
 6. 仅对文本 SSE 路径关闭代理缓冲，不把长超时设置复制到全部 API。
-7. 自定义模型渠道仅连接可信 HTTPS 上游，避免把 API Key 暴露给浏览器、日志或 URL。
+7. 自定义模型渠道仅连接可信 HTTPS 上游；私网上游只通过 `CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS` 精确放行，远程素材导入始终只允许公网地址。
 
 ## 数据边界
 

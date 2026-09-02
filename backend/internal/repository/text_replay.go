@@ -30,7 +30,7 @@ func (r *Repository) AppendTaskTextDelta(userID string, taskID string, content s
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id", "user_id", "status").First(&task, "id = ? AND user_id = ?", taskID, userID).Error; err != nil {
 			return err
 		}
-		if task.Status == model.TaskStatusSucceeded || task.Status == model.TaskStatusFailed || task.Status == model.TaskStatusCancelled {
+		if task.Status != model.TaskStatusTextReplay {
 			return ErrTextReplayClosed
 		}
 		var taskUsage struct {

@@ -23,7 +23,7 @@ type taskBillingRepository interface {
 	RefundBillingOrder(orderID string, errorText string) error
 	MarkBillingUncertain(orderID string, errorText string) error
 	BillingOrder(orderID string) (*model.BillingOrder, error)
-	TaskHasSuccessfulBillableCall(taskID string) (bool, error)
+	BillingOrderHasSuccessfulBillableCall(orderID string) (bool, error)
 }
 
 var (
@@ -66,7 +66,7 @@ func (c *taskBillingCoordinator) MarkBillingUncertain(orderID string, errorText 
 // CheckRetryEligibility 收敛失败/取消任务重试前的计费状态校验。
 //
 // 计费订单读取失败不能被当作“没有待核对订单”继续放行，否则重试可能重复扣费。
-// 只有明确读到订单且订单不是 uncertain 时，才允许进入后续的重新计费流程。
+// 只有明确读到订单且旧订单已经进入 settled/refunded 终态，才允许重新计费。
 func (c *taskBillingCoordinator) CheckRetryEligibility(orderID string) error {
 	if strings.TrimSpace(orderID) == "" {
 		return nil
@@ -78,13 +78,13 @@ func (c *taskBillingCoordinator) CheckRetryEligibility(orderID string) error {
 	if order == nil {
 		return fmt.Errorf("任务计费订单不存在：%s", orderID)
 	}
-	if order.Status == model.BillingStatusUncertain {
+	if order.Status != model.BillingStatusSettled && order.Status != model.BillingStatusRefunded {
 		return errTaskBillingReview
 	}
 	return nil
 }
 
-func (c *taskBillingCoordinator) BillingFailureRequiresReview(orderID string, taskID string, err error) bool {
+func (c *taskBillingCoordinator) BillingFailureRequiresReview(orderID string, _ string, err error) bool {
 	if orderID == "" {
 		return false
 	}
@@ -95,7 +95,8 @@ func (c *taskBillingCoordinator) BillingFailureRequiresReview(orderID string, ta
 	if orderErr != nil || order == nil || order.Status == model.BillingStatusUncertain {
 		return true
 	}
-	hasSuccessfulCall, logErr := c.repo.TaskHasSuccessfulBillableCall(taskID)
+	// 重试会复用 Task ID，但每轮都有独立 BillingOrder；只检查本轮订单，避免旧调用证据污染新账单。
+	hasSuccessfulCall, logErr := c.repo.BillingOrderHasSuccessfulBillableCall(orderID)
 	return logErr != nil || hasSuccessfulCall
 }
 

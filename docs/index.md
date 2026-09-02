@@ -16,9 +16,9 @@
 
 ## 按约定维护的文档（`docs/content/docs/`）
 
-功能、代码地图、待办、待测试分别维护在以下页面（当前缺失，待后续任务重建）：
+功能、代码地图、待办、待测试分别维护在以下页面；缺失页面待后续任务重建：
 
 - 功能：`features.mdx`
 - 代码地图：`code-map.mdx`
 - 待办：`todo.mdx`
-- 待测试：`pending-test.mdx`
+- 待测试：[pending-test.mdx](content/docs/pending-test.mdx)

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"encoding/base64"
 	"net"
 	"net/http"
@@ -110,6 +111,52 @@ func TestValidateOutboundURLRejectsPrivateHosts(t *testing.T) {
 		if _, err := ValidateOutboundURL(rawURL); err == nil {
 			t.Fatalf("ValidateOutboundURL(%q) should fail", rawURL)
 		}
+	}
+}
+
+func TestValidateOutboundURLRejectsSpecialUseHosts(t *testing.T) {
+	t.Setenv("CANVAS_ALLOW_PRIVATE_UPSTREAMS", "false")
+	t.Setenv("CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS", "")
+	for _, rawURL := range []string{"http://100.100.100.200/latest/meta-data", "http://198.18.0.1/status", "http://192.0.2.1/file"} {
+		if _, err := ValidateOutboundURL(rawURL); err == nil {
+			t.Fatalf("ValidateOutboundURL(%q) should reject special-use addresses", rawURL)
+		}
+	}
+}
+
+func TestPublicResourceURLIgnoresPrivateUpstreamOverrides(t *testing.T) {
+	t.Setenv("CANVAS_ALLOW_PRIVATE_UPSTREAMS", "true")
+	t.Setenv("CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS", "127.0.0.1")
+	if _, err := ValidatePublicResourceURL("http://127.0.0.1:8080/private"); err == nil {
+		t.Fatal("public resource validation must not inherit private upstream overrides")
+	}
+	if publicResourceTransport.Proxy != nil || customRelayTransport.Proxy != nil || directOutboundTransport.Proxy != nil {
+		t.Fatal("user-controlled outbound transports must not delegate target DNS resolution to an environment proxy")
+	}
+}
+
+func TestProviderEnvironmentProxyOnlyForSystemChannelOrigin(t *testing.T) {
+	customContext := withProviderOutboundPolicy(context.Background(), providerConfig{BaseURL: "https://custom.example/v1"})
+	customRequest, _ := http.NewRequestWithContext(customContext, http.MethodGet, "https://custom.example/v1/models", nil)
+	if providerEnvironmentProxyAllowed(customRequest) {
+		t.Fatal("custom channel must not use the deployment environment proxy")
+	}
+
+	systemContext := withProviderOutboundPolicy(context.Background(), providerConfig{ChannelID: "channel-1", BaseURL: "https://system.example/v1"})
+	sameOrigin, _ := http.NewRequestWithContext(systemContext, http.MethodGet, "https://system.example/v1/models", nil)
+	if !providerEnvironmentProxyAllowed(sameOrigin) {
+		t.Fatal("stored system channel should retain the deployment proxy for its configured origin")
+	}
+	crossOrigin, _ := http.NewRequestWithContext(systemContext, http.MethodGet, "https://cdn.example/output.png", nil)
+	if providerEnvironmentProxyAllowed(crossOrigin) {
+		t.Fatal("provider-returned cross-origin media must not use the deployment environment proxy")
+	}
+}
+
+func TestValidateRuntimeRejectsGlobalPrivateUpstreamBypass(t *testing.T) {
+	t.Setenv("CANVAS_ALLOW_PRIVATE_UPSTREAMS", "true")
+	if err := (&Service{}).ValidateRuntime(); err == nil {
+		t.Fatal("runtime validation must reject the blanket private upstream bypass")
 	}
 }
 

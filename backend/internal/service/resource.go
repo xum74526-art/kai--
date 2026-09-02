@@ -461,7 +461,30 @@ func (s *Service) openResourceRange(userID string, resource *model.Resource, ran
 	return &ResourceStream{Resource: resource, Body: stream.body, StatusCode: stream.statusCode, ContentLength: stream.contentLength, ContentRange: stream.contentRange, AcceptRanges: stream.acceptRanges}, nil
 }
 
+type resourceStoreOptions struct {
+	producerTaskID     string
+	producerLeaseOwner string
+}
+
+func (options resourceStoreOptions) stagedTaskOutput() bool {
+	return strings.TrimSpace(options.producerTaskID) != "" && strings.TrimSpace(options.producerLeaseOwner) != ""
+}
+
 func (s *Service) storeResource(userID string, kind string, fileName string, mimeType string, size int64, width int, height int, durationMs int64, body io.Reader) (*model.Resource, error) {
+	return s.storeResourceWithOptions(userID, kind, fileName, mimeType, size, width, height, durationMs, body, resourceStoreOptions{})
+}
+
+func (s *Service) storeGeneratedTaskResource(task *model.Task, kind string, fileName string, mimeType string, size int64, width int, height int, durationMs int64, body io.Reader) (*model.Resource, error) {
+	if task == nil || strings.TrimSpace(task.ID) == "" || strings.TrimSpace(task.LeaseOwner) == "" {
+		return nil, errors.New("生成任务缺少有效租约，拒绝暂存媒体结果")
+	}
+	return s.storeResourceWithOptions(task.UserID, kind, fileName, mimeType, size, width, height, durationMs, body, resourceStoreOptions{
+		producerTaskID:     task.ID,
+		producerLeaseOwner: task.LeaseOwner,
+	})
+}
+
+func (s *Service) storeResourceWithOptions(userID string, kind string, fileName string, mimeType string, size int64, width int, height int, durationMs int64, body io.Reader, options resourceStoreOptions) (*model.Resource, error) {
 	now := time.Now()
 	kind = normalizeResourceKind(kind, mimeType)
 	setting, storageSettingID, useOSS, err := s.activeResourceOSSSetting(userID)
@@ -471,6 +494,10 @@ func (s *Service) storeResource(userID string, kind string, fileName string, mim
 	provider := "local"
 	objectKey := localObjectKey(userID, kind, fileName, now)
 	resource := model.Resource{ID: newID(), UserID: userID, Kind: kind, Status: model.ResourceStatusPending, Provider: provider, ObjectKey: objectKey, MimeType: mimeType, Size: size, Width: width, Height: height, DurationMs: durationMs, CreatedAt: now, UpdatedAt: now}
+	if options.stagedTaskOutput() {
+		resource.ProducerTaskID = options.producerTaskID
+		resource.ProducerLeaseOwner = options.producerLeaseOwner
+	}
 	if useOSS {
 		provider = setting.Provider
 		objectKey = ossObjectKey(setting, userID, kind, fileName, now)
@@ -500,7 +527,6 @@ func (s *Service) storeResource(userID string, kind string, fileName string, mim
 	} else {
 		etag, err = putOSSObject(setting, objectKey, mimeType, size, body)
 	}
-	resource.UpdatedAt = time.Now()
 	if err != nil {
 		resource.Status = model.ResourceStatusFailed
 		resource.Error = err.Error()
@@ -509,8 +535,28 @@ func (s *Service) storeResource(userID string, kind string, fileName string, mim
 		}
 		return nil, err
 	}
-	resource.Status = model.ResourceStatusReady
+	resource.UpdatedAt = time.Now()
 	resource.ETag = etag
+	if options.stagedTaskOutput() {
+		// 生成媒体先保留为 pending；只有对应任务结果、会话和引用同一事务提交后才会提升为 ready。
+		if err := s.repo.SaveResource(&resource); err != nil {
+			cleanupErr := s.deleteStoredResourceObject(userID, &resource)
+			if cleanupErr == nil {
+				if deleteErr := s.repo.DeleteResource(userID, resource.ID); deleteErr != nil {
+					return nil, errors.Join(err, fmt.Errorf("清理暂存资源记录失败：%w", deleteErr))
+				}
+				return nil, fmt.Errorf("保存暂存资源状态失败：%w", err)
+			}
+			resource.Status = model.ResourceStatusFailed
+			resource.Error = fmt.Sprintf("保存暂存资源状态失败，物理对象清理失败：%v", cleanupErr)
+			if statusErr := s.repo.SaveResource(&resource); statusErr != nil {
+				return nil, errors.Join(err, cleanupErr, fmt.Errorf("记录资源失败状态失败：%w", statusErr))
+			}
+			return nil, errors.Join(err, fmt.Errorf("清理已上传资源对象失败：%w", cleanupErr))
+		}
+		return &resource, nil
+	}
+	resource.Status = model.ResourceStatusReady
 	if err := s.repo.SaveResource(&resource); err != nil {
 		cleanupErr := s.deleteStoredResourceObject(userID, &resource)
 		if cleanupErr == nil {
@@ -538,14 +584,21 @@ func localObjectKey(userID string, kind string, fileName string, now time.Time) 
 }
 
 func (s *Service) persistGeneratedMediaResult(userID string, result map[string]interface{}) (map[string]interface{}, error) {
-	return s.persistGeneratedMediaResultMode(userID, result, false, true)
+	return s.persistGeneratedMediaResultMode(userID, result, false, true, nil)
 }
 
 func (s *Service) persistLegacyGeneratedMediaResult(userID string, result map[string]interface{}) (map[string]interface{}, error) {
-	return s.persistGeneratedMediaResultMode(userID, result, true, false)
+	return s.persistGeneratedMediaResultMode(userID, result, true, false, nil)
 }
 
-func (s *Service) persistGeneratedMediaResultMode(userID string, result map[string]interface{}, skipInvalidDataURL bool, enforceQuota bool) (map[string]interface{}, error) {
+func (s *Service) persistGeneratedTaskMediaResult(task *model.Task, result map[string]interface{}) (map[string]interface{}, error) {
+	if task == nil || strings.TrimSpace(task.ID) == "" || strings.TrimSpace(task.LeaseOwner) == "" {
+		return nil, errors.New("生成任务缺少有效租约，无法持久化媒体结果")
+	}
+	return s.persistGeneratedMediaResultMode(task.UserID, result, false, true, task)
+}
+
+func (s *Service) persistGeneratedMediaResultMode(userID string, result map[string]interface{}, skipInvalidDataURL bool, enforceQuota bool, task *model.Task) (map[string]interface{}, error) {
 	if result == nil {
 		return map[string]interface{}{}, nil
 	}
@@ -557,7 +610,7 @@ func (s *Service) persistGeneratedMediaResultMode(userID string, result map[stri
 	if err := json.Unmarshal(encoded, &normalized); err != nil {
 		return nil, err
 	}
-	value, err := s.persistGeneratedMediaValueMode(userID, normalized, skipInvalidDataURL, enforceQuota)
+	value, err := s.persistGeneratedMediaValueMode(userID, normalized, skipInvalidDataURL, enforceQuota, task)
 	if err != nil {
 		return nil, err
 	}
@@ -565,14 +618,14 @@ func (s *Service) persistGeneratedMediaResultMode(userID string, result map[stri
 }
 
 func (s *Service) persistGeneratedMediaValue(userID string, value interface{}) (interface{}, error) {
-	return s.persistGeneratedMediaValueMode(userID, value, false, true)
+	return s.persistGeneratedMediaValueMode(userID, value, false, true, nil)
 }
 
-func (s *Service) persistGeneratedMediaValueMode(userID string, value interface{}, skipInvalidDataURL bool, enforceQuota bool) (interface{}, error) {
+func (s *Service) persistGeneratedMediaValueMode(userID string, value interface{}, skipInvalidDataURL bool, enforceQuota bool, task *model.Task) (interface{}, error) {
 	switch item := value.(type) {
 	case []interface{}:
 		for index, child := range item {
-			stored, err := s.persistGeneratedMediaValueMode(userID, child, skipInvalidDataURL, enforceQuota)
+			stored, err := s.persistGeneratedMediaValueMode(userID, child, skipInvalidDataURL, enforceQuota, task)
 			if err != nil {
 				return nil, err
 			}
@@ -598,7 +651,12 @@ func (s *Service) persistGeneratedMediaValueMode(userID string, value interface{
 						return nil, err
 					}
 				}
-				resource, err := s.storeResource(userID, kind, "generated."+extensionFromMimeType(mimeType), mimeType, int64(len(data)), width, height, int64(intValue(item["durationMs"])), bytes.NewReader(data))
+				var resource *model.Resource
+				if task != nil {
+					resource, err = s.storeGeneratedTaskResource(task, kind, "generated."+extensionFromMimeType(mimeType), mimeType, int64(len(data)), width, height, int64(intValue(item["durationMs"])), bytes.NewReader(data))
+				} else {
+					resource, err = s.storeResource(userID, kind, "generated."+extensionFromMimeType(mimeType), mimeType, int64(len(data)), width, height, int64(intValue(item["durationMs"])), bytes.NewReader(data))
+				}
 				if err != nil {
 					if enforceQuota {
 						s.releaseUserUploadQuota(userID, quotaDay, int64(len(data)))
@@ -627,7 +685,7 @@ func (s *Service) persistGeneratedMediaValueMode(userID string, value interface{
 			}
 		}
 		for key, child := range item {
-			stored, err := s.persistGeneratedMediaValueMode(userID, child, skipInvalidDataURL, enforceQuota)
+			stored, err := s.persistGeneratedMediaValueMode(userID, child, skipInvalidDataURL, enforceQuota, task)
 			if err != nil {
 				return nil, err
 			}
@@ -694,7 +752,7 @@ func downloadRemoteResource(rawURL string, maxBytes int64) (remoteResourcePayloa
 	if err != nil {
 		return remoteResourcePayload{}, err
 	}
-	client := OutboundHTTPClient(90 * time.Second)
+	client := PublicResourceHTTPClient(90 * time.Second)
 	req, err := http.NewRequest(http.MethodGet, parsed.String(), nil)
 	if err != nil {
 		return remoteResourcePayload{}, err
@@ -730,7 +788,7 @@ func openRemoteResource(rawURL string) (io.ReadCloser, error) {
 	if err != nil {
 		return nil, err
 	}
-	client := OutboundHTTPClient(90 * time.Second)
+	client := PublicResourceHTTPClient(90 * time.Second)
 	resp, err := client.Get(parsed.String())
 	if err != nil {
 		return nil, err
@@ -743,7 +801,7 @@ func openRemoteResource(rawURL string) (io.ReadCloser, error) {
 }
 
 func validateRemoteResourceURL(rawURL string) (*url.URL, error) {
-	return ValidateOutboundURL(rawURL)
+	return ValidatePublicResourceURL(rawURL)
 }
 
 func extensionFromMimeType(mimeType string) string {

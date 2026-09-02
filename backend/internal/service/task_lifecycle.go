@@ -40,6 +40,9 @@ func (w *taskLifecycleCoordinator) retryTask(userID string, id string) (*model.T
 	if task.ProviderCancelStatus == model.ProviderCancelStatusRequested {
 		return nil, BadAuthRequest("上游取消状态仍在确认中，请确认费用结果后再重试")
 	}
+	if err := s.ensureTaskSessionScope(userID, task.SessionID, task.ProjectID); err != nil {
+		return nil, err
+	}
 	if err := s.taskBilling().CheckRetryEligibility(task.BillingOrderID); err != nil {
 		if errors.Is(err, errTaskBillingReview) {
 			return nil, BadAuthRequest("上一次调用费用仍在核对中，处理完成前不能重复提交")
@@ -89,25 +92,26 @@ func (w *taskLifecycleCoordinator) retryTask(userID string, id string) (*model.T
 	if errors.Is(err, repository.ErrTaskNotRetryable) {
 		return nil, BadAuthRequest("任务已被其他请求重新入队，请勿重复重试")
 	}
+	if errors.Is(err, repository.ErrBillingRetryBlocked) {
+		return nil, BadAuthRequest("上一次调用费用仍在核对中，处理完成前不能重复提交")
+	}
+	if errors.Is(err, repository.ErrLogicalModelUnavailable) {
+		return nil, BadAuthRequest("任务原模型或供应线路已失效，无法重试")
+	}
 	if errors.Is(err, repository.ErrTaskProjectUnavailable) {
 		return nil, BadAuthRequest("项目已归档或删除，无法重新创建生成任务")
+	}
+	if errors.Is(err, repository.ErrTaskSessionUnavailable) {
+		return nil, BadAuthRequest("会话不存在或无权访问")
+	}
+	if errors.Is(err, repository.ErrTaskSessionProjectMismatch) {
+		return nil, BadAuthRequest("会话与任务所属项目不一致")
 	}
 	if errors.Is(err, repository.ErrResourceReferenceUnavailable) {
 		return nil, resourceReferenceWriteError(err)
 	}
 	if err != nil {
 		return nil, err
-	}
-	if task.SessionID != "" {
-		session, err := s.repo.SessionForUser(task.UserID, task.SessionID)
-		if err != nil {
-			return nil, fmt.Errorf("重试任务时读取会话失败：%w", err)
-		}
-		session.Status = model.SessionStatusActive
-		session.CanvasOpsJSON = ""
-		if err := s.repo.Save(session); err != nil {
-			return nil, fmt.Errorf("重试任务时重置会话失败：%w", err)
-		}
 	}
 	_ = s.log(userID, task.ID, "info", "任务已重新入队", "")
 	return taskForOutput(*task), nil

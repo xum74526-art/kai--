@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"errors"
 	"strings"
 	"time"
 
@@ -9,6 +10,8 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
+
+var ErrProviderRequestOwnershipConflict = errors.New("provider request ownership conflict")
 
 type AnalyticsFilter struct {
 	From       time.Time
@@ -163,13 +166,82 @@ func (r *Repository) APICallLogTasks(ids []string) ([]model.Task, error) {
 	return tasks, err
 }
 
-func (r *Repository) LatestProviderRequestIDForTask(taskID string) (string, error) {
+func (r *Repository) LatestProviderRequestIDForTask(taskID string, billingOrderID string) (string, error) {
 	var log model.ApiCallLog
-	err := r.db.Select("provider_request_id").
-		Where("task_id = ? AND provider_request_id <> ''", taskID).
+	query := r.db.Select("provider_request_id").Where("task_id = ? AND provider_request_id <> ''", taskID)
+	if strings.TrimSpace(billingOrderID) != "" {
+		query = query.Where("billing_order_id = ?", billingOrderID)
+	}
+	err := query.
 		Order("created_at desc").
 		First(&log).Error
 	return strings.TrimSpace(log.ProviderRequestID), err
+}
+
+// RememberSystemProviderRequestOwnership 在返回异步创建结果前固化归属。
+// 同一渠道的上游任务 ID 只能属于一个用户，幂等重放只接受原归属。
+func (r *Repository) RememberSystemProviderRequestOwnership(log model.ApiCallLog) error {
+	if log.Source != "system-channel" || log.RequestKind != "create" || log.Status != model.ApiCallStatusSucceeded {
+		return nil
+	}
+	userID := strings.TrimSpace(log.UserID)
+	channelID := strings.TrimSpace(log.ChannelID)
+	providerRequestID := strings.TrimSpace(log.ProviderRequestID)
+	if userID == "" || channelID == "" || providerRequestID == "" {
+		return nil
+	}
+	item := model.ProviderRequestOwnership{
+		ID: newRepositoryID(), UserID: userID, ChannelID: channelID, ProviderRequestID: providerRequestID,
+		TaskID: strings.TrimSpace(log.TaskID), BillingOrderID: strings.TrimSpace(log.BillingOrderID), CreatedAt: time.Now(),
+	}
+	if err := r.db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "channel_id"}, {Name: "provider_request_id"}},
+		DoNothing: true,
+	}).Create(&item).Error; err != nil {
+		return err
+	}
+	var stored model.ProviderRequestOwnership
+	if err := r.db.Where("channel_id = ? AND provider_request_id = ?", channelID, providerRequestID).First(&stored).Error; err != nil {
+		return err
+	}
+	if stored.UserID != userID {
+		return ErrProviderRequestOwnershipConflict
+	}
+	return nil
+}
+
+// SystemProviderRequestOwned 只认当前用户在当前系统渠道创建过的上游任务。
+// 独立归属表服务新请求，账单与调用日志只兼容升级前已经受理的在途任务。
+func (r *Repository) SystemProviderRequestOwned(userID string, channelID string, providerRequestID string) (bool, error) {
+	userID = strings.TrimSpace(userID)
+	channelID = strings.TrimSpace(channelID)
+	providerRequestID = strings.TrimSpace(providerRequestID)
+	if userID == "" || channelID == "" || providerRequestID == "" {
+		return false, nil
+	}
+	var ownership model.ProviderRequestOwnership
+	err := r.db.Where("channel_id = ? AND provider_request_id = ?", channelID, providerRequestID).First(&ownership).Error
+	if err == nil {
+		return ownership.UserID == userID, nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, err
+	}
+	var count int64
+	if err := r.db.Model(&model.BillingOrder{}).
+		Where("user_id = ? AND channel_id = ? AND provider_request_id = ?", userID, channelID, providerRequestID).
+		Count(&count).Error; err != nil {
+		return false, err
+	}
+	if count > 0 {
+		return true, nil
+	}
+	if err := r.db.Model(&model.ApiCallLog{}).
+		Where("user_id = ? AND channel_id = ? AND provider_request_id = ? AND source = ? AND request_kind = ?", userID, channelID, providerRequestID, "system-channel", "create").
+		Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }
 
 func visibleAPICallLogQuery(query *gorm.DB) *gorm.DB {
@@ -180,8 +252,16 @@ func visibleAPICallLogQuery(query *gorm.DB) *gorm.DB {
 func (r *Repository) VideoAPICallRoot(log model.ApiCallLog) (*model.ApiCallLog, error) {
 	var root model.ApiCallLog
 	query := r.db.Where("capability = ? AND request_kind = ?", "video", "create")
-	if log.TaskID != "" {
+	if log.BillingOrderID != "" {
+		query = query.Where("billing_order_id = ?", log.BillingOrderID)
+		if log.ProviderRequestID != "" {
+			query = query.Where("provider_request_id = ?", log.ProviderRequestID)
+		}
+	} else if log.TaskID != "" {
 		query = query.Where("task_id = ?", log.TaskID)
+		if log.ProviderRequestID != "" {
+			query = query.Where("provider_request_id = ?", log.ProviderRequestID)
+		}
 	} else {
 		query = query.Where("user_id = ? AND channel_id = ? AND provider_request_id = ?", log.UserID, log.ChannelID, log.ProviderRequestID)
 	}

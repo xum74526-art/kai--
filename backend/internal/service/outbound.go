@@ -18,11 +18,12 @@ import (
 )
 
 const (
-	maxOutboundRedirects     = 5
-	maxOutboundHeaderCount   = 32
-	maxOutboundHeaderBytes   = 16 << 10
-	CustomRelayHeadersHeader = "X-Canvas-Upstream-Headers"
-	DefaultOutboundUserAgent = "Beidou-KAIYing/1.0 (+https://github.com/xum74526-art/kai--)"
+	maxOutboundRedirects      = 5
+	maxOutboundHeaderCount    = 32
+	maxOutboundHeaderBytes    = 16 << 10
+	outboundValidationTimeout = 10 * time.Second
+	CustomRelayHeadersHeader  = "X-Canvas-Upstream-Headers"
+	DefaultOutboundUserAgent  = "Beidou-KAIYing/1.0 (+https://github.com/xum74526-art/kai--)"
 )
 
 type OutboundHeader struct {
@@ -32,7 +33,9 @@ type OutboundHeader struct {
 
 var (
 	outboundTransport          = newOutboundTransport(resolveOutboundHost)
-	customRelayTransport       = newOutboundTransport(resolveCustomRelayHost)
+	directOutboundTransport    = newDirectOutboundTransport(resolveOutboundHost)
+	customRelayTransport       = newDirectOutboundTransport(resolveCustomRelayHost)
+	publicResourceTransport    = newDirectOutboundTransport(resolvePublicOutboundHost)
 	blockedCustomRelayPrefixes = []netip.Prefix{
 		netip.MustParsePrefix("0.0.0.0/8"),
 		netip.MustParsePrefix("100.64.0.0/10"),
@@ -48,8 +51,11 @@ var (
 )
 
 func ValidateOutboundURL(rawURL string) (*url.URL, error) {
+	if len(strings.TrimSpace(rawURL)) > 4096 {
+		return nil, BadAuthRequest("外部服务地址过长")
+	}
 	parsed, err := url.Parse(strings.TrimSpace(rawURL))
-	if err != nil || parsed.Hostname() == "" {
+	if err != nil || parsed.Hostname() == "" || !parsed.IsAbs() {
 		return nil, BadAuthRequest("外部服务地址无效")
 	}
 	if parsed.Scheme != "https" && parsed.Scheme != "http" {
@@ -57,6 +63,9 @@ func ValidateOutboundURL(rawURL string) (*url.URL, error) {
 	}
 	if parsed.User != nil {
 		return nil, BadAuthRequest("外部服务地址不允许包含认证信息")
+	}
+	if parsed.Fragment != "" {
+		return nil, BadAuthRequest("外部服务地址不允许包含片段")
 	}
 	if err := validateOutboundHost(parsed.Hostname()); err != nil {
 		return nil, err
@@ -93,9 +102,49 @@ func ValidateCustomRelayURL(rawURL string) (*url.URL, error) {
 	return parsed, nil
 }
 
+// ValidatePublicResourceURL 用于用户可提交的远程素材地址。它永不继承模型上游的
+// 私网放行配置，避免运维为内部模型开白名单后意外开放资源导入 SSRF。
+func ValidatePublicResourceURL(rawURL string) (*url.URL, error) {
+	if len(strings.TrimSpace(rawURL)) > 4096 {
+		return nil, BadAuthRequest("远程资源地址过长")
+	}
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || parsed.Hostname() == "" || !parsed.IsAbs() {
+		return nil, BadAuthRequest("远程资源地址无效")
+	}
+	if parsed.Scheme != "https" && parsed.Scheme != "http" {
+		return nil, BadAuthRequest("远程资源地址只支持 http/https")
+	}
+	if parsed.User != nil || parsed.Fragment != "" {
+		return nil, BadAuthRequest("远程资源地址不允许包含认证信息或片段")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), outboundValidationTimeout)
+	defer cancel()
+	if _, err := resolvePublicOutboundHost(ctx, parsed.Hostname()); err != nil {
+		return nil, err
+	}
+	return parsed, nil
+}
+
 func OutboundHTTPClient(timeout time.Duration) *http.Client {
 	return &http.Client{
 		Transport: outboundTransport,
+		Timeout:   timeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= maxOutboundRedirects {
+				return errors.New("外部服务重定向次数过多")
+			}
+			_, err := ValidateOutboundURL(req.URL.String())
+			return err
+		},
+	}
+}
+
+// DirectOutboundHTTPClient 用于用户可控地址和供应商返回的跨域资源地址。
+// 它保留与系统上游相同的 SSRF 白名单，但禁止环境代理在代理端重新解析目标域名。
+func DirectOutboundHTTPClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Transport: directOutboundTransport,
 		Timeout:   timeout,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= maxOutboundRedirects {
@@ -113,6 +162,20 @@ func CustomRelayHTTPClient(timeout time.Duration) *http.Client {
 		Timeout:   timeout,
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 			return errors.New("自定义渠道中转不允许重定向")
+		},
+	}
+}
+
+func PublicResourceHTTPClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Transport: publicResourceTransport,
+		Timeout:   timeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= maxOutboundRedirects {
+				return errors.New("远程资源重定向次数过多")
+			}
+			_, err := ValidatePublicResourceURL(req.URL.String())
+			return err
 		},
 	}
 }
@@ -248,16 +311,29 @@ func blockedOutboundHeader(name string) bool {
 }
 
 func newOutboundTransport(resolveHost func(context.Context, string) ([]net.IP, error)) *http.Transport {
+	return newOutboundTransportWithProxy(resolveHost, true)
+}
+
+func newDirectOutboundTransport(resolveHost func(context.Context, string) ([]net.IP, error)) *http.Transport {
+	// 用户可控地址必须由本进程完成解析和 IP 钉扎；环境代理会在代理端重新解析目标。
+	return newOutboundTransportWithProxy(resolveHost, false)
+}
+
+func newOutboundTransportWithProxy(resolveHost func(context.Context, string) ([]net.IP, error), allowEnvironmentProxy bool) *http.Transport {
 	dialer := &net.Dialer{Timeout: 15 * time.Second, KeepAlive: 30 * time.Second}
+	var proxy func(*http.Request) (*url.URL, error)
+	if allowEnvironmentProxy {
+		proxy = outboundProxyFromEnvironment
+	}
 	return &http.Transport{
-		Proxy: outboundProxyFromEnvironment,
+		Proxy: proxy,
 		DialContext: func(ctx context.Context, network string, address string) (net.Conn, error) {
 			host, port, err := net.SplitHostPort(address)
 			if err != nil {
 				return nil, err
 			}
 			// 代理地址由部署者通过环境变量配置；目标 URL 仍在请求前经过 SSRF 校验。
-			if configuredProxyHost(host) {
+			if allowEnvironmentProxy && configuredProxyHost(host) {
 				return dialer.DialContext(ctx, network, address)
 			}
 			addresses, err := resolveHost(ctx, host)
@@ -301,18 +377,34 @@ func configuredProxyHost(host string) bool {
 }
 
 func validateOutboundHost(host string) error {
-	_, err := resolveOutboundHost(context.Background(), host)
+	ctx, cancel := context.WithTimeout(context.Background(), outboundValidationTimeout)
+	defer cancel()
+	_, err := resolveOutboundHost(ctx, host)
 	return err
 }
 
 func validateCustomRelayHost(host string) error {
-	_, err := resolveCustomRelayHost(context.Background(), host)
+	ctx, cancel := context.WithTimeout(context.Background(), outboundValidationTimeout)
+	defer cancel()
+	_, err := resolveCustomRelayHost(ctx, host)
 	return err
 }
 
 func resolveOutboundHost(ctx context.Context, host string) ([]net.IP, error) {
 	host = normalizeOutboundHost(host)
-	return resolveOutboundHostWithPolicy(ctx, host, allowPrivateUpstreams() || allowedPrivateUpstreamHost(host))
+	allowPrivateHost := allowPrivateUpstreams() || allowedPrivateUpstreamHost(host)
+	addresses, err := resolveOutboundHostWithPolicy(ctx, host, allowPrivateHost)
+	if err != nil {
+		return nil, err
+	}
+	if !allowPrivateHost {
+		for _, ip := range addresses {
+			if blockedCustomRelayIP(ip) {
+				return nil, BadAuthRequest("不允许访问保留地址或特殊用途地址")
+			}
+		}
+	}
+	return addresses, nil
 }
 
 func resolveCustomRelayHost(ctx context.Context, host string) ([]net.IP, error) {
@@ -327,6 +419,20 @@ func resolveCustomRelayHost(ctx context.Context, host string) ([]net.IP, error) 
 			if blockedCustomRelayIP(ip) {
 				return nil, BadAuthRequest("不允许访问保留地址或特殊用途地址")
 			}
+		}
+	}
+	return addresses, nil
+}
+
+func resolvePublicOutboundHost(ctx context.Context, host string) ([]net.IP, error) {
+	host = normalizeOutboundHost(host)
+	addresses, err := resolveOutboundHostWithPolicy(ctx, host, false)
+	if err != nil {
+		return nil, err
+	}
+	for _, ip := range addresses {
+		if blockedCustomRelayIP(ip) {
+			return nil, BadAuthRequest("不允许访问保留地址或特殊用途地址")
 		}
 	}
 	return addresses, nil

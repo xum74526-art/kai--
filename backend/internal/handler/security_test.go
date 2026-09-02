@@ -18,6 +18,21 @@ func TestAuthorizeSystemProxyAllowsConfiguredGenerationModel(t *testing.T) {
 	}
 }
 
+func TestSystemMiniMaxProviderRequestID(t *testing.T) {
+	if got, ok := systemMiniMaxProviderRequestID("/v2/query/video_generation/task-1"); !ok || got != "task-1" {
+		t.Fatalf("provider request id = %q, ok = %v", got, ok)
+	}
+	for _, value := range []string{
+		"/v2/query/video_generation/",
+		"/v2/query/video_generation/..",
+		"/v2/query/video_generation/task%2Fforeign",
+	} {
+		if _, ok := systemMiniMaxProviderRequestID(value); ok {
+			t.Fatalf("unsafe provider request path accepted: %s", value)
+		}
+	}
+}
+
 func TestAuthorizeSystemProxyAllowsGrokImageJSONEdits(t *testing.T) {
 	channel := &model.ModelChannel{APIFormat: "openai", ModelsJSON: `["grok-imagine-image"]`}
 	body := []byte(`{"model":"grok-imagine-image","prompt":"edit"}`)

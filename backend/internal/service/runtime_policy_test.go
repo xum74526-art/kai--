@@ -66,6 +66,28 @@ func TestBailianImageDeadlineStaysRunningForProviderPoll(t *testing.T) {
 	}
 }
 
+func TestProviderPollResumeSupportStaysProtocolSpecific(t *testing.T) {
+	tests := []struct {
+		name     string
+		taskType string
+		config   providerConfig
+		want     bool
+	}{
+		{name: "async audio", taskType: "canvas_audio", config: providerConfig{InterfaceType: string(model.ChannelInterfaceAsyncAudio)}, want: true},
+		{name: "minimax video", taskType: "canvas_video", config: providerConfig{InterfaceType: string(model.ChannelInterfaceMiniMaxVideo)}, want: true},
+		{name: "gemini veo", taskType: "canvas_video", config: providerConfig{InterfaceType: string(model.ChannelInterfaceGeminiVeo)}, want: true},
+		{name: "unknown openai video", taskType: "canvas_video", config: providerConfig{InterfaceType: string(model.ChannelInterfaceNewAPIVideo)}, want: false},
+		{name: "image protocol cannot resume video", taskType: "canvas_video", config: providerConfig{InterfaceType: string(model.ChannelInterfaceBailianImage)}, want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := providerPollResumeSupported(test.taskType, test.config); got != test.want {
+				t.Fatalf("providerPollResumeSupported(%q, %#v) = %v, want %v", test.taskType, test.config, got, test.want)
+			}
+		})
+	}
+}
+
 func TestResumableVideoDeadlineUsesResolvedSystemChannelProtocol(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:"+newID()+"?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {
