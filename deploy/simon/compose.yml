@@ -14,8 +14,8 @@ services:
       CANVAS_PUBLIC_BASE_PATH: /kai
       CANVAS_PUBLIC_BASE_URL: https://simon.kai.com/kai
       CANVAS_DATABASE_DRIVER: sqlite
-      # 是否开放公开注册由服务器私有 .env 明确决定；新注册用户仍只能是普通用户，
-      # 数据库和预检继续强制恰好一个管理员。
+      # 仅在数据库没有后台注册设置时作为兜底；已有设置以管理员后台保存值为准。
+      # 新注册用户仍只能是普通用户，数据库和预检继续强制恰好一个管理员。
       CANVAS_REGISTRATION_ENABLED: ${CANVAS_REGISTRATION_ENABLED:-false}
       CANVAS_CORS_ORIGINS: https://simon.kai.com
       # 后端仅暴露在 Compose 网络内；只信任 Docker bridge 段，不信任公网来源头。
