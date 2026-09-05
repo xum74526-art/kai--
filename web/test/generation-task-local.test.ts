@@ -1,8 +1,10 @@
 import { expect, test } from "bun:test";
 
+import { normalizeBackendMediaUrl } from "../src/lib/app-base-path";
+import { apiClient } from "../src/services/api/request";
 import { defaultConfig } from "../src/stores/use-config-store";
 import { runBackendGenerationTask, runBackendGenerationTaskBatch } from "../src/services/api/generation-task";
-import { deleteGenerationTask, formatTaskLog, listGenerationTasks, projectBackendSafeTaskLog, splitGenerationTaskObservationIds, type GenerationTask } from "../src/services/api/task-center";
+import { deleteGenerationTask, formatTaskLog, listGenerationTasks, listGenerationTasksByCreateMessage, projectBackendSafeTaskLog, splitGenerationTaskObservationIds, type GenerationTask, type GenerationTaskSubscriptionOptions } from "../src/services/api/task-center";
 import { isLocalDreaminaBackgroundTask, localDreaminaCancellationCopy, localDreaminaDetachOutcome, projectLocalDreaminaTask } from "../src/services/local-dreamina-task-projection";
 import { LocalDreaminaGenerationClientError, runLocalDreaminaGenerationTask, type LocalDreaminaGenerationInput } from "../src/services/local-dreamina-generation";
 import { createGenerationBatchRetryContexts, createGenerationRetryContext, generationTaskMetadata, runBackendCanvasGenerationTask, runCanvasGenerationTaskToConsumer } from "../src/lib/canvas/canvas-project-generation";
@@ -870,6 +872,47 @@ test("Create observes local Dreamina tasks by wait while remote providers keep p
         localWaitIds: ["dreamina:dreamina-local-task-0001"],
         remotePollIds: ["remote-task-0001", "remote-task-0002"],
     });
+});
+
+test.serial("task center reads create-message tasks through the current-user backend contract", async () => {
+    const previousAdapter = apiClient.defaults.adapter;
+    const controller = new AbortController();
+    const task: GenerationTask = {
+        id: "create-message-task-0001",
+        type: "canvas_image",
+        status: "succeeded",
+        prompt: "雨夜的车窗",
+        previewUrl: "/api/resources/preview-0001/media",
+        attempts: 1,
+        createdAt: "2026-09-05T00:00:00.000Z",
+        updatedAt: "2026-09-05T00:00:00.000Z",
+    };
+    let received: { url?: string; params?: unknown; signal?: AbortSignal } | undefined;
+    apiClient.defaults.adapter = async (config) => {
+        received = { url: config.url, params: config.params, signal: config.signal };
+        return { data: { code: 0, data: [task], msg: "" }, status: 200, statusText: "OK", headers: {}, config };
+    };
+    try {
+        const tasks = await listGenerationTasksByCreateMessage({
+            conversationId: " conversation-create-0001 ",
+            messageId: " message-create-0001 ",
+            signal: controller.signal,
+        });
+
+        expect(received).toEqual({
+            url: "/tasks",
+            params: { conversationId: "conversation-create-0001", messageId: "message-create-0001", limit: 100 },
+            signal: controller.signal,
+        });
+        expect(tasks[0]?.previewUrl).toBe(normalizeBackendMediaUrl(task.previewUrl!));
+    } finally {
+        apiClient.defaults.adapter = previousAdapter;
+    }
+});
+
+test("task center rejects empty create-message task query ids before requesting tasks", () => {
+    expect(() => listGenerationTasksByCreateMessage({ conversationId: "  ", messageId: "message-create-0001" })).toThrow("conversationId");
+    expect(() => listGenerationTasksByCreateMessage({ conversationId: "conversation-create-0001", messageId: "  " })).toThrow("messageId");
 });
 
 test("task center cursor-merges more than 100 Backend/local tasks and preserves project filtering for local history", async () => {
@@ -2041,11 +2084,65 @@ test("real canvas agent generation entry persists continuation, observes termina
     expect(subscriptions).toEqual([[running.id]]);
 });
 
+test("agent generation observation rejects and disposes its subscription on a final observation error", async () => {
+    const node: CanvasNodeData = {
+        id: "agent-subscription-error-node",
+        type: CanvasNodeType.Image,
+        title: "Agent subscription error",
+        position: { x: 0, y: 0 },
+        width: 320,
+        height: 180,
+        metadata: { generationMode: "image", composerContent: "fixture" },
+    };
+    const running: GenerationTask = {
+        id: "agent-subscription-error-task",
+        projectId: "agent-subscription-error-project",
+        type: "canvas_image",
+        status: "running",
+        prompt: "fixture",
+        attempts: 1,
+        createdAt: "2026-09-04T00:00:00.000Z",
+        updatedAt: "2026-09-04T00:00:00.000Z",
+    };
+    let unsubscribeCalls = 0;
+    const continuations: Array<NonNullable<NonNullable<CanvasNodeData["metadata"]>["agentGenerationContinuation"]>> = [];
+
+    const pending = runCanvasAgentGenerationOps({
+        generationOps: [{ type: "run_generation", nodeId: node.id, mode: "image" }],
+        nodes: [node],
+        generate: async (_nodeId, _mode, _prompt, options) => {
+            options.onTaskUpdate?.(running);
+        },
+        subscribeTasks: (_ids, _listener, options) => {
+            queueMicrotask(() => options?.onError?.({ taskId: running.id, error: new Error("任务读取权限已失效"), retryable: false, retryCount: 0, willRetry: false }));
+            return () => {
+                unsubscribeCalls += 1;
+            };
+        },
+        onContinuation: (_nodeId, continuation) => {
+            continuations.push(continuation);
+        },
+    });
+
+    await expect(pending).rejects.toThrow("任务读取权限已失效");
+    expect(unsubscribeCalls).toBe(1);
+    expect(continuations.at(-1)).toMatchObject({
+        taskId: running.id,
+        status: "failed",
+        errorMessage: "任务状态同步失败：任务读取权限已失效",
+    });
+});
+
 test("canvas refresh recovery consumes shared task subscriptions instead of querying and waiting per page", async () => {
     const module = await import("../src/pages/canvas/use-canvas-generation");
     const subscribeRecovery = (
         module as {
-            subscribeCanvasGenerationRecoveryTasks?: (ids: readonly string[], listener: (task: GenerationTask) => void, subscribe: (ids: readonly string[], listener: (task: GenerationTask) => void) => () => void) => () => void;
+            subscribeCanvasGenerationRecoveryTasks?: (
+                ids: readonly string[],
+                listener: (task: GenerationTask) => void,
+                subscribe: (ids: readonly string[], listener: (task: GenerationTask) => void, options?: GenerationTaskSubscriptionOptions) => () => void,
+                options?: GenerationTaskSubscriptionOptions,
+            ) => () => void;
         }
     ).subscribeCanvasGenerationRecoveryTasks;
     expect(typeof subscribeRecovery).toBe("function");
@@ -2076,6 +2173,37 @@ test("canvas refresh recovery consumes shared task subscriptions instead of quer
 
     expect(subscribedIds).toEqual([task.id]);
     expect(observed).toEqual([task]);
+});
+
+test("canvas recovery subscriptions forward final observation errors", async () => {
+    const module = await import("../src/pages/canvas/use-canvas-generation");
+    const subscribeRecovery = (
+        module as {
+            subscribeCanvasGenerationRecoveryTasks?: (
+                ids: readonly string[],
+                listener: (task: GenerationTask) => void,
+                subscribe: (ids: readonly string[], listener: (task: GenerationTask) => void, options?: GenerationTaskSubscriptionOptions) => () => void,
+                options?: GenerationTaskSubscriptionOptions,
+            ) => () => void;
+        }
+    ).subscribeCanvasGenerationRecoveryTasks;
+    expect(typeof subscribeRecovery).toBe("function");
+    if (!subscribeRecovery) return;
+
+    const errors: Array<{ taskId: string; willRetry: boolean }> = [];
+    const unsubscribe = subscribeRecovery(
+        ["canvas-recovery-error-task"],
+        () => undefined,
+        (_ids, _listener, options) => {
+            queueMicrotask(() => options?.onError?.({ taskId: "canvas-recovery-error-task", error: new Error("无权读取任务"), retryable: false, retryCount: 0, willRetry: false }));
+            return () => undefined;
+        },
+        { onError: (event) => errors.push({ taskId: event.taskId, willRetry: event.willRetry }) },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    unsubscribe();
+
+    expect(errors).toEqual([{ taskId: "canvas-recovery-error-task", willRetry: false }]);
 });
 
 test("canvas project switch aborts and drains stale recovery before applying the next project's same node id", async () => {

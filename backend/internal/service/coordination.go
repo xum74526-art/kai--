@@ -64,6 +64,48 @@ type runtimeCoordinator struct {
 	localSlots map[string]map[string]time.Time
 }
 
+var (
+	errRuntimeSlotLeaseReleased = errors.New("并发槽位租约已释放")
+	errRuntimeSlotLeaseLost     = errors.New("并发槽位租约已失效")
+)
+
+// runtimeSlotLease 将一个全局并发槽位与实际执行生命周期绑定。调用方必须在执行结束时
+// Release；长任务则周期性 Renew，避免旧的固定 TTL 在任务仍运行时提前释放配额。
+type runtimeSlotLease struct {
+	coordinator *runtimeCoordinator
+	scope       string
+	token       string
+	ttl         time.Duration
+
+	mu       sync.Mutex
+	released bool
+}
+
+func (lease *runtimeSlotLease) Release() {
+	if lease == nil || lease.coordinator == nil {
+		return
+	}
+	lease.mu.Lock()
+	defer lease.mu.Unlock()
+	if lease.released {
+		return
+	}
+	lease.released = true
+	lease.coordinator.releaseSlot(lease.scope, lease.token)
+}
+
+func (lease *runtimeSlotLease) Renew(ctx context.Context) error {
+	if lease == nil || lease.coordinator == nil {
+		return errors.New("并发槽位租约不可用")
+	}
+	lease.mu.Lock()
+	defer lease.mu.Unlock()
+	if lease.released {
+		return errRuntimeSlotLeaseReleased
+	}
+	return lease.coordinator.renewSlot(ctx, lease.scope, lease.token, lease.ttl)
+}
+
 var fixedWindowScript = redis.NewScript(`
 local count = redis.call('INCR', KEYS[1])
 if count == 1 then redis.call('PEXPIRE', KEYS[1], ARGV[1]) end
@@ -75,6 +117,14 @@ redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', ARGV[1])
 if redis.call('ZCARD', KEYS[1]) >= tonumber(ARGV[3]) then return 0 end
 redis.call('ZADD', KEYS[1], ARGV[2], ARGV[4])
 redis.call('PEXPIRE', KEYS[1], ARGV[5])
+return 1
+`)
+
+var renewSlotScript = redis.NewScript(`
+redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', ARGV[1])
+if not redis.call('ZSCORE', KEYS[1], ARGV[3]) then return 0 end
+redis.call('ZADD', KEYS[1], ARGV[2], ARGV[3])
+redis.call('PEXPIRE', KEYS[1], ARGV[4])
 return 1
 `)
 
@@ -122,6 +172,18 @@ func (c *runtimeCoordinator) allow(ctx context.Context, key string, limit int, w
 }
 
 func (c *runtimeCoordinator) acquire(ctx context.Context, scope string, limit int, ttl time.Duration) (func(), bool, error) {
+	lease, acquired, err := c.acquireLease(ctx, scope, limit, ttl)
+	if err != nil || !acquired {
+		return nil, acquired, err
+	}
+	return lease.Release, true, nil
+}
+
+func (c *runtimeCoordinator) acquireLease(ctx context.Context, scope string, limit int, ttl time.Duration) (*runtimeSlotLease, bool, error) {
+	if ttl <= 0 {
+		return nil, false, errors.New("并发槽位租约时长必须大于零")
+	}
+	token := c.instanceID + ":" + newID()
 	if c.redis == nil {
 		c.localMu.Lock()
 		now := time.Now()
@@ -139,24 +201,61 @@ func (c *runtimeCoordinator) acquire(ctx context.Context, scope string, limit in
 			c.localMu.Unlock()
 			return nil, false, nil
 		}
-		token := c.instanceID + ":" + newID()
 		slots[token] = now.Add(ttl)
 		c.localMu.Unlock()
-		return func() {
-			c.localMu.Lock()
-			delete(c.localSlots[scope], token)
-			c.localMu.Unlock()
-		}, true, nil
+		return &runtimeSlotLease{coordinator: c, scope: scope, token: token, ttl: ttl}, true, nil
 	}
 	// 有过期分数的有序集合避免实例崩溃后永久占槽，业务数据库仍保存任务与账本真相。
 	key := "canvas:slots:" + scope
-	token := c.instanceID + ":" + newID()
 	now := time.Now()
 	ok, err := acquireSlotScript.Run(ctx, c.redis, []string{key}, now.UnixMilli(), now.Add(ttl).UnixMilli(), limit, token, (ttl + time.Minute).Milliseconds()).Int()
 	if err != nil || ok != 1 {
 		return nil, false, err
 	}
-	return func() { _ = c.redis.ZRem(context.Background(), key, token).Err() }, true, nil
+	return &runtimeSlotLease{coordinator: c, scope: scope, token: token, ttl: ttl}, true, nil
+}
+
+func (c *runtimeCoordinator) renewSlot(ctx context.Context, scope string, token string, ttl time.Duration) error {
+	if ttl <= 0 {
+		return errors.New("并发槽位租约时长必须大于零")
+	}
+	if c.redis == nil {
+		c.localMu.Lock()
+		defer c.localMu.Unlock()
+		now := time.Now()
+		slots := c.localSlots[scope]
+		expiresAt, exists := slots[token]
+		if !exists || !expiresAt.After(now) {
+			if exists {
+				delete(slots, token)
+			}
+			return errRuntimeSlotLeaseLost
+		}
+		slots[token] = now.Add(ttl)
+		return nil
+	}
+	key := "canvas:slots:" + scope
+	now := time.Now()
+	renewed, err := renewSlotScript.Run(ctx, c.redis, []string{key}, now.UnixMilli(), now.Add(ttl).UnixMilli(), token, (ttl + time.Minute).Milliseconds()).Int()
+	if err != nil {
+		return err
+	}
+	if renewed != 1 {
+		return errRuntimeSlotLeaseLost
+	}
+	return nil
+}
+
+func (c *runtimeCoordinator) releaseSlot(scope string, token string) {
+	if c.redis == nil {
+		c.localMu.Lock()
+		if slots := c.localSlots[scope]; slots != nil {
+			delete(slots, token)
+		}
+		c.localMu.Unlock()
+		return
+	}
+	_ = c.redis.ZRem(context.Background(), "canvas:slots:"+scope, token).Err()
 }
 
 func (c *runtimeCoordinator) acquireWithWait(ctx context.Context, scope string, limit int, ttl time.Duration) (func(), error) {

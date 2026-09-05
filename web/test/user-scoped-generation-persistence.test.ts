@@ -8,7 +8,7 @@ import { switchUserStorageScope } from "../src/lib/user-session";
 import { canvasCinematicContinuationEntryAdapters } from "../src/components/canvas/canvas-assistant-panel";
 import { activeGenerationConsumerController, beginGenerationConsumer, runGenerationConsumer } from "../src/services/generation-consumer-lifecycle";
 import { createCanvasGenerationLiveProjectAdapter, persistCanvasCinematicSessionContinuationEffect, persistCanvasGenerationEffect, registerCanvasGenerationLiveProject } from "../src/services/canvas-generation-consumer";
-import { CREATION_CONVERSATIONS_KEY, loadCreationConversations, pendingCreationTaskIds, pendingCreationTaskKey, saveCreationConversations } from "../src/services/creation-conversation-store";
+import { CREATION_CONVERSATIONS_KEY, loadCreationConversations, pendingCreationTaskContextKeys, pendingCreationTaskIds, pendingCreationTaskKey, saveCreationConversations } from "../src/services/creation-conversation-store";
 import { recoverCreationTextTask } from "../src/services/creation-text-task-recovery";
 import { ASSET_STORE_KEY, flushAssetStorePersistence, useAssetStore, type Asset, type NewAsset } from "../src/stores/use-asset-store";
 import { withGenerationAssetStorageLock } from "../src/services/generation-asset-repository";
@@ -29,6 +29,25 @@ test("creation recovery observes streaming text tasks after reload", () => {
 
     expect(pendingCreationTaskIds(conversations)).toEqual(["task-text", "task-image"]);
     expect(pendingCreationTaskKey(conversations)).toContain("conversation-text-recovery:text-streaming:task-text");
+});
+
+test("creation recovery discovers incomplete media batches by durable conversation context", () => {
+    const conversations = [{
+        id: "conversation-batch-recovery",
+        messages: [
+            { id: "image-partial", role: "assistant" as const, mode: "image", status: "pending", taskIds: ["task-first"], expectedTaskCount: 3 },
+            { id: "image-unbound", role: "assistant" as const, mode: "image", status: "pending", expectedTaskCount: 2 },
+            { id: "video-complete", role: "assistant" as const, mode: "video", status: "pending", taskIds: ["task-video"], expectedTaskCount: 1 },
+            { id: "legacy-known-only", role: "assistant" as const, mode: "image", status: "pending", taskIds: ["legacy-task"] },
+        ],
+    }];
+
+    expect(pendingCreationTaskIds(conversations)).toEqual(["task-first", "task-video", "legacy-task"]);
+    expect(pendingCreationTaskContextKeys(conversations)).toEqual([
+        "conversation-batch-recovery:image-partial",
+        "conversation-batch-recovery:image-unbound",
+    ]);
+    expect(pendingCreationTaskKey(conversations)).toContain("conversation-batch-recovery:image-unbound::2");
 });
 
 test("creation recovery restores completed text and terminal status", () => {

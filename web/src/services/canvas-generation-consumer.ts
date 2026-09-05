@@ -142,7 +142,8 @@ export async function persistCanvasAgentGenerationContinuationEffect(input: {
     const currentNodes = input.nodesRef.current;
     const currentNode = currentNodes.find((node) => node.id === input.nodeId);
     if (!currentNode) throw new Error("画布中找不到 Agent continuation 节点");
-    if (generationEffectApplied(currentNode.metadata || {}, input.effectKey) && currentNode.metadata?.agentGenerationContinuation?.status === "completed") return;
+    if (generationEffectApplied(currentNode.metadata || {}, input.effectKey) && currentNode.metadata?.agentGenerationContinuation?.status === input.continuation.status) return;
+    const failureMessage = input.continuation.status === "failed" ? input.continuation.errorMessage || "任务状态无法继续同步，请重新生成。" : undefined;
 
     const nodes = currentNodes.map((node) =>
         node.id === input.nodeId
@@ -151,6 +152,7 @@ export async function persistCanvasAgentGenerationContinuationEffect(input: {
                   metadata: {
                       ...node.metadata,
                       agentGenerationContinuation: input.continuation,
+                      ...(failureMessage ? { status: "error" as const, errorDetails: failureMessage } : {}),
                       generationEffectKeys: Array.from(new Set([...(node.metadata?.generationEffectKeys || []), input.effectKey])),
                   },
               }

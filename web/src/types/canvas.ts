@@ -269,6 +269,7 @@ export type CanvasNodeMetadata = {
         messageId?: string;
         source?: "online" | "local";
         status: "pending" | "completed" | "failed";
+        errorMessage?: string;
         effectKey?: string;
     };
     sessionId?: string;

@@ -50,6 +50,7 @@ type Service struct {
 
 const taskWorkerConcurrency = 3
 const taskLogPayloadLimit = 4000
+const createPageTaskQueryMaxLimit = 100
 
 type CreateSessionRequest struct {
 	ProjectID      string                    `json:"projectId"`
@@ -84,9 +85,11 @@ type SessionDetail struct {
 }
 
 type TaskListOptions struct {
-	Limit      int
-	ProjectID  string
-	ActiveOnly bool
+	Limit          int
+	ProjectID      string
+	ActiveOnly     bool
+	ConversationID string
+	MessageID      string
 }
 
 func New(repo *repository.Repository, dataDir string) *Service {
@@ -154,7 +157,18 @@ func (s *Service) Tasks(userID string, limit int) ([]TaskSummary, error) {
 }
 
 func (s *Service) TasksWithOptions(userID string, options TaskListOptions) ([]TaskSummary, error) {
-	tasks, err := s.repo.Tasks(userID, options.Limit, options.ProjectID, options.ActiveOnly)
+	conversationID, messageID, exactCreatePageQuery, err := normalizedCreatePageTaskQuery(options)
+	if err != nil {
+		return nil, err
+	}
+	var tasks []model.Task
+	if exactCreatePageQuery {
+		// 一条创作消息可拆出多个任务；按最新优先读取受硬上限保护的批次，
+		// 当前图片单批最多 15 张，100 条上限留有余量且避免恶意上下文无限返回。
+		tasks, err = s.repo.TasksForCreatePageMessage(userID, conversationID, messageID, createPageTaskQueryLimit(options.Limit))
+	} else {
+		tasks, err = s.repo.Tasks(userID, options.Limit, options.ProjectID, options.ActiveOnly)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -163,6 +177,28 @@ func (s *Service) TasksWithOptions(userID string, options TaskListOptions) ([]Ta
 		return nil, err
 	}
 	return taskSummariesForOutputWithBilling(tasks, orders), nil
+}
+
+func createPageTaskQueryLimit(limit int) int {
+	if limit <= 0 || limit > createPageTaskQueryMaxLimit {
+		return createPageTaskQueryMaxLimit
+	}
+	return limit
+}
+
+func normalizedCreatePageTaskQuery(options TaskListOptions) (string, string, bool, error) {
+	conversationID := strings.TrimSpace(options.ConversationID)
+	messageID := strings.TrimSpace(options.MessageID)
+	if (conversationID == "") != (messageID == "") {
+		return "", "", false, BadAuthRequest("conversationId 和 messageId 必须同时提供")
+	}
+	if conversationID == "" {
+		return "", "", false, nil
+	}
+	if !validTaskClientContextID(conversationID) || !validTaskClientContextID(messageID) {
+		return "", "", false, BadAuthRequest("conversationId 或 messageId 格式无效")
+	}
+	return conversationID, messageID, true, nil
 }
 
 func (s *Service) Task(userID string, id string) (*model.Task, error) {

@@ -92,6 +92,7 @@ func (s *Service) CreateTask(userID string, req CreateTaskRequest) (*model.Task,
 	if err := s.protectTaskSecrets(normalizedInput); err != nil {
 		return nil, err
 	}
+	applyCreatePageTaskClientContext(&task, normalizedInput)
 	inputJSON, err := json.Marshal(normalizedInput)
 	if err != nil {
 		return nil, fmt.Errorf("序列化任务输入失败：%w", err)
@@ -215,6 +216,7 @@ func (s *Service) createTextReplayTask(userID string, req CreateTaskRequest, nor
 	if err := s.protectTaskSecrets(normalizedInput); err != nil {
 		return nil, err
 	}
+	applyCreatePageTaskClientContext(&task, normalizedInput)
 	inputJSON, _ := json.Marshal(normalizedInput)
 	task.InputJSON = string(inputJSON)
 	policy, err := s.RuntimePolicy()

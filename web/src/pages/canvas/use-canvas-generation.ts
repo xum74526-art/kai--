@@ -5,7 +5,7 @@ import { App } from "antd";
 import { applyGenerationTaskResultToNodes, generationTaskNodeId } from "@/lib/canvas/canvas-generation-task-sync";
 import { applyCanvasGenerationTaskNodeEffect, isCanvasGenerationDurableAckError } from "@/services/canvas-generation-consumer";
 import { consumeGenerationTaskNode, ensureCanvasNodeAsset } from "@/services/project-asset-sync";
-import { listGenerationTasks, listTaskLogs, queryGenerationTask, subscribeGenerationTasks, type GenerationTask, type TaskLog } from "@/services/api/task-center";
+import { listGenerationTasks, listTaskLogs, queryGenerationTask, subscribeGenerationTasks, type GenerationTask, type GenerationTaskSubscriptionOptions, type TaskLog } from "@/services/api/task-center";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { cinematicStoryboardColumns, storyboardRowsFromTask } from "@/lib/canvas/canvas-project-domain";
@@ -34,8 +34,15 @@ const NODE_STATUS_LOADING = "loading" as const;
 const NODE_STATUS_SUCCESS = "success" as const;
 const NODE_STATUS_ERROR = "error" as const;
 
-export function subscribeCanvasGenerationRecoveryTasks(ids: readonly string[], listener: (task: GenerationTask) => void, subscribe: (ids: readonly string[], listener: (task: GenerationTask) => void) => () => void = subscribeGenerationTasks) {
-    return subscribe(Array.from(new Set(ids)), listener);
+type CanvasGenerationTaskSubscriber = (ids: readonly string[], listener: (task: GenerationTask) => void, options?: GenerationTaskSubscriptionOptions) => () => void;
+
+export function subscribeCanvasGenerationRecoveryTasks(
+    ids: readonly string[],
+    listener: (task: GenerationTask) => void,
+    subscribe: CanvasGenerationTaskSubscriber = subscribeGenerationTasks,
+    options?: GenerationTaskSubscriptionOptions,
+) {
+    return subscribe(Array.from(new Set(ids)), listener, options);
 }
 
 export type CanvasGenerationRecoveryContext = {
@@ -332,9 +339,15 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
                     cleanup();
                     resolve(task);
                 };
+                const onSubscriptionError: NonNullable<GenerationTaskSubscriptionOptions["onError"]> = ({ error, willRetry }) => {
+                    if (settled || willRetry) return;
+                    settled = true;
+                    cleanup();
+                    reject(error);
+                };
                 if (signal.aborted) return onAbort();
                 signal.addEventListener("abort", onAbort, { once: true });
-                unsubscribe = subscribeCanvasGenerationRecoveryTasks([taskId], onTask);
+                unsubscribe = subscribeCanvasGenerationRecoveryTasks([taskId], onTask, subscribeGenerationTasks, { onError: onSubscriptionError });
                 if (settled) unsubscribe();
             }),
         [],
@@ -345,6 +358,8 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
             if (!isCurrentProject()) return;
             const recoveryNodes = nodesRef.current.filter((node) => {
                 const pendingAgentContinuation = node.metadata?.agentGenerationContinuation?.status === "pending";
+                const failedAgentContinuation = node.metadata?.agentGenerationContinuation?.status === "failed";
+                if (failedAgentContinuation) return false;
                 const aggregateBatchRoot = node.metadata?.isBatchRoot && node.metadata.batchChildIds?.length && !node.metadata.taskId;
                 if (aggregateBatchRoot && !pendingAgentContinuation) return false;
                 return pendingAgentContinuation || node.metadata?.status === NODE_STATUS_LOADING || node.metadata?.errorDetails === "页面刷新后生成已中断，请重新生成。" || Boolean(node.metadata?.taskId && node.metadata.status !== NODE_STATUS_SUCCESS);

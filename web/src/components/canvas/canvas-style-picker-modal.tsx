@@ -6,6 +6,7 @@ import { nanoid } from "nanoid";
 
 import { StyleProfileEditorModal } from "@/components/canvas/style-profile-editor-modal";
 import { canvasThemes } from "@/lib/canvas-theme";
+import { persistSystemStyleLibraryIds, readSystemStyleLibraryIds } from "@/lib/canvas/canvas-style-library-storage";
 import { publicAssetPath } from "@/lib/app-base-path";
 import { createStyleProfileSnapshot, parseStyleProfile, serializeStyleProfile, type StyleProfileSnapshot } from "@/lib/canvas/style-profile";
 import {
@@ -17,6 +18,7 @@ import {
 } from "@/lib/canvas/canvas-style-system";
 import { createStyleProfile, deleteStyleProfile, listStyleProfiles, setStyleProfileFavorite, touchStyleProfile, updateStyleProfile, type UserStyleProfile } from "@/services/api/style-profiles";
 import { useThemeStore } from "@/stores/use-theme-store";
+import { useUserStore } from "@/stores/use-user-store";
 
 export type { CanvasStylePreset } from "@/lib/canvas/canvas-style-system";
 
@@ -418,9 +420,6 @@ export function resolveProjectCanvasStyle(presetId?: string, profileJson?: strin
     };
 }
 
-const STYLE_FAVORITES_KEY = "canvas:style-library:favorites";
-const STYLE_RECENT_KEY = "canvas:style-library:recent";
-
 type StyleCenterTab = "system" | "mine" | "favorites" | "recent";
 type SystemStyleLibraryItem = { kind: "system"; preset: CanvasStylePreset };
 type UserStyleLibraryItem = { kind: "user"; preset: CanvasStylePreset; entity: UserStyleProfile };
@@ -439,6 +438,7 @@ export function CanvasStylePickerModal({ open, value, currentProfile, startInEdi
     const { message, modal } = App.useApp();
     const queryClient = useQueryClient();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const activeUserId = useUserStore((state) => state.user?.id || "guest");
     const [detailPreset, setDetailPreset] = useState<CanvasStylePreset | null>(null);
     const [tab, setTab] = useState<StyleCenterTab>("system");
     const [query, setQuery] = useState("");
@@ -453,10 +453,10 @@ export function CanvasStylePickerModal({ open, value, currentProfile, startInEdi
         setTab("system");
         setQuery("");
         setCategory("全部");
-        setSystemFavoriteIds(readStyleIds(STYLE_FAVORITES_KEY));
-        setRecentIds(readStyleIds(STYLE_RECENT_KEY));
+        setSystemFavoriteIds(readSystemStyleLibraryIds("favorites"));
+        setRecentIds(readSystemStyleLibraryIds("recent"));
         setEditor(startInEditor && currentProfile?.source !== "user" && currentProfile ? { profile: editableCopy(currentProfile) } : null);
-    }, [currentProfile, open, startInEditor]);
+    }, [activeUserId, currentProfile, open, startInEditor]);
 
     const userItems = useMemo<UserStyleLibraryItem[]>(() => (profilesQuery.data?.profiles || []).flatMap((entity) => {
         const preset = userStylePreset(entity);
@@ -517,14 +517,14 @@ export function CanvasStylePickerModal({ open, value, currentProfile, startInEdi
         const { preset } = item;
         const next = [preset.id, ...recentIds.filter((id) => id !== preset.id)].slice(0, 12);
         setRecentIds(next);
-        localStorage.setItem(STYLE_RECENT_KEY, JSON.stringify(next));
+        persistSystemStyleLibraryIds("recent", next);
         if (item.kind === "user") void touchStyleProfile(item.entity.id).then(() => queryClient.invalidateQueries({ queryKey: ["style-profiles"] })).catch((error) => message.warning(error instanceof Error ? error.message : "最近使用记录更新失败"));
         onSelect(preset);
     }
     function toggleSystemFavorite(presetId: string) {
         const next = systemFavoriteIds.includes(presetId) ? systemFavoriteIds.filter((id) => id !== presetId) : [presetId, ...systemFavoriteIds];
         setSystemFavoriteIds(next);
-        localStorage.setItem(STYLE_FAVORITES_KEY, JSON.stringify(next));
+        persistSystemStyleLibraryIds("favorites", next);
     }
     function createNewStyle() {
         setEditor({ profile: blankUserStyle() });
@@ -599,15 +599,6 @@ export function CanvasStylePickerModal({ open, value, currentProfile, startInEdi
             <StyleProfileEditorModal open={Boolean(editor)} initialProfile={editor?.profile || null} saving={saveMutation.isPending} onClose={() => setEditor(null)} onSave={(profile, apply) => saveMutation.mutate({ profile, apply })} />
         </>
     );
-}
-
-function readStyleIds(key: string) {
-    try {
-        const parsed = JSON.parse(localStorage.getItem(key) || "[]");
-        return Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === "string").slice(0, 100) : [];
-    } catch {
-        return [];
-    }
 }
 
 function StyleCenterCard({ item, active, applying, favorite, theme, onApply, onDetail, onFavorite, onCopy, onEdit, onDelete }: { item: StyleLibraryItem; active: boolean; applying: boolean; favorite: boolean; theme: (typeof canvasThemes)[keyof typeof canvasThemes]; onApply: () => void; onDetail: () => void; onFavorite: () => void; onCopy: () => void; onEdit?: () => void; onDelete?: () => void }) {

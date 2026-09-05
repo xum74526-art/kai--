@@ -438,7 +438,11 @@ func (s *Service) openResourceRange(userID string, resource *model.Resource, ran
 		return nil, BadAuthRequest("资源尚未上传完成")
 	}
 	if resource.Provider == "local" {
-		body, err := os.Open(filepath.Join(s.dataDir, "resources", filepath.FromSlash(resource.ObjectKey)))
+		filePath, err := s.resolveLocalResourcePath(resource.ObjectKey)
+		if err != nil {
+			return nil, err
+		}
+		body, err := os.Open(filePath)
 		if err != nil {
 			return nil, err
 		}

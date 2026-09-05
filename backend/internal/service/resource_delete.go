@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -371,17 +370,9 @@ func (s *Service) deleteStoredResourceObject(userID string, resource *model.Reso
 }
 
 func (s *Service) deleteLocalResourceObject(objectKey string) error {
-	root, err := filepath.Abs(filepath.Join(s.dataDir, "resources"))
+	target, err := s.resolveLocalResourcePath(objectKey)
 	if err != nil {
-		return fmt.Errorf("解析本地资源目录失败：%w", err)
-	}
-	target, err := filepath.Abs(filepath.Join(root, filepath.FromSlash(strings.TrimLeft(objectKey, "/\\"))))
-	if err != nil {
-		return fmt.Errorf("解析本地资源路径失败：%w", err)
-	}
-	relative, err := filepath.Rel(root, target)
-	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-		return errors.New("本地资源路径超出允许目录")
+		return err
 	}
 	fileInfo, err := os.Lstat(target)
 	if errors.Is(err, os.ErrNotExist) {
@@ -391,18 +382,6 @@ func (s *Service) deleteLocalResourceObject(objectKey string) error {
 	}
 	if fileInfo.IsDir() {
 		return errors.New("本地资源路径指向目录，已停止删除")
-	}
-	resolvedRoot, err := filepath.EvalSymlinks(root)
-	if err != nil {
-		return fmt.Errorf("检查本地资源目录失败：%w", err)
-	}
-	resolvedTarget, err := filepath.EvalSymlinks(target)
-	if err != nil {
-		return fmt.Errorf("检查本地资源路径失败：%w", err)
-	}
-	resolvedRelative, err := filepath.Rel(resolvedRoot, resolvedTarget)
-	if err != nil || resolvedRelative == "." || resolvedRelative == ".." || strings.HasPrefix(resolvedRelative, ".."+string(filepath.Separator)) {
-		return errors.New("本地资源真实路径超出允许目录")
 	}
 	if err := os.Remove(target); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("删除服务器本地文件失败：%w", err)

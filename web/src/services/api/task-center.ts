@@ -1,6 +1,6 @@
 import { normalizeBackendMediaJson, normalizeBackendMediaUrl, normalizeBackendMediaUrls } from "@/lib/app-base-path";
 import { DREAMINA_SUBMIT_ERROR_MESSAGES, generationErrorMessage } from "@/lib/generation-error";
-import { apiClient, request, type BackendEnvelope } from "@/services/api/request";
+import { ApiError, apiClient, compactApiParams, request, type BackendEnvelope } from "@/services/api/request";
 import {
     deleteLocalDreaminaGenerationTask,
     listLocalDreaminaGenerationTaskPage,
@@ -254,6 +254,12 @@ export type GenerationTaskPageRequest = {
     cursor?: string;
 };
 
+export type CreateMessageGenerationTaskQuery = {
+    conversationId: string;
+    messageId: string;
+    signal?: AbortSignal;
+};
+
 type GenerationTaskPage<T> = { tasks: T[]; nextCursor?: string };
 type GenerationTaskListOptions = { projectId?: string; activeOnly?: boolean };
 type GenerationTaskListDependencies = {
@@ -274,6 +280,21 @@ const defaultGenerationTaskListDependencies: GenerationTaskListDependencies = {
     }),
     listLocalPage: (page, signal) => listLocalDreaminaGenerationTaskPage(page, {}, signal),
 };
+
+export function listGenerationTasksByCreateMessage(query: CreateMessageGenerationTaskQuery) {
+    const conversationId = typeof query?.conversationId === "string" ? query.conversationId.trim() : "";
+    const messageId = typeof query?.messageId === "string" ? query.messageId.trim() : "";
+    if (!conversationId) throw new Error("创作消息任务查询缺少 conversationId");
+    if (!messageId) throw new Error("创作消息任务查询缺少 messageId");
+
+    // 后端以登录 Cookie 约束当前用户；此处不能混入浏览器本地任务缓存或其他消息的任务。
+    return request<GenerationTask[]>(
+        api.get("/tasks", {
+            params: compactApiParams({ conversationId, messageId, limit: 100 }),
+            signal: query.signal,
+        }),
+    ).then((tasks) => tasks.map(normalizeGenerationTaskMedia));
+}
 
 export async function listGenerationTasks(limit = 30, options?: { projectId?: string; activeOnly?: boolean }, dependencies: GenerationTaskListDependencies = defaultGenerationTaskListDependencies, signal?: AbortSignal) {
     if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
@@ -355,43 +376,111 @@ export function splitGenerationTaskObservationIds(ids: readonly string[]) {
 type GenerationTaskSubscriptionDependencies = {
     queryTask(id: string, options?: { signal?: AbortSignal }): Promise<GenerationTask>;
     waitTask(id: string, options?: { signal?: AbortSignal; initialTask?: GenerationTask; onTaskUpdate?: (task: GenerationTask) => void }): Promise<GenerationTask>;
+    maxRetries?: number;
+    retryDelayMs?: (retryCount: number) => number;
 };
 
+export type GenerationTaskSubscriptionError = {
+    taskId: string;
+    error: unknown;
+    retryable: boolean;
+    retryCount: number;
+    willRetry: boolean;
+};
+
+export type GenerationTaskSubscriptionOptions = {
+    onError?: (event: GenerationTaskSubscriptionError) => void;
+};
+
+const MAX_TASK_OBSERVATION_RETRIES = 3;
+
+function isRetryableTaskObservationError(error: unknown) {
+    if (isAbortError(error)) return false;
+    const status = errorStatus(error);
+    // 未认证、无权限和任务已删除等 4xx 结果不会自行恢复，不能继续轮询。
+    if (status !== undefined && status >= 400 && status < 500 && status !== 408 && status !== 425 && status !== 429) return false;
+    if (error instanceof ApiError) return error.retryable || isTemporaryNetworkError(error.cause) || (status === undefined && isTemporaryNetworkError(error));
+    return isTemporaryNetworkError(error);
+}
+
+function errorStatus(error: unknown) {
+    if (!error || typeof error !== "object") return undefined;
+    const status = (error as { status?: unknown }).status;
+    return typeof status === "number" && Number.isFinite(status) ? status : undefined;
+}
+
+function isAbortError(error: unknown) {
+    return error instanceof DOMException && error.name === "AbortError";
+}
+
+function isTemporaryNetworkError(error: unknown): boolean {
+    if (!error || typeof error !== "object") return false;
+    const candidate = error as { name?: unknown; message?: unknown; code?: unknown };
+    if (candidate.name === "AbortError") return false;
+    const code = typeof candidate.code === "string" ? candidate.code.toUpperCase() : "";
+    if (["ECONNABORTED", "ECONNRESET", "ECONNREFUSED", "ENETUNREACH", "ETIMEDOUT", "EAI_AGAIN", "ERR_NETWORK", "ERR_CONNECTION_RESET"].includes(code)) return true;
+    const message = typeof candidate.message === "string" ? candidate.message : "";
+    return /(?:network(?:\s+error)?|failed to fetch|load failed|timeout|timed out|temporar(?:y|ily)|connection (?:reset|refused|lost)|offline)/i.test(message);
+}
+
 export function createGenerationTaskSubscriptionService(dependencies: GenerationTaskSubscriptionDependencies) {
+    const maxRetries = Number.isSafeInteger(dependencies.maxRetries) ? Math.max(0, dependencies.maxRetries!) : MAX_TASK_OBSERVATION_RETRIES;
+    const retryDelayMs = dependencies.retryDelayMs ?? ((retryCount: number) => Math.min(1_000 * 2 ** retryCount, 30_000));
     type Entry = {
-        listeners: Set<(task: GenerationTask) => void>;
+        listeners: Map<(task: GenerationTask) => void, GenerationTaskSubscriptionOptions["onError"]>;
         latest?: GenerationTask;
         observation?: Promise<void>;
         controller?: AbortController;
         retryTimer?: ReturnType<typeof setTimeout>;
         retryCount: number;
+        observationFailed?: GenerationTaskSubscriptionError;
     };
     const entries = new Map<string, Entry>();
     const isTerminal = (task?: GenerationTask) => task?.status === "succeeded" || task?.status === "failed" || task?.status === "cancelled";
+    const notifyTaskListener = (listener: (task: GenerationTask) => void, task: GenerationTask) => {
+        try {
+            listener(task);
+        } catch (error) {
+            // 单个页面订阅者的渲染/状态异常不能让同一任务的其他订阅者停止观察。
+            console.error("生成任务订阅回调失败", error);
+        }
+    };
+    const notifyErrorListener = (onError: GenerationTaskSubscriptionOptions["onError"], event: GenerationTaskSubscriptionError) => {
+        try {
+            onError?.(event);
+        } catch (error) {
+            console.error("生成任务订阅错误回调失败", error);
+        }
+    };
     const publish = (entry: Entry, task: GenerationTask) => {
         entry.latest = task;
-        for (const listener of entry.listeners) listener(task);
+        for (const listener of entry.listeners.keys()) notifyTaskListener(listener, task);
+    };
+    const publishError = (entry: Entry, event: GenerationTaskSubscriptionError) => {
+        for (const onError of entry.listeners.values()) notifyErrorListener(onError, event);
     };
     const disposeIdleEntry = (id: string, entry: Entry) => {
         if (entries.get(id) === entry && entry.listeners.size === 0 && !entry.observation && !entry.retryTimer) entries.delete(id);
     };
     let observe: (id: string, entry: Entry) => void;
     const scheduleRetry = (id: string, entry: Entry) => {
-        if (entry.listeners.size === 0 || entry.retryTimer || isTerminal(entry.latest)) return;
-        const delay = Math.min(1_000 * 2 ** entry.retryCount, 30_000);
+        if (entry.listeners.size === 0 || entry.retryTimer || isTerminal(entry.latest) || entry.observationFailed || entry.retryCount >= maxRetries) return false;
+        const requestedDelay = retryDelayMs(entry.retryCount);
+        const delay = Number.isFinite(requestedDelay) ? Math.max(0, requestedDelay) : 0;
         entry.retryCount += 1;
         entry.retryTimer = setTimeout(() => {
             entry.retryTimer = undefined;
             observe(id, entry);
         }, delay);
+        return true;
     };
     observe = (id: string, entry: Entry) => {
-        if (entry.observation || entry.retryTimer || entry.listeners.size === 0 || isTerminal(entry.latest)) return;
+        if (entry.observation || entry.retryTimer || entry.listeners.size === 0 || isTerminal(entry.latest) || entry.observationFailed) return;
         const controller = new AbortController();
         entry.controller = controller;
         const observation = (async () => {
             const initial = await dependencies.queryTask(id, { signal: controller.signal });
-            entry.retryCount = 0;
+            // 重试预算属于整个订阅生命周期；等待阶段失败时不能因这次查询成功而反复清零。
             publish(entry, initial);
             if (isTerminal(initial)) return;
             const terminal = await dependencies.waitTask(id, {
@@ -402,25 +491,33 @@ export function createGenerationTaskSubscriptionService(dependencies: Generation
             publish(entry, terminal);
         })();
         entry.observation = observation;
-        void observation.catch(() => {
-            if (!controller.signal.aborted) scheduleRetry(id, entry);
+        void observation.catch((error) => {
+            // waitForGenerationTask 会先发布失败/取消终态，再以异常结束等待；
+            // 该终态已由 listener 消费，不能再误报为“状态同步失败”。
+            if (controller.signal.aborted || isTerminal(entry.latest)) return;
+            const retryable = isRetryableTaskObservationError(error);
+            const willRetry = retryable && scheduleRetry(id, entry);
+            const event: GenerationTaskSubscriptionError = { taskId: id, error, retryable, retryCount: entry.retryCount, willRetry };
+            if (!willRetry) entry.observationFailed = event;
+            publishError(entry, event);
         }).finally(() => {
             if (entry.observation === observation) {
                 entry.observation = undefined;
                 entry.controller = undefined;
             }
-            if (entry.listeners.size > 0 && !entry.retryTimer && !isTerminal(entry.latest)) observe(id, entry);
+            if (entry.listeners.size > 0 && !entry.retryTimer && !isTerminal(entry.latest) && !entry.observationFailed) observe(id, entry);
             disposeIdleEntry(id, entry);
         });
     };
     return {
-        subscribe(ids: readonly string[], listener: (task: GenerationTask) => void) {
+        subscribe(ids: readonly string[], listener: (task: GenerationTask) => void, options: GenerationTaskSubscriptionOptions = {}) {
             const uniqueIds = [...new Set(ids)];
             for (const id of uniqueIds) {
-                const entry = entries.get(id) ?? { listeners: new Set<(task: GenerationTask) => void>(), retryCount: 0 };
+                const entry = entries.get(id) ?? { listeners: new Map<(task: GenerationTask) => void, GenerationTaskSubscriptionOptions["onError"]>(), retryCount: 0 };
                 entries.set(id, entry);
-                entry.listeners.add(listener);
-                if (entry.latest) listener(entry.latest);
+                entry.listeners.set(listener, options.onError);
+                if (entry.latest) notifyTaskListener(listener, entry.latest);
+                if (entry.observationFailed) notifyErrorListener(options.onError, entry.observationFailed);
                 observe(id, entry);
             }
             return () => {
@@ -447,8 +544,8 @@ const generationTaskSubscriptionService = createGenerationTaskSubscriptionServic
     waitTask: (id, options) => waitForGenerationTask(id, options),
 });
 
-export function subscribeGenerationTasks(ids: readonly string[], listener: (task: GenerationTask) => void) {
-    return generationTaskSubscriptionService.subscribe(ids, listener);
+export function subscribeGenerationTasks(ids: readonly string[], listener: (task: GenerationTask) => void, options?: GenerationTaskSubscriptionOptions) {
+    return generationTaskSubscriptionService.subscribe(ids, listener, options);
 }
 
 export function appendTaskTextDelta(id: string, content: string) {
@@ -562,6 +659,7 @@ export async function waitForGenerationTask(id: string, options?: { signal?: Abo
     const intervalMs = options?.intervalMs || 2000;
     let lastTask = options?.initialTask;
     let lastQueryError: unknown;
+    let consecutiveRetryableQueryFailures = 0;
     try {
         while (Date.now() - startedAt < (options?.timeoutMs || taskWaitTimeoutMs(lastTask))) {
             if (options?.signal?.aborted) throw new DOMException("Aborted", "AbortError");
@@ -570,9 +668,14 @@ export async function waitForGenerationTask(id: string, options?: { signal?: Abo
                 task = await queryGenerationTask(id, { signal: options?.signal });
                 lastTask = task;
                 lastQueryError = undefined;
+                // 只有拿到可用任务状态才恢复内部容错额度，避免断网时持续轮询到任务超时。
+                consecutiveRetryableQueryFailures = 0;
                 options?.onTaskUpdate?.(task);
             } catch (error) {
+                if (!isRetryableTaskObservationError(error)) throw error;
                 lastQueryError = error;
+                consecutiveRetryableQueryFailures += 1;
+                if (consecutiveRetryableQueryFailures > MAX_TASK_OBSERVATION_RETRIES) throw error;
                 await delay(intervalMs, options?.signal);
                 continue;
             }

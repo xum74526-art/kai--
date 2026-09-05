@@ -108,8 +108,14 @@ func migrateTable[T any](name string) tableMigration {
 			if err != nil {
 				return 0, err
 			}
+			sourceColumns, err := sourceColumnsForMigration[T](source)
+			if err != nil {
+				return 0, err
+			}
 			var sourceRows []T
-			if err := source.Order(primaryKey).Find(&sourceRows).Error; err != nil {
+			// 源 SQLite 可能比当前模型缺少后续新增列；只读源表实际存在的列，
+			// 让旧库可迁移，同时新库仍会复制其已有的新字段。
+			if err := source.Select(sourceColumns).Order(primaryKey).Find(&sourceRows).Error; err != nil {
 				return 0, err
 			}
 			if copyRows && len(sourceRows) > 0 {
@@ -128,6 +134,31 @@ func migrateTable[T any](name string) tableMigration {
 			return len(sourceRows), nil
 		},
 	}
+}
+
+func sourceColumnsForMigration[T any](db *gorm.DB) ([]string, error) {
+	statement := &gorm.Statement{DB: db}
+	if err := statement.Parse(new(T)); err != nil {
+		return nil, err
+	}
+	columnTypes, err := db.Migrator().ColumnTypes(new(T))
+	if err != nil {
+		return nil, err
+	}
+	existing := make(map[string]struct{}, len(columnTypes))
+	for _, columnType := range columnTypes {
+		existing[strings.ToLower(columnType.Name())] = struct{}{}
+	}
+	columns := make([]string, 0, len(statement.Schema.DBNames))
+	for _, column := range statement.Schema.DBNames {
+		if _, ok := existing[strings.ToLower(column)]; ok {
+			columns = append(columns, column)
+		}
+	}
+	if len(columns) == 0 {
+		return nil, fmt.Errorf("源表 %s 没有可迁移列", statement.Schema.Table)
+	}
+	return columns, nil
 }
 
 func primaryKeyColumn[T any](db *gorm.DB) (string, error) {
@@ -221,7 +252,13 @@ func migrations() []tableMigration {
 		migrateTable[model.EmailVerificationCode]("email_verification_codes"),
 		migrateTable[model.ModelChannel]("model_channels"),
 		migrateTable[model.ChannelModel]("channel_models"),
+		migrateTable[model.IDSequence]("id_sequences"),
+		migrateTable[model.LogicalModel]("logical_models"),
+		migrateTable[model.LogicalModelRevision]("logical_model_revisions"),
+		migrateTable[model.LogicalModelRoute]("logical_model_routes"),
+		migrateTable[model.RouteAttempt]("route_attempts"),
 		migrateTable[model.ApiCallLog]("api_call_logs"),
+		migrateTable[model.ProviderRequestOwnership]("provider_request_ownerships"),
 		migrateTable[model.ModelPricing]("model_pricings"),
 		migrateTable[model.CreditAccount]("credit_accounts"),
 		migrateTable[model.CreditLedgerEntry]("credit_ledger_entries"),
@@ -238,6 +275,7 @@ func migrations() []tableMigration {
 		migrateTable[model.Resource]("resources"),
 		migrateTable[model.Asset]("assets"),
 		migrateTable[model.ProjectAssetLink]("project_asset_links"),
+		migrateTable[model.ProjectAssetFolder]("project_asset_folders"),
 		migrateTable[model.ProjectAssetCandidate]("project_asset_candidates"),
 		migrateTable[model.AssetVersion]("asset_versions"),
 		migrateTable[model.AssetRepresentation]("asset_representations"),

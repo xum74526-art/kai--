@@ -16,6 +16,14 @@ type taskWorkerCoordinator struct {
 	service *Service
 }
 
+const (
+	workerGlobalSlotLeaseTTL        = 45 * time.Minute
+	workerGlobalSlotRenewInterval  = 5 * time.Minute
+	workerGlobalSlotRenewTimeout   = 5 * time.Second
+	workerGlobalSlotRenewAttempts  = 3
+	workerGlobalSlotRenewRetryWait = time.Second
+)
+
 func newTaskWorkerCoordinator(service *Service) *taskWorkerCoordinator {
 	return &taskWorkerCoordinator{service: service}
 }
@@ -43,22 +51,46 @@ func (w *taskWorkerCoordinator) start() {
 			}
 			workerConcurrency := setting.WorkerConcurrency
 			for len(slots) < workerConcurrency {
-				releaseGlobal, acquired, err := s.coordinator.acquire(context.Background(), "workers", workerConcurrency, 45*time.Minute)
+				globalLease, acquired, err := s.coordinator.acquireLease(context.Background(), "workers", workerConcurrency, workerGlobalSlotLeaseTTL)
 				if err != nil || !acquired {
 					return
 				}
 				task, err := s.repo.ClaimNextTask(s.workerID, 45*time.Second)
 				if err != nil || task == nil {
-					releaseGlobal()
+					globalLease.Release()
 					return
 				}
 				slots <- struct{}{}
-				go func(task *model.Task) {
-					defer func() { <-slots; releaseGlobal() }()
-					if err := w.processClaimedTask(task); err != nil {
+				go func(task *model.Task, globalLease *runtimeSlotLease) {
+					executionCtx, cancelExecution := context.WithCancelCause(context.Background())
+					defer cancelExecution(nil)
+					renewalDone := make(chan struct{})
+					renewalStopped := make(chan struct{})
+					go func() {
+						defer close(renewalStopped)
+						w.renewWorkerGlobalSlot(task, globalLease, renewalDone, func(err error) {
+							// 不能在分布式槽位失效后继续消耗上游配额；本轮不写终态，
+							// 让任务租约自然释放后由其他 worker 根据已有上游请求 ID 恢复。
+							cancelExecution(fmt.Errorf("%w: %v", errRuntimeSlotLeaseLost, err))
+						})
+					}()
+					defer func() {
+						// 先归还跨实例额度，再释放本机 worker 名额，避免下一次调度白领本机槽位。
+						globalLease.Release()
+						<-slots
+					}()
+					defer func() {
+						close(renewalDone)
+						<-renewalStopped
+					}()
+					if err := w.processClaimedTaskWithContext(executionCtx, task); err != nil {
+						if errors.Is(err, errRuntimeSlotLeaseLost) {
+							_ = s.log(task.UserID, task.ID, "warn", "后台全局并发槽位已失效，本轮停止并等待任务恢复", err.Error())
+							return
+						}
 						_ = s.log(task.UserID, task.ID, "error", "后台任务处理失败", err.Error())
 					}
-				}(task)
+				}(task, globalLease)
 			}
 		}
 
@@ -71,6 +103,62 @@ func (w *taskWorkerCoordinator) start() {
 	}()
 }
 
+// renewWorkerGlobalSlot 与已领取任务同生共死：任务租约仍按原有 45 秒规则维护，
+// 这里仅刷新跨实例 Worker 并发配额。续租长期不可用时必须中止本轮执行，
+// 不能等旧 TTL 自然过期后继续运行而让其他实例重复占用同一全局额度。
+func (w *taskWorkerCoordinator) renewWorkerGlobalSlot(task *model.Task, lease *runtimeSlotLease, done <-chan struct{}, onLeaseUnavailable func(error)) {
+	ticker := time.NewTicker(workerGlobalSlotRenewInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+			err := renewWorkerGlobalSlotLease(lease, done)
+			if err == nil || errors.Is(err, context.Canceled) {
+				continue
+			}
+			_ = w.service.log(task.UserID, task.ID, "warn", "后台全局并发槽位续租失败", err.Error())
+			onLeaseUnavailable(err)
+			return
+		}
+	}
+}
+
+func renewWorkerGlobalSlotLease(lease *runtimeSlotLease, done <-chan struct{}) error {
+	var lastErr error
+	for attempt := 0; attempt < workerGlobalSlotRenewAttempts; attempt++ {
+		select {
+		case <-done:
+			return context.Canceled
+		default:
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), workerGlobalSlotRenewTimeout)
+		err := lease.Renew(ctx)
+		cancel()
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if errors.Is(err, errRuntimeSlotLeaseLost) || attempt == workerGlobalSlotRenewAttempts-1 {
+			return err
+		}
+		timer := time.NewTimer(workerGlobalSlotRenewRetryWait)
+		select {
+		case <-done:
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return context.Canceled
+		case <-timer.C:
+		}
+	}
+	return lastErr
+}
+
 func (w *taskWorkerCoordinator) processNextTask() error {
 	s := w.service
 	task, err := s.repo.ClaimNextTask(s.workerID, 45*time.Second)
@@ -81,6 +169,10 @@ func (w *taskWorkerCoordinator) processNextTask() error {
 }
 
 func (w *taskWorkerCoordinator) processClaimedTask(task *model.Task) error {
+	return w.processClaimedTaskWithContext(context.Background(), task)
+}
+
+func (w *taskWorkerCoordinator) processClaimedTaskWithContext(parent context.Context, task *model.Task) error {
 	s := w.service
 	terminal := s.terminalCoordinator()
 	_ = s.log(task.UserID, task.ID, "info", "后端任务开始处理", "")
@@ -98,7 +190,10 @@ func (w *taskWorkerCoordinator) processClaimedTask(task *model.Task) error {
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), taskExecutionTimeoutWithPolicy(task.Type, policy.Task))
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, taskExecutionTimeoutWithPolicy(task.Type, policy.Task))
 	defer cancel()
 	leaseDone := make(chan struct{})
 	leaseLost := make(chan error, 1)
@@ -135,6 +230,9 @@ func (w *taskWorkerCoordinator) processClaimedTask(task *model.Task) error {
 		return terminal.markPreparationFailure(task, "计费准备失败", err, false, "计费准备失败，上游请求未发出")
 	}
 	routeResult, stateErr := s.routeExecutor().execute(ctx, task, routeAttempt)
+	if leaseErr := globalSlotLeaseCause(ctx); leaseErr != nil {
+		return leaseErr
+	}
 	if stateErr != nil {
 		return stateErr
 	}
@@ -146,6 +244,9 @@ func (w *taskWorkerCoordinator) processClaimedTask(task *model.Task) error {
 	}
 	if err == nil {
 		result, err = s.persistGeneratedTaskMediaResult(task, result)
+	}
+	if leaseErr := globalSlotLeaseCause(ctx); leaseErr != nil {
+		return leaseErr
 	}
 	if err == nil {
 		err = s.repo.RenewTaskLease(task.ID, task.LeaseOwner, task.Attempts, 45*time.Second)
@@ -199,6 +300,13 @@ func (w *taskWorkerCoordinator) processClaimedTask(task *model.Task) error {
 		return terminalErr
 	}
 	return terminal.handleSuccess(task)
+}
+
+func globalSlotLeaseCause(ctx context.Context) error {
+	if err := context.Cause(ctx); errors.Is(err, errRuntimeSlotLeaseLost) {
+		return err
+	}
+	return nil
 }
 
 func taskFailureMessage(err error) string {

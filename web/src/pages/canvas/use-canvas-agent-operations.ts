@@ -3,7 +3,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type 
 import type { CanvasNodeGenerationMode } from "@/components/canvas/canvas-node-prompt-panel";
 import { applyCanvasAgentOps, summarizeCanvasAgentOps, type CanvasAgentOp, type CanvasAgentSnapshot } from "@/lib/canvas/canvas-agent-ops";
 import { createGenerationRetryContext, type GenerationRetryContext } from "@/lib/canvas/canvas-project-generation";
-import { subscribeGenerationTasks, type GenerationTask } from "@/services/api/task-center";
+import { generationErrorMessage } from "@/lib/generation-error";
+import { subscribeGenerationTasks, type GenerationTask, type GenerationTaskSubscriptionOptions } from "@/services/api/task-center";
 import { persistCanvasAgentGenerationContinuationEffect } from "@/services/canvas-generation-consumer";
 import { consumeGenerationTaskAgent } from "@/services/project-asset-sync";
 import type { CanvasConnection, CanvasNodeData, ContextMenuState, ViewportTransform } from "@/types/canvas";
@@ -62,7 +63,7 @@ type RunCanvasAgentGenerationOpsInput = {
     nodes: CanvasNodeData[];
     context?: CanvasAgentGenerationContext;
     generate: (nodeId: string, mode: CanvasNodeGenerationMode, prompt: string, options: CanvasAgentGenerationOptions) => Promise<void>;
-    subscribeTasks?: (ids: readonly string[], listener: (task: GenerationTask) => void) => () => void;
+    subscribeTasks?: (ids: readonly string[], listener: (task: GenerationTask) => void, options?: GenerationTaskSubscriptionOptions) => () => void;
     consumeTask?: typeof consumeGenerationTaskAgent;
     resumeAgent?: (task: GenerationTask) => Promise<void>;
     onContinuation?: (nodeId: string, continuation: CanvasAgentGenerationContinuation) => Promise<void> | void;
@@ -79,29 +80,64 @@ export async function runCanvasAgentGenerationOps({
     onContinuation,
 }: RunCanvasAgentGenerationOpsInput) {
     const observations = new Map<string, Promise<void>>();
-    const observe = (taskId: string, nodeId: string, continuationIdPromise?: Promise<string>) => {
+    const observe = (
+        taskId: string,
+        nodeId: string,
+        continuationIdPromise?: Promise<string>,
+        pendingContinuation?: Promise<void>,
+        existingContinuation?: CanvasAgentGenerationContinuation,
+    ) => {
         const existing = observations.get(taskId);
         if (existing) return existing;
         const observation = new Promise<void>((resolve, reject) => {
             let unsubscribe: (() => void) | undefined;
             let settled = false;
+            const cleanup = () => {
+                const dispose = unsubscribe;
+                unsubscribe = undefined;
+                dispose?.();
+            };
+            const rejectSubscriptionError: NonNullable<GenerationTaskSubscriptionOptions["onError"]> = ({ error, willRetry }) => {
+                if (settled || willRetry) return;
+                settled = true;
+                cleanup();
+                void (async () => {
+                    await settleCanvasAgentContinuation(pendingContinuation);
+                    const taskContext = {
+                        conversationId: existingContinuation?.conversationId || context?.conversationId,
+                        messageId: existingContinuation?.messageId || context?.messageId,
+                    };
+                    const continuationId = await (continuationIdPromise ?? canvasAgentGenerationContinuationId(nodeId, taskContext));
+                    await onContinuation?.(nodeId, failedCanvasAgentContinuation({
+                        id: continuationId,
+                        taskId,
+                        context: taskContext,
+                        source: existingContinuation?.source || context?.source,
+                        error,
+                    }));
+                })()
+                    .catch((continuationError) => console.warn("保存 Agent 任务状态失败", continuationError))
+                    .finally(() => reject(error instanceof Error ? error : new Error("任务状态无法继续同步")));
+            };
             unsubscribe = subscribeTasks([taskId], (task) => {
                 if (settled || (task.status !== "succeeded" && task.status !== "failed" && task.status !== "cancelled")) return;
                 settled = true;
                 queueMicrotask(() => {
                     void (async () => {
                         const taskContext = {
-                            conversationId: task.clientContext?.conversationId || context?.conversationId,
-                            messageId: task.clientContext?.messageId || context?.messageId,
+                            conversationId: task.clientContext?.conversationId || existingContinuation?.conversationId || context?.conversationId,
+                            messageId: task.clientContext?.messageId || existingContinuation?.messageId || context?.messageId,
                         };
+                        await settleCanvasAgentContinuation(pendingContinuation);
                         const continuationId = await (continuationIdPromise ?? canvasAgentGenerationContinuationId(task.clientContext?.nodeId || nodeId, taskContext));
                         const continuation: CanvasAgentGenerationContinuation = {
                             id: continuationId,
                             taskId: task.id,
                             ...(taskContext.conversationId ? { conversationId: taskContext.conversationId } : {}),
                             ...(taskContext.messageId ? { messageId: taskContext.messageId } : {}),
-                            ...(context?.source ? { source: context.source } : {}),
+                            ...(existingContinuation?.source || context?.source ? { source: existingContinuation?.source || context?.source } : {}),
                             status: task.status === "succeeded" ? "pending" : "failed",
+                            ...(task.status === "succeeded" ? {} : { errorMessage: canvasAgentTerminalErrorMessage(task) }),
                         };
                         if (task.status !== "succeeded") {
                             await onContinuation?.(nodeId, continuation);
@@ -118,9 +154,10 @@ export async function runCanvasAgentGenerationOps({
                         });
                     })()
                         .then(resolve, reject)
-                        .finally(() => unsubscribe?.());
+                        .finally(cleanup);
                 });
-            });
+            }, { onError: rejectSubscriptionError });
+            if (settled) cleanup();
         });
         observations.set(taskId, observation);
         return observation;
@@ -131,7 +168,7 @@ export async function runCanvasAgentGenerationOps({
         await Promise.all(
             taskNodes.map((node) => {
                 const continuation = node.metadata!.agentGenerationContinuation!;
-                return observe(node.metadata?.taskId || continuation.taskId, node.id, Promise.resolve(continuation.id));
+                return observe(node.metadata?.taskId || continuation.taskId, node.id, Promise.resolve(continuation.id), undefined, continuation);
             }),
         );
         return;
@@ -153,9 +190,8 @@ export async function runCanvasAgentGenerationOps({
                 onTaskUpdate: (task) => {
                     if (continuationTaskId) return;
                     continuationTaskId = task.id;
-                    observation = observe(task.id, op.nodeId, continuationIdPromise);
-                    void continuationIdPromise.then((continuationId) => {
-                        onContinuation?.(op.nodeId, {
+                    const pendingContinuation = continuationIdPromise.then(async (continuationId) => {
+                        await onContinuation?.(op.nodeId, {
                             id: continuationId,
                             taskId: task.id,
                             ...(context?.conversationId ? { conversationId: context.conversationId } : {}),
@@ -164,12 +200,52 @@ export async function runCanvasAgentGenerationOps({
                             status: "pending",
                         });
                     });
+                    void pendingContinuation.catch((error) => console.warn("保存 Agent 任务状态失败", error));
+                    observation = observe(task.id, op.nodeId, continuationIdPromise, pendingContinuation);
                 },
             });
             await generationPromise;
             if (observation) await observation;
         }),
     );
+}
+
+async function settleCanvasAgentContinuation(pendingContinuation?: Promise<void>) {
+    if (!pendingContinuation) return;
+    try {
+        await pendingContinuation;
+    } catch (error) {
+        // 仍继续写入终态，避免首次 pending 写入失败后留下悬挂 continuation。
+        console.warn("保存 Agent 任务状态失败", error);
+    }
+}
+
+function failedCanvasAgentContinuation(input: {
+    id: string;
+    taskId: string;
+    context?: Pick<CanvasAgentGenerationContext, "conversationId" | "messageId">;
+    source?: CanvasAgentGenerationContext["source"];
+    error: unknown;
+}): CanvasAgentGenerationContinuation {
+    return {
+        id: input.id,
+        taskId: input.taskId,
+        ...(input.context?.conversationId ? { conversationId: input.context.conversationId } : {}),
+        ...(input.context?.messageId ? { messageId: input.context.messageId } : {}),
+        ...(input.source ? { source: input.source } : {}),
+        status: "failed",
+        errorMessage: canvasAgentSubscriptionErrorMessage(input.error),
+    };
+}
+
+function canvasAgentTerminalErrorMessage(task: GenerationTask) {
+    if (task.status === "cancelled") return "生成任务已取消";
+    return generationErrorMessage(task.error || "生成任务失败");
+}
+
+function canvasAgentSubscriptionErrorMessage(error: unknown) {
+    const detail = generationErrorMessage(error).trim();
+    return detail && detail !== "生成失败，请稍后重试。" ? `任务状态同步失败：${detail}` : "任务状态无法继续同步，请重新生成。";
 }
 
 export async function consumeCanvasAgentGenerationContinuation(
@@ -296,12 +372,17 @@ export function useCanvasAgentOperations({
                         generate,
                         context: generationContext,
                         onContinuation: async (nodeId, continuation) => {
-                            if (continuation.status === "completed" && continuation.effectKey) {
+                            const effectKey = continuation.status === "completed"
+                                ? continuation.effectKey
+                                : continuation.status === "failed"
+                                  ? `agent-continuation:${continuation.id}:failed`
+                                  : undefined;
+                            if (effectKey) {
                                 await persistCanvasAgentGenerationContinuationEffect({
                                     projectId,
                                     nodeId,
                                     continuation,
-                                    effectKey: continuation.effectKey,
+                                    effectKey,
                                     nodesRef,
                                     setNodes,
                                 });
@@ -309,7 +390,11 @@ export function useCanvasAgentOperations({
                             }
                             setNodes((current) => {
                                 const updated = current.map((node) =>
-                                    node.id === nodeId
+                                    node.id === nodeId && !(
+                                        continuation.status === "pending"
+                                        && node.metadata?.agentGenerationContinuation?.taskId === continuation.taskId
+                                        && node.metadata.agentGenerationContinuation.status !== "pending"
+                                    )
                                         ? {
                                               ...node,
                                               metadata: {

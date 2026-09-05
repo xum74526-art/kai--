@@ -3,7 +3,9 @@ import { expect, test } from "bun:test";
 import { apiClient } from "../src/services/api/request";
 import { getAuthSession, logout, register, type LocalUser } from "../src/services/api/auth";
 import { createImportedStorageKey, remapImportedStorageReferences } from "../src/lib/imported-storage";
+import { persistSystemStyleLibraryIds, readSystemStyleLibraryIds } from "../src/lib/canvas/canvas-style-library-storage";
 import { testChannelModelConnection } from "../src/lib/model-connection-test";
+import { setActiveUserScope } from "../src/lib/user-scope";
 import { uploadMediaFile } from "../src/services/file-storage";
 import { useCanvasStore } from "../src/stores/canvas/use-canvas-store";
 import { createModelChannel } from "../src/stores/use-config-store";
@@ -120,6 +122,41 @@ test("imported storage references receive a scoped key and replace stale nested 
         };
         const remapped = remapImportedStorageReferences(value, new Map([["generation-image:old-user:key", { storageKey: nextKey, url: "blob:new-preview" }]]));
         expect(remapped).toEqual({ coverUrl: "blob:new-preview", data: { storageKey: nextKey, dataUrl: "blob:new-preview" } });
+    } finally {
+        if (originalWindow === undefined) delete (globalThis as { window?: unknown }).window;
+        else Object.defineProperty(globalThis, "window", { configurable: true, value: originalWindow });
+    }
+});
+
+test("system style favorites and recent usage stay in the active user scope", () => {
+    const originalWindow = (globalThis as { window?: unknown }).window;
+    const values = new Map<string, string>();
+    Object.defineProperty(globalThis, "window", {
+        configurable: true,
+        value: {
+            localStorage: {
+                getItem: (key: string) => values.get(key) ?? null,
+                setItem: (key: string, value: string) => values.set(key, value),
+                removeItem: (key: string) => values.delete(key),
+            },
+        },
+    });
+    try {
+        setActiveUserScope("style-user-a");
+        persistSystemStyleLibraryIds("favorites", ["noir"]);
+        persistSystemStyleLibraryIds("recent", ["period"]);
+
+        setActiveUserScope("style-user-b");
+        expect(readSystemStyleLibraryIds("favorites")).toEqual([]);
+        expect(readSystemStyleLibraryIds("recent")).toEqual([]);
+        persistSystemStyleLibraryIds("favorites", ["animation"]);
+
+        setActiveUserScope("style-user-a");
+        expect(readSystemStyleLibraryIds("favorites")).toEqual(["noir"]);
+        expect(readSystemStyleLibraryIds("recent")).toEqual(["period"]);
+
+        setActiveUserScope(null);
+        expect(readSystemStyleLibraryIds("favorites")).toEqual([]);
     } finally {
         if (originalWindow === undefined) delete (globalThis as { window?: unknown }).window;
         else Object.defineProperty(globalThis, "window", { configurable: true, value: originalWindow });

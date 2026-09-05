@@ -123,8 +123,25 @@ func taskSummaryForOutput(task model.Task) TaskSummary {
 		CompletedAt:               task.CompletedAt,
 		CreatedAt:                 task.CreatedAt,
 		UpdatedAt:                 task.UpdatedAt,
-		ClientContext:             taskClientContext(task.InputJSON),
+		ClientContext:             taskClientContextForTask(task),
 	}
+}
+
+// taskClientContextForTask 优先使用任务入库时校验过的物化字段；普通列表与精确恢复
+// 都会投影这些列，避免输入 JSON 缺失或无法解析时丢失批次归属。旧任务保留 JSON 回退。
+func taskClientContextForTask(task model.Task) *TaskClientContext {
+	context, ok := createPageTaskClientContextFromValues(task.ClientContextSource, task.ClientConversationID, task.ClientMessageID)
+	if !ok {
+		return taskClientContext(task.InputJSON)
+	}
+	result := &TaskClientContext{ConversationID: context.ConversationID, MessageID: context.MessageID}
+	if metadata := taskClientContext(task.InputJSON); metadata != nil && metadata.ConversationID == context.ConversationID && metadata.MessageID == context.MessageID {
+		// 批次序号未物化，但只能从同一条已物化上下文的旧 JSON 补充，
+		// 避免输入内容被改写后把其他消息的批次信息投射给当前任务。
+		result.BatchIndex = metadata.BatchIndex
+		result.BatchCount = metadata.BatchCount
+	}
+	return result
 }
 
 // 列表只暴露创作页恢复所需的关联 ID，不下发完整任务输入或其他 metadata。
@@ -138,12 +155,16 @@ func taskClientContext(raw string) *TaskClientContext {
 			BatchCount     int    `json:"batchCount"`
 		} `json:"metadata"`
 	}
-	if json.Unmarshal([]byte(raw), &input) != nil || input.Metadata.Source != "create-page" || input.Metadata.ConversationID == "" || input.Metadata.MessageID == "" {
+	if json.Unmarshal([]byte(raw), &input) != nil {
+		return nil
+	}
+	context, ok := createPageTaskClientContextFromValues(input.Metadata.Source, input.Metadata.ConversationID, input.Metadata.MessageID)
+	if !ok {
 		return nil
 	}
 	return &TaskClientContext{
-		ConversationID: input.Metadata.ConversationID,
-		MessageID:      input.Metadata.MessageID,
+		ConversationID: context.ConversationID,
+		MessageID:      context.MessageID,
 		BatchIndex:     input.Metadata.BatchIndex,
 		BatchCount:     input.Metadata.BatchCount,
 	}

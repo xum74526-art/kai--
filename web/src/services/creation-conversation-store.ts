@@ -9,6 +9,7 @@ type PendingCreationMessage = {
     mode?: string;
     status?: string;
     taskIds?: string[];
+    expectedTaskCount?: number;
     attachments?: Array<{ storageKey?: string; [key: string]: unknown }>;
 };
 
@@ -29,13 +30,19 @@ export function removeCreationConversationSnapshot<T extends { id: string }>(con
     return next;
 }
 
+function expectedCreationTaskCount(message: PendingCreationMessage) {
+    return Number.isSafeInteger(message.expectedTaskCount) ? Math.max(0, message.expectedTaskCount || 0) : 0;
+}
+
 function isRecoverableCreationMessage(message: PendingCreationMessage) {
-    if (message.role !== "assistant" || !message.taskIds?.length) return false;
-    return message.mode === "text" ? message.status === "streaming" || message.status === "pending" : message.status === "pending";
+    if (message.role !== "assistant") return false;
+    const hasKnownTask = Boolean(message.taskIds?.length);
+    if (message.mode === "text") return hasKnownTask && (message.status === "streaming" || message.status === "pending");
+    return message.status === "pending" && (hasKnownTask || expectedCreationTaskCount(message) > 0);
 }
 
 export function pendingCreationTaskKey(conversations: StoredCreationConversation[]) {
-    return conversations.flatMap((conversation) => conversation.messages.flatMap((message) => (isRecoverableCreationMessage(message) ? [`${conversation.id}:${message.id}:${(message.taskIds || []).join(",")}`] : []))).join("|");
+    return conversations.flatMap((conversation) => conversation.messages.flatMap((message) => (isRecoverableCreationMessage(message) ? [`${conversation.id}:${message.id}:${(message.taskIds || []).join(",")}:${expectedCreationTaskCount(message)}`] : []))).join("|");
 }
 
 export function pendingCreationTaskIds(conversations: StoredCreationConversation[]) {
@@ -46,6 +53,20 @@ export function pendingCreationTaskIds(conversations: StoredCreationConversation
         }),
     );
     return Array.from(new Set(taskIds));
+}
+
+// 批量任务的任务 ID 可能在浏览器刷新前尚未全部写入本地缓存。
+// 仅为这类尚未完整追踪的媒体消息返回服务端关联键，供创作页按 clientContext 找回同一批任务。
+export function pendingCreationTaskContextKeys(conversations: StoredCreationConversation[]) {
+    return conversations.flatMap((conversation) => conversation.messages.flatMap((message) => {
+        if (!isRecoverableCreationMessage(message) || message.mode === "text") return [];
+        const expectedCount = expectedCreationTaskCount(message);
+        const knownCount = message.taskIds?.length || 0;
+        // 旧会话可能只保存了已知任务 ID、没有批量总数；这些任务由普通订阅恢复，
+        // 不需要再触发按上下文的远端查询。只有明确还缺任务时才查询完整批次。
+        if (expectedCount <= knownCount) return [];
+        return [`${conversation.id}:${message.id}`];
+    }));
 }
 
 export async function loadCreationConversations<T extends StoredCreationConversation>(scope = getActiveUserScope()) {

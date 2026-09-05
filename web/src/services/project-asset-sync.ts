@@ -170,7 +170,7 @@ async function storedGenerationImage(result: NonNullable<BackendGenerationResult
     const blob = await loadOrStoreGenerationArtifact({
         effectKey: storageKey,
         read: (key) => getImageBlob(key),
-        materialize: async () => (await fetch(result.dataUrl, { signal })).blob(),
+        materialize: () => fetchGenerationResultBlob(result.dataUrl, "image", signal),
         write: async (key, artifact) => {
             await setImageBlob(key, artifact);
         },
@@ -197,7 +197,7 @@ async function storedGenerationMedia(dataUrl: string, effectKey: string, mediaTy
     const blob = await loadOrStoreGenerationArtifact({
         effectKey: storageKey,
         read: (key) => getMediaBlob(key),
-        materialize: async () => (await fetch(dataUrl, { signal })).blob(),
+        materialize: () => fetchGenerationResultBlob(dataUrl, mediaType, signal),
         write: async (key, artifact) => {
             await setMediaBlob(key, artifact);
         },
@@ -215,6 +215,55 @@ async function storedGenerationMedia(dataUrl: string, effectKey: string, mediaTy
         bytes: metadata.bytes || blob.size,
         mimeType: metadata.mimeType || blob.type,
     };
+}
+
+type GenerationResultMediaType = "image" | "video" | "audio";
+
+/**
+ * 生成结果常来自会过期的上游 URL。落入本地缓存前先确认 HTTP 成功且内容仍是目标媒体，
+ * 避免把 HTML/JSON 错误页伪装成可预览的素材保存下来。
+ */
+export async function fetchGenerationResultBlob(url: string, mediaType: GenerationResultMediaType, signal?: AbortSignal) {
+    const response = await fetch(url, { signal });
+    if (!response.ok) throw new Error(`${generationResultMediaLabel(mediaType)}结果下载失败（HTTP ${response.status}）`);
+
+    const contentType = normalizedMimeType(response.headers.get("content-type"));
+    if (contentType && !isExpectedGenerationResultMime(contentType, mediaType)) {
+        throw new Error(`${generationResultMediaLabel(mediaType)}结果下载失败（上游返回了非${generationResultMediaLabel(mediaType)}内容：${contentType}）`);
+    }
+
+    const blob = await response.blob();
+    if (!blob.size) throw new Error(`${generationResultMediaLabel(mediaType)}结果下载失败（上游返回空文件）`);
+
+    const blobType = normalizedMimeType(blob.type);
+    if (blobType && !isExpectedGenerationResultMime(blobType, mediaType)) {
+        throw new Error(`${generationResultMediaLabel(mediaType)}结果下载失败（上游返回了非${generationResultMediaLabel(mediaType)}内容：${blobType}）`);
+    }
+    if (!contentType && !blobType && await looksLikeTextualUpstreamError(blob)) {
+        throw new Error(`${generationResultMediaLabel(mediaType)}结果下载失败（上游返回了错误页面）`);
+    }
+    return blob;
+}
+
+function normalizedMimeType(value: string | null | undefined) {
+    return (value || "").split(";", 1)[0].trim().toLowerCase();
+}
+
+function isExpectedGenerationResultMime(mimeType: string, mediaType: GenerationResultMediaType) {
+    if (mimeType.startsWith(`${mediaType}/`)) return true;
+    // 少数签名下载地址会省略具体 MIME；二进制兜底本身不是错误内容。
+    return mimeType === "application/octet-stream" || mimeType === "application/binary" || mimeType === "binary/octet-stream";
+}
+
+async function looksLikeTextualUpstreamError(blob: Blob) {
+    const prefix = (await blob.slice(0, 1024).text()).trimStart().toLowerCase();
+    return /^(<!doctype\s+html|<html|<head|<body|<\?xml)/.test(prefix)
+        || /^(\{|\[)\s*"?(error|code|message|status)"?\s*[:}]/.test(prefix)
+        || /^(accessdenied|access denied|expired|signaturedoesnotmatch|forbidden|not found|unauthorized)\b/.test(prefix);
+}
+
+function generationResultMediaLabel(mediaType: GenerationResultMediaType) {
+    return mediaType === "image" ? "图片" : mediaType === "video" ? "视频" : "音频";
 }
 
 async function generationOutputAsset(input: Parameters<MaterializeGenerationTaskOutput>[0], scope: string): Promise<NewAsset> {

@@ -708,7 +708,7 @@ func (r *Repository) Tasks(userID string, limit int, projectID string, activeOnl
 	if limit <= 0 || limit > 100 {
 		limit = 50
 	}
-	query := r.db.Select("id", "session_id", "project_id", "type", "status", "stage", "progress", "prompt", "operation", "provider", "model", "input_json", "result_json", "billing_order_id", "provider_request_id", "poll_stage", "next_poll_at", "provider_cancel_status", "provider_cancel_error", "provider_cancel_attempts", "provider_cancel_requested_at", "provider_cancelled_at", "provider_cancel_next_check_at", "attempts", "started_at", "completed_at", "created_at", "updated_at").
+	query := taskListProjection(r.db).
 		Where("user_id = ?", userID)
 	if strings.TrimSpace(projectID) != "" {
 		query = query.Where("project_id = ?", strings.TrimSpace(projectID))
@@ -718,6 +718,34 @@ func (r *Repository) Tasks(userID string, limit int, projectID string, activeOnl
 	}
 	err := query.Order("created_at desc").Limit(limit).Find(&tasks).Error
 	return tasks, err
+}
+
+const createPageMessageTasksMaxLimit = 100
+
+// TasksForCreatePageMessage 仅按当前用户和已物化的创作页上下文查找最近任务，
+// 不解析 input_json；查询始终受硬上限约束，避免恶意上下文导致无限返回。
+func (r *Repository) TasksForCreatePageMessage(userID string, conversationID string, messageID string, limit int) ([]model.Task, error) {
+	if limit <= 0 || limit > createPageMessageTasksMaxLimit {
+		limit = createPageMessageTasksMaxLimit
+	}
+	var tasks []model.Task
+	err := taskListProjection(r.db).
+		Where("user_id = ? AND client_context_source = ? AND client_conversation_id = ? AND client_message_id = ?", userID, model.TaskClientContextSourceCreatePage, conversationID, messageID).
+		Order("created_at desc").
+		Order("id desc").
+		Limit(limit).
+		Find(&tasks).Error
+	return tasks, err
+}
+
+func taskListProjection(db *gorm.DB) *gorm.DB {
+	return db.Select(
+		"id", "session_id", "project_id", "type", "status", "stage", "progress", "prompt", "operation", "provider", "model",
+		"client_context_source", "client_conversation_id", "client_message_id",
+		"input_json", "result_json", "billing_order_id", "provider_request_id", "poll_stage", "next_poll_at",
+		"provider_cancel_status", "provider_cancel_error", "provider_cancel_attempts", "provider_cancel_requested_at", "provider_cancelled_at", "provider_cancel_next_check_at",
+		"attempts", "started_at", "completed_at", "created_at", "updated_at",
+	)
 }
 
 func (r *Repository) Session(id string) (*model.Session, error) {
@@ -762,7 +790,7 @@ func (r *Repository) SessionMessages(userID string, sessionID string) ([]model.M
 
 func (r *Repository) SessionTasks(userID string, sessionID string) ([]model.Task, error) {
 	var tasks []model.Task
-	err := r.db.Select("id", "user_id", "session_id", "project_id", "type", "status", "prompt", "operation", "provider", "model", "attempts", "started_at", "completed_at", "created_at", "updated_at").
+	err := r.db.Select("id", "user_id", "session_id", "project_id", "type", "status", "prompt", "operation", "provider", "model", "client_context_source", "client_conversation_id", "client_message_id", "input_json", "attempts", "started_at", "completed_at", "created_at", "updated_at").
 		Order("created_at asc").
 		Find(&tasks, "user_id = ? AND session_id = ?", userID, sessionID).Error
 	return tasks, err

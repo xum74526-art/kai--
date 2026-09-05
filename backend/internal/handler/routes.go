@@ -58,9 +58,11 @@ func RegisterTaskRoutes(r *gin.RouterGroup, svc *service.Service) {
 		}
 		limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
 		tasks, err := svc.TasksWithOptions(user.ID, service.TaskListOptions{
-			Limit:      limit,
-			ProjectID:  c.Query("projectId"),
-			ActiveOnly: c.Query("activeOnly") == "true",
+			Limit:          limit,
+			ProjectID:      c.Query("projectId"),
+			ActiveOnly:     c.Query("activeOnly") == "true",
+			ConversationID: c.Query("conversationId"),
+			MessageID:      c.Query("messageId"),
 		})
 		if err != nil {
 			failService(c, err)
