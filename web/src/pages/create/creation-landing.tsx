@@ -13,7 +13,9 @@ import { useReducedMotion } from "motion/react";
 import { publicAssetPath } from "@/lib/app-base-path";
 import "./creation-landing.css";
 
-const showcaseAsset = (name: string) => publicAssetPath(`create-showcase/${name}`);
+const SHOWCASE_ASSET_REVISION = "20260908-clarity";
+// 固定文件名的展示素材替换后，用版本参数避免浏览器继续显示旧缓存。
+const showcaseAsset = (name: string) => publicAssetPath(`create-showcase/${name}?v=${SHOWCASE_ASSET_REVISION}`);
 const styleAsset = (name: string) => publicAssetPath(`short-drama-styles/${name}`);
 
 type CreationLandingMode = "text" | "image" | "video";
