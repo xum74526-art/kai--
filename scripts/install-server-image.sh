@@ -2,13 +2,15 @@
 
 set -Eeuo pipefail
 
-REPOSITORY_REF="${REPOSITORY_REF:-main}"
+REPOSITORY_REF="${REPOSITORY_REF:-}"
 INSTALL_DIR="${INSTALL_DIR:-/opt/beidou-kai}"
 CANVAS_HTTP_PORT="${CANVAS_HTTP_PORT:-3000}"
 CANVAS_PUBLIC_ORIGIN="${CANVAS_PUBLIC_ORIGIN:-}"
-CANVAS_IMAGE_TAG="${CANVAS_IMAGE_TAG:-latest}"
+CANVAS_IMAGE_TAG="${CANVAS_IMAGE_TAG:-}"
+CANVAS_WEB_IMAGE="${CANVAS_WEB_IMAGE:-}"
+CANVAS_BACKEND_IMAGE="${CANVAS_BACKEND_IMAGE:-}"
 COMPOSE_FILE="docker-compose.deploy.yml"
-COMPOSE_URL="${COMPOSE_URL:-https://raw.githubusercontent.com/xum74526-art/kai--/${REPOSITORY_REF}/${COMPOSE_FILE}}"
+COMPOSE_URL="${COMPOSE_URL:-}"
 
 step() {
     printf '\n==> %s\n' "$1"
@@ -26,7 +28,12 @@ require_root() {
     [[ "$(uname -s)" == "Linux" ]] || fail "一键部署脚本仅支持 Linux 服务器"
     [[ "$CANVAS_HTTP_PORT" =~ ^[0-9]+$ ]] || fail "CANVAS_HTTP_PORT 必须是 1 到 65535 的数字"
     ((CANVAS_HTTP_PORT >= 1 && CANVAS_HTTP_PORT <= 65535)) || fail "CANVAS_HTTP_PORT 必须是 1 到 65535 的数字"
-    [[ "$CANVAS_IMAGE_TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || fail "CANVAS_IMAGE_TAG 不是有效的 Docker 镜像标签"
+}
+
+validate_image_tag() {
+    [[ "$CANVAS_IMAGE_TAG" =~ ^sha-[0-9a-f]{40}$ ]] || fail "CANVAS_IMAGE_TAG 必须来自 CI 发布凭据，格式为 sha-<40位小写提交哈希>，禁止使用 latest"
+    [[ "$CANVAS_WEB_IMAGE" =~ ^ghcr\.io/xum74526-art/beidou-kai-web@sha256:[0-9a-f]{64}$ ]] || fail "CANVAS_WEB_IMAGE 必须是发布凭据中的 Web digest 引用"
+    [[ "$CANVAS_BACKEND_IMAGE" =~ ^ghcr\.io/xum74526-art/beidou-kai-backend@sha256:[0-9a-f]{64}$ ]] || fail "CANVAS_BACKEND_IMAGE 必须是发布凭据中的 Backend digest 引用"
 }
 
 install_packages() {
@@ -96,14 +103,16 @@ prepare_environment() {
 
         local configured_image_tag
         configured_image_tag="$(sed -n 's/^CANVAS_IMAGE_TAG=//p' .env | tail -n 1)"
-        if [[ -n "$configured_image_tag" ]]; then
-            [[ "$configured_image_tag" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || fail ".env 中的 CANVAS_IMAGE_TAG 无效"
-            CANVAS_IMAGE_TAG="$configured_image_tag"
-        fi
+        [[ -n "$configured_image_tag" ]] || fail ".env 缺少 CI 发布凭据中的 CANVAS_IMAGE_TAG"
+        CANVAS_IMAGE_TAG="$configured_image_tag"
+        CANVAS_WEB_IMAGE="$(sed -n 's/^CANVAS_WEB_IMAGE=//p' .env | tail -n 1)"
+        CANVAS_BACKEND_IMAGE="$(sed -n 's/^CANVAS_BACKEND_IMAGE=//p' .env | tail -n 1)"
+        validate_image_tag
         return
     fi
 
     step "生成 PostgreSQL 随机密码和部署配置"
+    validate_image_tag
     local database_password
     local local_ip
     database_password="$(openssl rand -hex 32)"
@@ -118,6 +127,9 @@ POSTGRES_PASSWORD=${database_password}
 DATABASE_URL=postgresql://open_ai_canvas:${database_password}@postgres:5432/open_ai_canvas?sslmode=disable
 CANVAS_HTTP_PORT=${CANVAS_HTTP_PORT}
 CANVAS_IMAGE_TAG=${CANVAS_IMAGE_TAG}
+CANVAS_RELEASE_REVISION=${CANVAS_IMAGE_TAG#sha-}
+CANVAS_WEB_IMAGE=${CANVAS_WEB_IMAGE}
+CANVAS_BACKEND_IMAGE=${CANVAS_BACKEND_IMAGE}
 CANVAS_REGISTRATION_ENABLED=false
 CANVAS_ALLOW_PRIVATE_UPSTREAMS=false
 CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS=
@@ -130,8 +142,11 @@ EOF
 download_compose() {
     step "下载 GHCR 镜像部署配置"
     local temporary_file
+    local compose_url="$COMPOSE_URL"
+    local repository_ref="${REPOSITORY_REF:-${CANVAS_IMAGE_TAG#sha-}}"
+    [[ -n "$compose_url" ]] || compose_url="https://raw.githubusercontent.com/xum74526-art/kai--/${repository_ref}/${COMPOSE_FILE}"
     temporary_file="$(mktemp "${INSTALL_DIR}/.docker-compose.deploy.XXXXXX")"
-    curl -fsSL "$COMPOSE_URL" -o "$temporary_file"
+    curl -fsSL "$compose_url" -o "$temporary_file"
     mv "$temporary_file" "$COMPOSE_FILE"
 }
 
@@ -140,7 +155,20 @@ start_services() {
     if ! docker compose --env-file .env -f "$COMPOSE_FILE" pull; then
         fail "GHCR 镜像拉取失败；如果容器包尚未公开，请通过 GHCR_USERNAME 和 GHCR_TOKEN 登录后重试"
     fi
+    verify_image_bundle
     docker compose --env-file .env -f "$COMPOSE_FILE" up -d --remove-orphans --wait --wait-timeout 600
+}
+
+verify_image_bundle() {
+    local expected_revision="${CANVAS_IMAGE_TAG#sha-}"
+    local web_revision
+    local backend_revision
+
+    web_revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$CANVAS_WEB_IMAGE")"
+    backend_revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$CANVAS_BACKEND_IMAGE")"
+    [[ "$web_revision" == "$expected_revision" ]] || fail "Web 镜像 revision 与发布标签不一致"
+    [[ "$backend_revision" == "$expected_revision" ]] || fail "Backend 镜像 revision 与发布标签不一致"
+    [[ "$web_revision" == "$backend_revision" ]] || fail "前后端镜像不是同一条提交，拒绝部署"
 }
 
 print_result() {

@@ -9,6 +9,11 @@ CANVAS_HTTP_PORT="${CANVAS_HTTP_PORT:-3000}"
 CANVAS_PUBLIC_ORIGIN="${CANVAS_PUBLIC_ORIGIN:-}"
 COMPOSE_FILE="docker-compose.deploy.yml"
 BUILD_COMPOSE_FILE="docker-compose.build.yml"
+CANVAS_RELEASE_REVISION=""
+CANVAS_SOURCE_IMAGE_TAG=""
+CANVAS_IMAGE_TAG=""
+CANVAS_WEB_IMAGE=""
+CANVAS_BACKEND_IMAGE=""
 
 step() {
     printf '\n==> %s\n' "$1"
@@ -81,6 +86,26 @@ sync_source() {
     cd "$INSTALL_DIR"
 }
 
+resolve_release_identity() {
+    CANVAS_RELEASE_REVISION="$(git rev-parse HEAD)"
+    [[ "$CANVAS_RELEASE_REVISION" =~ ^[0-9a-f]{40}$ ]] || fail "无法从当前检出代码解析完整提交哈希"
+    CANVAS_SOURCE_IMAGE_TAG="source-${CANVAS_RELEASE_REVISION}"
+    CANVAS_IMAGE_TAG="$CANVAS_SOURCE_IMAGE_TAG"
+    CANVAS_WEB_IMAGE="beidou-kai-web:${CANVAS_SOURCE_IMAGE_TAG}"
+    CANVAS_BACKEND_IMAGE="beidou-kai-backend:${CANVAS_SOURCE_IMAGE_TAG}"
+    export CANVAS_RELEASE_REVISION CANVAS_SOURCE_IMAGE_TAG CANVAS_IMAGE_TAG CANVAS_WEB_IMAGE CANVAS_BACKEND_IMAGE
+}
+
+persist_release_identity() {
+    local temporary_file
+    temporary_file="$(mktemp "${INSTALL_DIR}/.env.release.XXXXXX")"
+    grep -Ev '^(CANVAS_IMAGE_TAG|CANVAS_RELEASE_REVISION|CANVAS_SOURCE_IMAGE_TAG|CANVAS_WEB_IMAGE|CANVAS_BACKEND_IMAGE)=' .env > "$temporary_file" || true
+    printf 'CANVAS_IMAGE_TAG=%s\nCANVAS_RELEASE_REVISION=%s\nCANVAS_SOURCE_IMAGE_TAG=%s\nCANVAS_WEB_IMAGE=%s\nCANVAS_BACKEND_IMAGE=%s\n' \
+        "$CANVAS_IMAGE_TAG" "$CANVAS_RELEASE_REVISION" "$CANVAS_SOURCE_IMAGE_TAG" "$CANVAS_WEB_IMAGE" "$CANVAS_BACKEND_IMAGE" >> "$temporary_file"
+    chmod 600 "$temporary_file"
+    mv "$temporary_file" .env
+}
+
 prepare_environment() {
     if [[ -f .env ]]; then
         grep -Eq '^POSTGRES_PASSWORD=.+$' .env || fail "现有 .env 缺少 POSTGRES_PASSWORD"
@@ -125,9 +150,20 @@ start_services() {
     step "从源码构建网页与后端镜像"
     # 标准一键部署已下载完整仓库，直接本地构建可避免公开项目被 GHCR 包可见性阻断。
     docker compose --env-file .env -f "$COMPOSE_FILE" -f "$BUILD_COMPOSE_FILE" build backend web
+    verify_source_image_bundle
 
     step "启动 PostgreSQL、Redis、后端和网页服务"
     docker compose --env-file .env -f "$COMPOSE_FILE" -f "$BUILD_COMPOSE_FILE" up -d --remove-orphans --wait --wait-timeout 600
+}
+
+verify_source_image_bundle() {
+    local web_revision
+    local backend_revision
+    web_revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$CANVAS_WEB_IMAGE")"
+    backend_revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$CANVAS_BACKEND_IMAGE")"
+    [[ "$web_revision" == "$CANVAS_RELEASE_REVISION" ]] || fail "本地 Web 镜像 revision 与检出代码不一致"
+    [[ "$backend_revision" == "$CANVAS_RELEASE_REVISION" ]] || fail "本地 Backend 镜像 revision 与检出代码不一致"
+    [[ "$web_revision" == "$backend_revision" ]] || fail "前后端镜像不是同一条提交，拒绝启动"
 }
 
 print_result() {
@@ -150,7 +186,9 @@ main() {
     install_packages
     install_docker
     sync_source
+    resolve_release_identity
     prepare_environment
+    persist_release_identity
     start_services
     print_result
 }

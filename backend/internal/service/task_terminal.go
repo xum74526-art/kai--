@@ -94,6 +94,11 @@ func (c *taskTerminalCoordinator) markPreparationFailure(task *model.Task, stage
 // handleExecutionFailure 返回 nil 仅表示取消已被正常收尾；普通失败仍返回原始错误，
 // 让 worker 保留重试/监控所需的失败语义。
 func (c *taskTerminalCoordinator) handleExecutionFailure(task *model.Task, err error, providerSucceeded bool, channelSlotFailedBeforeRequest bool) error {
+	// 实例关机只终止本轮执行权，不能投影成用户取消/业务失败，更不能
+	// 在上游费用状态未知时自动退款。租约到期后由健康实例继续恢复。
+	if errors.Is(err, errWorkerShuttingDown) {
+		return err
+	}
 	if errors.Is(err, context.Canceled) {
 		task.Status = model.TaskStatusCancelled
 		task.Stage = "任务已取消"

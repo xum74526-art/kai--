@@ -26,6 +26,7 @@ type ImageToolDefinition = {
     id: ImageNodeActionToolId;
     label: string | ((node: CanvasNodeData) => string);
     icon: (node: CanvasNodeData) => ReactNode;
+    disabled?: boolean;
     run: (node: CanvasNodeData, handlers: ImageToolHandlers) => void;
 };
 
@@ -98,7 +99,8 @@ const imageToolDefinitions: ImageToolDefinition[] = [
     },
     {
         id: "superResolve",
-        label: "超分",
+        label: "超分（暂未开放）",
+        disabled: true,
         icon: () => <Sparkles className="size-3.5" />,
         run: (node, handlers) => handlers.onSuperResolve(node),
     },
@@ -121,7 +123,8 @@ export function buildImageToolbarTools(node: CanvasNodeData, handlers: ImageTool
         id: tool.id,
         label: resolveToolText(tool.label, node),
         icon: tool.icon(node),
-        onClick: () => tool.run(node, handlers),
+        disabled: tool.disabled,
+        onClick: () => { if (!tool.disabled) tool.run(node, handlers); },
     }));
 }
 

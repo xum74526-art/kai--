@@ -109,7 +109,12 @@ func RegisterAuthRoutes(r *gin.RouterGroup, svc *service.Service) {
 	r.GET("/auth/session", func(c *gin.Context) {
 		user, err := currentUser(c, svc)
 		if err != nil {
-			ok(c, gin.H{"user": nil})
+			var appErr *service.AppError
+			if errors.As(err, &appErr) && appErr.Status == http.StatusUnauthorized {
+				ok(c, gin.H{"user": nil})
+				return
+			}
+			failService(c, err)
 			return
 		}
 		publicUser, err := svc.PublicAuthUser(user)

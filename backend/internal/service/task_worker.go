@@ -17,7 +17,7 @@ type taskWorkerCoordinator struct {
 }
 
 const (
-	workerGlobalSlotLeaseTTL        = 45 * time.Minute
+	workerGlobalSlotLeaseTTL       = 45 * time.Minute
 	workerGlobalSlotRenewInterval  = 5 * time.Minute
 	workerGlobalSlotRenewTimeout   = 5 * time.Second
 	workerGlobalSlotRenewAttempts  = 3
@@ -38,31 +38,41 @@ func (s *Service) taskWorker() *taskWorkerCoordinator {
 
 func (w *taskWorkerCoordinator) start() {
 	s := w.service
+	lifecycle := s.lifecycle()
+	if !lifecycle.start() {
+		return
+	}
 	s.startStagedGeneratedResourceCleanup()
 	s.startTextReplayCleanup()
 	s.startProviderCancellationReconciliation()
 	s.startBillingReviewAudit()
-	go func() {
+	lifecycle.goLoop(func(loopCtx context.Context) {
 		slots := make(chan struct{}, maxChannelConcurrencyLimit)
 		dispatch := func() {
+			if loopCtx.Err() != nil {
+				return
+			}
 			setting, err := s.runtimeConcurrencySetting()
 			if err != nil {
 				return
 			}
 			workerConcurrency := setting.WorkerConcurrency
 			for len(slots) < workerConcurrency {
-				globalLease, acquired, err := s.coordinator.acquireLease(context.Background(), "workers", workerConcurrency, workerGlobalSlotLeaseTTL)
+				globalLease, acquired, err := s.coordinator.acquireLease(loopCtx, "workers", workerConcurrency, workerGlobalSlotLeaseTTL)
 				if err != nil || !acquired {
 					return
 				}
-				task, err := s.repo.ClaimNextTask(s.workerID, 45*time.Second)
+				task, taskCtx, taskDone, err := lifecycle.claimTask(func() (*model.Task, error) {
+					return s.repo.ClaimNextTask(s.workerID, 45*time.Second)
+				})
 				if err != nil || task == nil {
 					globalLease.Release()
 					return
 				}
 				slots <- struct{}{}
-				go func(task *model.Task, globalLease *runtimeSlotLease) {
-					executionCtx, cancelExecution := context.WithCancelCause(context.Background())
+				go func(task *model.Task, taskCtx context.Context, taskDone func(), globalLease *runtimeSlotLease) {
+					defer taskDone()
+					executionCtx, cancelExecution := context.WithCancelCause(taskCtx)
 					defer cancelExecution(nil)
 					renewalDone := make(chan struct{})
 					renewalStopped := make(chan struct{})
@@ -84,23 +94,32 @@ func (w *taskWorkerCoordinator) start() {
 						<-renewalStopped
 					}()
 					if err := w.processClaimedTaskWithContext(executionCtx, task); err != nil {
+						if errors.Is(err, errWorkerShuttingDown) {
+							_ = s.log(task.UserID, task.ID, "info", "实例关闭，本轮执行已安全暂停并等待恢复", task.ProviderRequestID)
+							return
+						}
 						if errors.Is(err, errRuntimeSlotLeaseLost) {
 							_ = s.log(task.UserID, task.ID, "warn", "后台全局并发槽位已失效，本轮停止并等待任务恢复", err.Error())
 							return
 						}
 						_ = s.log(task.UserID, task.ID, "error", "后台任务处理失败", err.Error())
 					}
-				}(task, globalLease)
+				}(task, taskCtx, taskDone, globalLease)
 			}
 		}
 
 		dispatch()
 		ticker := time.NewTicker(2 * time.Second)
 		defer ticker.Stop()
-		for range ticker.C {
-			dispatch()
+		for {
+			select {
+			case <-loopCtx.Done():
+				return
+			case <-ticker.C:
+				dispatch()
+			}
 		}
-	}()
+	})
 }
 
 // renewWorkerGlobalSlot 与已领取任务同生共死：任务租约仍按原有 45 秒规则维护，
@@ -175,6 +194,9 @@ func (w *taskWorkerCoordinator) processClaimedTask(task *model.Task) error {
 func (w *taskWorkerCoordinator) processClaimedTaskWithContext(parent context.Context, task *model.Task) error {
 	s := w.service
 	terminal := s.terminalCoordinator()
+	if parent == nil {
+		parent = context.Background()
+	}
 	_ = s.log(task.UserID, task.ID, "info", "后端任务开始处理", "")
 	// 进程可能在上游已受理、Task 尚未来得及写入请求 ID 时中断。
 	// 先从账单或调用日志补齐，再按当前租约回写，避免重启后重复提交上游任务。
@@ -186,12 +208,12 @@ func (w *taskWorkerCoordinator) processClaimedTaskWithContext(parent context.Con
 			}
 		}
 	}
+	if shutdownErr := workerShutdownCause(parent); shutdownErr != nil {
+		return shutdownErr
+	}
 	policy, err := s.RuntimePolicy()
 	if err != nil {
 		return err
-	}
-	if parent == nil {
-		parent = context.Background()
 	}
 	ctx, cancel := context.WithTimeout(parent, taskExecutionTimeoutWithPolicy(task.Type, policy.Task))
 	defer cancel()
@@ -222,14 +244,29 @@ func (w *taskWorkerCoordinator) processClaimedTaskWithContext(parent context.Con
 	if err := s.repo.UpdateTaskProgress(task.ID, task.LeaseOwner, task.Attempts, task.Stage, task.Progress); err != nil {
 		return fmt.Errorf("更新任务进度失败，任务暂未调用上游：%w", err)
 	}
+	if shutdownErr := workerShutdownCause(ctx); shutdownErr != nil {
+		return shutdownErr
+	}
 	routeAttempt, err := s.beginTaskRouteAttempt(task)
 	if err != nil {
 		return terminal.markPreparationFailure(task, "路由准备失败", err, isRouteDispatchUncertain(err), "路由准备失败，上游请求未发出")
 	}
+	if shutdownErr := workerShutdownCause(ctx); shutdownErr != nil {
+		return shutdownErr
+	}
 	if err := s.taskBilling().MarkBillingRunning(task.BillingOrderID); err != nil {
 		return terminal.markPreparationFailure(task, "计费准备失败", err, false, "计费准备失败，上游请求未发出")
 	}
+	if shutdownErr := workerShutdownCause(ctx); shutdownErr != nil {
+		return shutdownErr
+	}
 	routeResult, stateErr := s.routeExecutor().execute(ctx, task, routeAttempt)
+	if shutdownErr := workerShutdownCause(ctx); shutdownErr != nil && (stateErr != nil || routeResult.err != nil) {
+		// 路由执行器已把上游 ID/提交不确定态写回。关机只放弃当前租约，
+		// 不能把进程生命周期取消投影成用户取消或失败退款。若上游已经
+		// 成功返回结果，则继续完成本地持久化，避免同步结果在关机时丢失。
+		return shutdownErr
+	}
 	if leaseErr := globalSlotLeaseCause(ctx); leaseErr != nil {
 		return leaseErr
 	}

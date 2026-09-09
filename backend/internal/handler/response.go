@@ -60,7 +60,8 @@ func failInternal(c *gin.Context, status int, err error) {
 }
 
 func writeFailure(c *gin.Context, status int, code int, message string) {
-	c.JSON(status, gin.H{"code": code, "data": nil, "msg": message})
+	id := ensureRequestID(c)
+	c.JSON(status, gin.H{"code": code, "data": nil, "msg": message, "requestId": id})
 }
 
 func validErrorStatus(status int) bool {
@@ -93,6 +94,6 @@ func logHandlerError(c *gin.Context, status int, err error) {
 			route = "<unmatched>"
 		}
 	}
-	// 普通访问日志会输出 Gin error；这里只记录错误类型，避免密钥或上游响应体进入日志。
-	log.Printf("handler request failed: method=%s route=%s status=%d error_type=%T", method, route, status, err)
+	// 普通访问日志会输出 Gin error；这里只记录错误类型与服务端追踪编号，避免密钥或上游响应体进入日志。
+	log.Printf("handler request failed: request_id=%s method=%s route=%s status=%d error_type=%T", ensureRequestID(c), method, route, status, err)
 }

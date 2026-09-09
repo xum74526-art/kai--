@@ -14,8 +14,9 @@ import (
 )
 
 type failureEnvelope struct {
-	Code int    `json:"code"`
-	Msg  string `json:"msg"`
+	Code      int    `json:"code"`
+	Msg       string `json:"msg"`
+	RequestID string `json:"requestId"`
 }
 
 func TestFailServiceProjectsAppError(t *testing.T) {

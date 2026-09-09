@@ -97,8 +97,9 @@ test("Create refresh subscriptions share one durable scheduler observation witho
 
 test("Create durably correlates failures that happen before the first Runtime response", async () => {
     const source = await Bun.file(new URL("../src/pages/create/index.tsx", import.meta.url)).text();
-    expect(source).toContain("generationErrorCode?: string");
-    expect(source).toContain("generationOperation?: string");
+    const outcomes = await Bun.file(new URL("../src/pages/create/creation-task-outcomes.ts", import.meta.url)).text();
+    expect(outcomes).toContain("generationErrorCode?: string");
+    expect(outcomes).toContain("generationOperation?: string");
     expect(source).toContain("generationOperation: task.operation");
     expect(source).toContain("generationErrorCode: task.errorCode");
     expect(source).toContain("generationErrorCode(error)");

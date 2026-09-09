@@ -14,6 +14,11 @@
 
 - [beautifului 创作设计](beautifului-creation-design.md)：本地设计参考，未纳入版本控制。
 
+## 生产可靠性与验收
+
+- [可靠性验收记录](../deploy/readiness-acceptance.md)：本轮修复范围、本地验证证据和仍需实机验收的边界。
+- [发布与数据保护](../deploy/production-safety.md)：成套镜像发布、一致性备份、隔离恢复和回滚约束。
+
 ## 按约定维护的文档（`docs/content/docs/`）
 
 功能、代码地图、待办、待测试分别维护在以下页面；缺失页面待后续任务重建：

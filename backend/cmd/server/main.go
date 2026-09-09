@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
@@ -61,12 +62,11 @@ func main() {
 	} else if summary.Backup != "" {
 		log.Printf("storage migration completed: tasks=%d assets=%d projects=%d backup=%s", summary.Tasks, summary.Assets, summary.Projects, summary.Backup)
 	}
-	svc.StartWorker()
-
 	r := gin.New()
 	if err := configureTrustedProxies(r, os.Getenv("CANVAS_TRUSTED_PROXIES")); err != nil {
 		log.Fatal(err)
 	}
+	r.Use(handler.RequestIDMiddleware())
 	r.Use(gin.LoggerWithFormatter(func(param gin.LogFormatterParams) string {
 		return fmt.Sprintf("%s - [%s] \"%s %s\" %d %s %s\n", param.ClientIP, param.TimeStamp.Format(time.RFC3339), param.Method, redactCanvasSharePath(param.Path), param.StatusCode, param.Latency, param.ErrorMessage)
 	}), gin.Recovery())
@@ -79,6 +79,16 @@ func main() {
 	api := r.Group("/api")
 	api.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"code": 0, "data": gin.H{"status": "ok"}, "msg": "ok"})
+	})
+	api.GET("/ready", func(c *gin.Context) {
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
+		defer cancel()
+		report, err := svc.Readiness(ctx)
+		if err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"code": http.StatusServiceUnavailable, "data": report, "msg": "服务尚未就绪", "requestId": c.Writer.Header().Get("X-Request-ID")})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"code": 0, "data": report, "msg": "ok"})
 	})
 	handler.RegisterOAuthCallbackRoutes(r, svc)
 	handler.RegisterAuthRoutes(api, svc)
@@ -105,8 +115,21 @@ func main() {
 	handler.RegisterProjectRoutes(projectAPI, svc)
 	handler.RegisterCanvasShareRoutes(api, svc)
 
+	shutdownTimeout, err := durationEnv("CANVAS_SHUTDOWN_TIMEOUT", 30*time.Second)
+	if err != nil {
+		log.Fatal(err)
+	}
+	server := &http.Server{
+		Addr:              addr,
+		Handler:           r,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+	}
+	// 所有可能失败的启动配置必须先完成校验，避免配置错误时 worker 已经
+	// 领取并标记任务，随后进程又被 log.Fatal 直接终止。
+	svc.StartWorker()
 	log.Printf("北斗 KAI影 backend listening on %s", addr)
-	if err := r.Run(addr); err != nil {
+	if err := serveUntilShutdown(server, svc, shutdownTimeout); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -149,6 +172,18 @@ func env(key string, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func durationEnv(key string, fallback time.Duration) (time.Duration, error) {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback, nil
+	}
+	duration, err := time.ParseDuration(value)
+	if err != nil || duration <= 0 {
+		return 0, fmt.Errorf("%s must be a positive duration, got %q", key, value)
+	}
+	return duration, nil
 }
 
 const corsAllowedHeaders = "Accept, Content-Type, Authorization, X-Requested-With, X-Canvas-Scene, X-Idempotency-Key, X-Canvas-Upstream-URL, X-Canvas-Upstream-Format, X-Canvas-Upstream-Headers, X-Canvas-Allow-Local-Channel, X-Canvas-Upstream-Base-URL"

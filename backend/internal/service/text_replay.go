@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log"
@@ -169,17 +170,25 @@ func taskResultText(raw string) string {
 }
 
 func (s *Service) startTextReplayCleanup() {
-	cleanup := func() {
+	cleanup := func(ctx context.Context) {
+		if ctx.Err() != nil {
+			return
+		}
 		if _, err := s.CleanupTaskTextReplay(); err != nil {
 			log.Printf("text replay cleanup failed: %v", err)
 		}
 	}
-	cleanup()
-	go func() {
+	s.lifecycle().goLoop(func(ctx context.Context) {
+		cleanup(ctx)
 		ticker := time.NewTicker(time.Hour)
 		defer ticker.Stop()
-		for range ticker.C {
-			cleanup()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				cleanup(ctx)
+			}
 		}
-	}()
+	})
 }

@@ -1,18 +1,20 @@
 services:
   backend:
-    image: beidou-kai-backend:server
+    image: ${CANVAS_BACKEND_IMAGE:-beidou-kai-backend:server}
     build:
       context: .
       dockerfile: backend/Dockerfile
       args:
         GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
+        BUILD_REVISION: ${CANVAS_RELEASE_REVISION:-local}
 
   web:
-    image: beidou-kai-web:server
+    image: ${CANVAS_WEB_IMAGE:-beidou-kai-web:server}
     build:
       context: .
       dockerfile: Dockerfile
       args:
+        BUILD_REVISION: ${CANVAS_RELEASE_REVISION:-local}
         VITE_TLDRAW_LICENSE_KEY: ${VITE_TLDRAW_LICENSE_KEY:-}
         VITE_APP_BASE_PATH: ${VITE_APP_BASE_PATH:-/}
         VITE_CANVAS_BACKEND_URL: ${VITE_CANVAS_BACKEND_URL:-}

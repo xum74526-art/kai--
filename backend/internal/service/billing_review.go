@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"log"
 	"time"
 )
@@ -26,17 +27,25 @@ func (s *Service) AuditBillingReview() error {
 }
 
 func (s *Service) startBillingReviewAudit() {
-	audit := func() {
+	audit := func(ctx context.Context) {
+		if ctx.Err() != nil {
+			return
+		}
 		if err := s.AuditBillingReview(); err != nil {
 			log.Printf("billing review audit failed: %v", err)
 		}
 	}
-	audit()
-	go func() {
+	s.lifecycle().goLoop(func(ctx context.Context) {
+		audit(ctx)
 		ticker := time.NewTicker(time.Hour)
 		defer ticker.Stop()
-		for range ticker.C {
-			audit()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				audit(ctx)
+			}
 		}
-	}()
+	})
 }

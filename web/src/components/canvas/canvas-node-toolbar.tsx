@@ -241,7 +241,7 @@ export function CanvasNodeToolbar({
         onClick: () => tool.run(nodeHoverCtx),
     }));
     const allTools: ToolbarTool[] = hasImage && !simpleMode
-        ? [...otherTools, ...imageTools.map((tool) => ({ id: tool.id, label: tool.label, icon: tool.icon, onClick: tool.onClick }))]
+        ? [...otherTools, ...imageTools]
         : otherTools;
     const toolById = new Map(allTools.map((tool) => [tool.id, tool]));
     const takeTools = (ids: string[]) => ids.map((id) => toolById.get(id)).filter((tool): tool is ToolbarTool => Boolean(tool));

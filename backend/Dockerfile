@@ -17,6 +17,9 @@ RUN --mount=type=cache,target=/root/.cache/go-build CGO_ENABLED=1 GOOS=linux go 
 
 FROM alpine:3.22
 
+ARG BUILD_REVISION=local
+LABEL org.opencontainers.image.revision=${BUILD_REVISION}
+
 RUN apk add --no-cache ca-certificates tzdata wget \
     && addgroup -S app \
     && adduser -S app -G app
@@ -33,5 +36,5 @@ COPY --from=backend-build /out/admin-bootstrap /usr/local/bin/admin-bootstrap
 
 USER app
 EXPOSE 8080
-HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 CMD wget -qO- http://127.0.0.1:8080/api/health >/dev/null || exit 1
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 CMD wget -qO- http://127.0.0.1:8080/api/ready >/dev/null || exit 1
 CMD ["beidou-kai-backend"]

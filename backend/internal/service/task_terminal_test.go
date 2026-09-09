@@ -231,6 +231,24 @@ func TestTaskTerminalCoordinatorReturnsBillingRefundError(t *testing.T) {
 	}
 }
 
+func TestTaskTerminalCoordinatorShutdownDoesNotWriteTerminalOrRefund(t *testing.T) {
+	task := &model.Task{ID: "task-1", UserID: "user-1", BillingOrderID: "order-1", SessionID: "session-1"}
+	repo := &taskTerminalRepositoryStub{}
+	billing := &taskTerminalBillingStub{}
+	replay := &taskTerminalReplayStub{}
+	sessions := &taskTerminalSessionStub{}
+	logger := &taskTerminalLoggerStub{}
+	coordinator := newTaskTerminalCoordinatorForTest(repo, billing, replay, sessions, logger, &taskTerminalOutputStub{})
+
+	err := coordinator.handleExecutionFailure(task, errWorkerShuttingDown, false, false)
+	if !errors.Is(err, errWorkerShuttingDown) {
+		t.Fatalf("handleExecutionFailure() error = %v, want errWorkerShuttingDown", err)
+	}
+	if repo.terminalCalls != 0 || len(billing.refund) != 0 || len(billing.uncertain) != 0 || len(replay.statuses) != 0 || len(sessions.messages) != 0 || len(logger.messages) != 0 {
+		t.Fatalf("shutdown must not create terminal side effects: terminalCalls=%d billing=%v/%v replay=%v sessions=%v logs=%v", repo.terminalCalls, billing.refund, billing.uncertain, replay.statuses, sessions.messages, logger.messages)
+	}
+}
+
 func TestTaskTerminalCoordinatorReturnsSessionProjectionError(t *testing.T) {
 	task := &model.Task{ID: "task-1", UserID: "user-1", BillingOrderID: "order-1", SessionID: "session-1"}
 	sessionError := errors.New("session database unavailable")

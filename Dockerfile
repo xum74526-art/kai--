@@ -4,6 +4,7 @@
 FROM oven/bun:1.3.13 AS web-build
 
 WORKDIR /app/web
+ARG BUILD_REVISION=local
 ARG VITE_TLDRAW_LICENSE_KEY
 ARG VITE_APP_BASE_PATH=/
 ARG VITE_CANVAS_BACKEND_URL=
@@ -19,6 +20,9 @@ RUN bun run build
 
 # 运行镜像：nginx 托管静态前端，并在 Compose 中把 /api 转发到后端服务。
 FROM nginx:1.27-alpine
+
+ARG BUILD_REVISION=local
+LABEL org.opencontainers.image.revision=${BUILD_REVISION}
 
 COPY --from=web-build /app/web/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf

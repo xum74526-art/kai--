@@ -45,7 +45,7 @@ const WalletPage = lazy(loadWalletPage);
 const ProjectsPage = lazy(loadProjectsPage);
 const ProjectDetailPage = lazy(() => import("@/pages/projects/detail"));
 const SettingsPage = lazy(() => import("@/pages/settings"));
-const TestVoiceRecording = lazy(() => import("@/pages/test-voice-recording"));
+const TestVoiceRecording = import.meta.env.DEV ? lazy(() => import("@/pages/test-voice-recording")) : null;
 const FolderPreviewLab = lazy(() => import("@/pages/dev/folder-preview-lab"));
 
 function deferred(element: ReactNode) {
@@ -101,7 +101,7 @@ export const router = createBrowserRouter([
                 ),
             },
             { path: "/settings", element: <RequireAuth>{deferred(<SettingsPage />)}</RequireAuth> },
-            { path: "/test-voice-recording", element: <RequireAuth>{deferred(<TestVoiceRecording />)}</RequireAuth> },
+            ...(TestVoiceRecording ? [{ path: "/test-voice-recording", element: <RequireAuth>{deferred(<TestVoiceRecording />)}</RequireAuth> }] : []),
             {
                 path: "/projects",
                 element: (

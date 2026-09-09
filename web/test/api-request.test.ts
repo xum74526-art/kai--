@@ -35,4 +35,25 @@ describe("backend API request error semantics", () => {
 
         expect(thrown).toMatchObject({ name: "AbortError", message: "请求已取消" });
     });
+
+    test("preserves a server request ID on business and HTTP errors for support lookup", async () => {
+        const requestId = "0123456789abcdef0123456789abcdef";
+        const data = { code: 503, data: null, msg: "服务暂时不可用", requestId };
+        const business = await request(Promise.resolve({ data, status: 200 })).catch((error) => error);
+        const http = await request(Promise.reject({ isAxiosError: true, response: { status: 503, data } })).catch((error) => error);
+        for (const error of [business, http]) {
+            expect(error).toBeInstanceOf(ApiError);
+            expect(error.requestId).toBe(requestId);
+            expect(error.message).toBe(`服务暂时不可用（错误编号：${requestId}）`);
+            expect(error.retryable).toBe(true);
+        }
+    });
+
+    test("does not expose untrusted response content as a request ID", () => {
+        for (const requestId of ["<script>untrusted</script>", "provider-token-value", "", "a".repeat(33)]) {
+            const error = new ApiError("请求失败", { requestId });
+            expect(error.requestId).toBeUndefined();
+            expect(error.message).toBe("请求失败");
+        }
+    });
 });

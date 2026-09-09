@@ -43,6 +43,10 @@ func (s *Service) routeExecutor() *taskRouteExecutor {
 func (e *taskRouteExecutor) execute(ctx context.Context, task *model.Task, attempt *model.RouteAttempt) (taskRouteExecutionResult, error) {
 	var execution taskRouteExecutionResult
 	for {
+		if shutdownErr := workerShutdownCause(ctx); shutdownErr != nil {
+			execution.err = shutdownErr
+			break
+		}
 		if dispatchErr := e.port.markRouteAttemptDispatching(attempt); dispatchErr != nil {
 			execution.err = dispatchErr
 			break
@@ -53,6 +57,11 @@ func (e *taskRouteExecutor) execute(ctx context.Context, task *model.Task, attem
 		}
 		e.port.finishTaskRouteAttempt(attempt, task, execution.err)
 		if execution.err == nil {
+			break
+		}
+		// 实例关闭不是供应商明确拒绝。即使当前协议把取消包装成可切路由
+		// 错误，也不得在关机期间向备用渠道提交第二个付费请求。
+		if workerShutdownCause(ctx) != nil {
 			break
 		}
 		nextAttempt, routeErr := e.port.nextRouteAttemptAfterFailure(task, attempt, execution.err)

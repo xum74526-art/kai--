@@ -1,33 +1,54 @@
 name: Publish container images
 
 on:
-  push:
-    branches:
-      - main
-    tags:
-      - "v*"
-  workflow_dispatch:
+  workflow_run:
+    workflows:
+      - Quality checks
+    types:
+      - completed
 
 permissions:
   contents: read
   packages: write
 
-jobs:
-  publish:
-    name: Publish ${{ matrix.image }}
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - image: beidou-kai-web
-            dockerfile: Dockerfile
-          - image: beidou-kai-backend
-            dockerfile: backend/Dockerfile
+concurrency:
+  group: publish-images-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
 
+jobs:
+  prepare:
+    name: Prepare release candidate
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    outputs:
+      revision: ${{ steps.release.outputs.revision }}
+      candidate_tag: ${{ steps.release.outputs.candidate_tag }}
+      release_tag: ${{ steps.release.outputs.release_tag }}
+    steps:
+      - name: Resolve immutable release identity
+        id: release
+        env:
+          REVISION: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          test "${#REVISION}" -eq 40
+          echo "revision=${REVISION}" >> "$GITHUB_OUTPUT"
+          echo "candidate_tag=candidate-${REVISION}" >> "$GITHUB_OUTPUT"
+          echo "release_tag=sha-${REVISION}" >> "$GITHUB_OUTPUT"
+
+  build-web-candidate:
+    name: Build web candidate
+    needs: prepare
+    runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.revision }}
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -42,24 +63,120 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Generate image metadata
-        id: metadata
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
-          tags: |
-            type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
-            type=semver,pattern={{version}}
-            type=sha,prefix=sha-
-
-      - name: Build and push image
+      - name: Build and push web candidate
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ${{ matrix.dockerfile }}
+          file: Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ steps.metadata.outputs.tags }}
-          labels: ${{ steps.metadata.outputs.labels }}
-          cache-from: type=gha,scope=${{ matrix.image }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+          tags: ghcr.io/${{ github.repository_owner }}/beidou-kai-web:${{ needs.prepare.outputs.candidate_tag }}
+          build-args: |
+            BUILD_REVISION=${{ needs.prepare.outputs.revision }}
+          labels: |
+            org.opencontainers.image.revision=${{ needs.prepare.outputs.revision }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha,scope=beidou-kai-web
+          cache-to: type=gha,mode=max,scope=beidou-kai-web
+
+  build-backend-candidate:
+    name: Build backend candidate
+    needs: prepare
+    runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.revision }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push backend candidate
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: backend/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/beidou-kai-backend:${{ needs.prepare.outputs.candidate_tag }}
+          build-args: |
+            BUILD_REVISION=${{ needs.prepare.outputs.revision }}
+          labels: |
+            org.opencontainers.image.revision=${{ needs.prepare.outputs.revision }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha,scope=beidou-kai-backend
+          cache-to: type=gha,mode=max,scope=beidou-kai-backend
+
+  promote-bundle:
+    name: Promote verified image bundle
+    needs:
+      - prepare
+      - build-web-candidate
+      - build-backend-candidate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify both candidates exist
+        env:
+          OWNER: ${{ github.repository_owner }}
+          CANDIDATE_TAG: ${{ needs.prepare.outputs.candidate_tag }}
+        run: |
+          docker buildx imagetools inspect "ghcr.io/${OWNER}/beidou-kai-web:${CANDIDATE_TAG}"
+          docker buildx imagetools inspect "ghcr.io/${OWNER}/beidou-kai-backend:${CANDIDATE_TAG}"
+
+      - name: Promote candidates to immutable bundle tag
+        env:
+          OWNER: ${{ github.repository_owner }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          WEB_DIGEST: ${{ needs.build-web-candidate.outputs.digest }}
+          BACKEND_DIGEST: ${{ needs.build-backend-candidate.outputs.digest }}
+        run: |
+          docker buildx imagetools create \
+            --tag "ghcr.io/${OWNER}/beidou-kai-web:${RELEASE_TAG}" \
+            "ghcr.io/${OWNER}/beidou-kai-web@${WEB_DIGEST}"
+          docker buildx imagetools create \
+            --tag "ghcr.io/${OWNER}/beidou-kai-backend:${RELEASE_TAG}" \
+            "ghcr.io/${OWNER}/beidou-kai-backend@${BACKEND_DIGEST}"
+
+      - name: Write deployable bundle receipt
+        env:
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          REVISION: ${{ needs.prepare.outputs.revision }}
+          OWNER: ${{ github.repository_owner }}
+          WEB_DIGEST: ${{ needs.build-web-candidate.outputs.digest }}
+          BACKEND_DIGEST: ${{ needs.build-backend-candidate.outputs.digest }}
+        run: |
+          printf 'CANVAS_IMAGE_TAG=%s\nCANVAS_RELEASE_REVISION=%s\nCANVAS_WEB_IMAGE=ghcr.io/%s/beidou-kai-web@%s\nCANVAS_BACKEND_IMAGE=ghcr.io/%s/beidou-kai-backend@%s\n' \
+            "$RELEASE_TAG" "$REVISION" "$OWNER" "$WEB_DIGEST" "$OWNER" "$BACKEND_DIGEST" > release.env
+
+      - name: Upload bundle receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployable-images-${{ needs.prepare.outputs.revision }}
+          path: release.env
+          if-no-files-found: error
+          retention-days: 30

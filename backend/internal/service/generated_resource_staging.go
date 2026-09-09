@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -43,7 +44,10 @@ func (s *Service) CleanupStagedGeneratedResources() (int, error) {
 }
 
 func (s *Service) startStagedGeneratedResourceCleanup() {
-	cleanup := func() {
+	cleanup := func(ctx context.Context) {
+		if ctx.Err() != nil {
+			return
+		}
 		cleaned, err := s.CleanupStagedGeneratedResources()
 		if err != nil {
 			log.Printf("staged generated resource cleanup failed: %v", err)
@@ -53,12 +57,17 @@ func (s *Service) startStagedGeneratedResourceCleanup() {
 			log.Printf("staged generated resource cleanup removed %d resource(s)", cleaned)
 		}
 	}
-	cleanup()
-	go func() {
+	s.lifecycle().goLoop(func(ctx context.Context) {
+		cleanup(ctx)
 		ticker := time.NewTicker(stagedGeneratedResourceCleanupInterval)
 		defer ticker.Stop()
-		for range ticker.C {
-			cleanup()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				cleanup(ctx)
+			}
 		}
-	}()
+	})
 }

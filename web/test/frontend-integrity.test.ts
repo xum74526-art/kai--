@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 
 import { apiClient } from "../src/services/api/request";
+import { buildImageToolbarTools } from "../src/components/canvas/canvas-image-toolbar-tools";
 import { getAuthSession, logout, register, type LocalUser } from "../src/services/api/auth";
 import { createImportedStorageKey, remapImportedStorageReferences } from "../src/lib/imported-storage";
 import { persistSystemStyleLibraryIds, readSystemStyleLibraryIds } from "../src/lib/canvas/canvas-style-library-storage";
@@ -10,6 +11,32 @@ import { uploadMediaFile } from "../src/services/file-storage";
 import { useCanvasStore } from "../src/stores/canvas/use-canvas-store";
 import { createModelChannel } from "../src/stores/use-config-store";
 import type { TimelineProject } from "../src/types/timeline";
+import { CanvasNodeType, type CanvasNodeData } from "../src/types/canvas";
+
+test("unfinished super-resolution is disabled while image preview and resizing remain usable", () => {
+    const node: CanvasNodeData = { id: "preview-image", type: CanvasNodeType.Image, title: "图片", position: { x: 0, y: 0 }, width: 256, height: 256 };
+    const invoked: string[] = [];
+    const handlers = {
+        onUpload: () => {}, onToggleFreeResize: () => {}, onAnnotate: () => {}, onMaskEdit: () => {},
+        onEmotion: () => {}, onPortraitTexture: () => {}, onCrop: () => {}, onSplit: () => {},
+        onUpscale: () => { invoked.push("upscale"); }, onSuperResolve: () => { invoked.push("superResolve"); },
+        onAngle: () => {}, onViewImage: () => { invoked.push("view"); }, onCopyPrompt: () => {}, onReversePrompt: () => {},
+    };
+    const tools = buildImageToolbarTools(node, handlers);
+    const superResolve = tools.find((tool) => tool.id === "superResolve")!;
+    expect(superResolve.disabled).toBe(true);
+    expect(superResolve.label).toContain("暂未开放");
+    superResolve.onClick();
+    tools.find((tool) => tool.id === "upscale")!.onClick();
+    tools.find((tool) => tool.id === "view")!.onClick();
+    expect(invoked).toEqual(["upscale", "view"]);
+});
+
+test("recording diagnostics are imported and routed only in development", async () => {
+    const source = await Bun.file(new URL("../src/router.tsx", import.meta.url)).text();
+    expect(source).toContain('const TestVoiceRecording = import.meta.env.DEV ? lazy(() => import("@/pages/test-voice-recording")) : null');
+    expect(source).toContain('...(TestVoiceRecording ? [{ path: "/test-voice-recording"');
+});
 
 test.serial("register invalidates a cached guest session", async () => {
     const previousAdapter = apiClient.defaults.adapter;

@@ -21,6 +21,7 @@ type Service struct {
 	dataDir                    string
 	runtimeCapabilities        RuntimeCapabilities
 	cancelMu                   sync.Mutex
+	lifecycleMu                sync.Mutex
 	registrationMu             sync.Mutex
 	emailCodeMu                sync.Mutex
 	redeemBatchMu              sync.Mutex
@@ -33,6 +34,7 @@ type Service struct {
 	taskTerminalCoordinator    *taskTerminalCoordinator
 	taskRouteExecutor          *taskRouteExecutor
 	taskWorkerCoordinator      *taskWorkerCoordinator
+	workerLifecycle            *taskWorkerLifecycle
 	taskLifecycleCoordinator   *taskLifecycleCoordinator
 	sessionCreationCoordinator *sessionCreationCoordinator
 	sessionUploadCoordinator   *sessionUploadCoordinator
@@ -99,6 +101,7 @@ func New(repo *repository.Repository, dataDir string) *Service {
 func NewWithRuntimeCapabilities(repo *repository.Repository, dataDir string, capabilities RuntimeCapabilities) *Service {
 	coordinator, err := newRuntimeCoordinator(repo.Dialect())
 	service := &Service{repo: repo, dataDir: dataDir, runtimeCapabilities: capabilities, activeCancels: make(map[string]context.CancelFunc), coordinator: coordinator, runtimeErr: err, workerID: newID(), routeCatalogTTL: 30 * time.Second, routeCatalogMaxStale: 5 * time.Minute, routeHealthBlocked: make(map[string]time.Time)}
+	service.workerLifecycle = newTaskWorkerLifecycle()
 	service.taskBillingCoordinator = newTaskBillingCoordinator(service.repo)
 	service.taskTerminalCoordinator = newTaskTerminalCoordinator(service)
 	service.taskRouteExecutor = newTaskRouteExecutor(service)

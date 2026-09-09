@@ -27,9 +27,20 @@ test("generation result download rejects an upstream error page masquerading as 
 });
 
 test("generation result download rejects an untyped signed-URL error body", async () => {
-    mockFetch(new Response(new Blob(["AccessDenied"])));
+    const bytes = new TextEncoder().encode("AccessDenied");
+    const response = new Response(bytes);
+    response.headers.delete("content-type");
+    // Bun 的 Response.blob() 会推断 text/plain；这里明确模拟上游完全省略 MIME 的响应。
+    response.blob = async () => new Blob([bytes], { type: "" });
+    mockFetch(response);
 
     await expect(fetchGenerationResultBlob("https://example.test/access-denied", "image")).rejects.toThrow("错误页面");
+});
+
+test("generation result download rejects a typed plaintext error without caching it", async () => {
+    mockFetch(new Response("AccessDenied", { headers: { "content-type": "text/plain" } }));
+
+    await expect(fetchGenerationResultBlob("https://example.test/access-denied", "image")).rejects.toThrow("非图片内容");
 });
 
 test("generation result download accepts binary signed-download responses", async () => {

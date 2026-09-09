@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 
 import { ApiError } from "../src/services/api/request";
+import { applyCreationTaskOutcomes, creationTaskObservationErrorMessage, failCreationTaskObservation, type CreationConversation, type CreationMessage } from "../src/pages/create/creation-task-outcomes";
 import { createGenerationTaskSubscriptionService, type GenerationTask, type GenerationTaskSubscriptionError } from "../src/services/api/task-center";
 
 const completedTask: GenerationTask = {
@@ -144,7 +145,50 @@ test("Create handles final subscription failures instead of retaining a pending 
     expect(source).toContain("creationTaskObservationErrorMessage");
     expect(source).toContain("{ onError: handleSubscriptionError }");
     expect(source).toMatch(/const next = failCreationTaskObservation\(current, taskId, message\);[\s\S]{0,240}conversationsRef\.current = next;/);
-    expect(source).toContain('status: "error" as const');
     expect(taskCenterSource).toContain("if (!isRetryableTaskObservationError(error)) throw error;");
     expect(taskCenterSource).toContain("consecutiveRetryableQueryFailures > MAX_TASK_OBSERVATION_RETRIES");
+});
+
+function conversationWith(message: Partial<CreationMessage>): CreationConversation {
+    return {
+        id: "conversation-observation", title: "创作", updatedAt: "2026-09-01T00:00:00Z",
+        messages: [{ id: "message-observation", role: "assistant", mode: "text", content: "已有正文", createdAt: "2026-09-01T00:00:00Z", status: "streaming", taskIds: ["task-text"], ...message }],
+    };
+}
+
+test("final text observation failure preserves content and only changes the matching pending message", () => {
+    const pending = conversationWith({});
+    const completed = conversationWith({ status: "done" });
+    const other = conversationWith({ taskIds: ["task-other"] });
+    const original = [pending, completed, other];
+    const error = creationTaskObservationErrorMessage(new ApiError("禁止访问", { status: 403 }));
+    const result = failCreationTaskObservation(original, "task-text", error);
+
+    expect(result[0]!.messages[0]).toMatchObject({ status: "error", content: "已有正文", error });
+    expect(error).toContain("访问权限");
+    expect(pending.messages[0]!.status).toBe("streaming");
+    expect(result[1]).toBe(completed);
+    expect(result[2]).toBe(other);
+    expect(failCreationTaskObservation(original, "unknown-task", error)).toBe(original);
+});
+
+test("a failed item cannot prematurely finish an image batch or discard successful siblings", () => {
+    const original = [conversationWith({ mode: "image", status: "pending", content: "", taskIds: ["image-1", "image-2"], expectedTaskCount: 2 })];
+    const failed = failCreationTaskObservation(original, "image-1", "任务无法读取")[0]!.messages[0]!;
+    expect(failed).toMatchObject({ status: "pending", taskTerminalStates: { "image-1": "failed" } });
+    expect(failed.error).toBeUndefined();
+
+    const success = applyCreationTaskOutcomes(failed, { terminalStates: { "image-2": "succeeded" }, resultUrls: ["resource:success"] });
+    expect(success).toMatchObject({ status: "done", resultUrls: ["resource:success"], content: "1 张图片已生成，1 项未完成" });
+    expect(failCreationTaskObservation([conversationWith(success)], "image-1", "旧回调")[0]!.messages[0]).toMatchObject(success);
+});
+
+test("missing batch tasks remain pending until found, while wholly failed or cancelled batches terminate", () => {
+    const pending = conversationWith({ mode: "image", status: "pending", taskIds: ["image-1"], expectedTaskCount: 2 }).messages[0]!;
+    const partial = applyCreationTaskOutcomes(pending, { terminalStates: { "image-1": "failed" }, observationErrors: { "image-1": "上游拒绝" } });
+    expect(partial.status).toBe("pending");
+    const complete = applyCreationTaskOutcomes(partial, { taskIds: ["image-2"], terminalStates: { "image-2": "failed" } });
+    expect(complete).toMatchObject({ status: "error", error: "上游拒绝" });
+    const cancelled = applyCreationTaskOutcomes(pending, { taskIds: ["image-2"], terminalStates: { "image-1": "cancelled", "image-2": "cancelled" } });
+    expect(cancelled.status).toBe("cancelled");
 });

@@ -32,21 +32,33 @@ const (
 )
 
 func (s *Service) startProviderCancellationReconciliation() {
-	go func() {
+	s.lifecycle().goLoop(func(loopCtx context.Context) {
 		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
-		for range ticker.C {
+		for {
+			select {
+			case <-loopCtx.Done():
+				return
+			case <-ticker.C:
+			}
 			task, err := s.repo.ClaimNextTaskProviderCancellation("provider-cancel:"+s.workerID, providerCancellationLeaseDuration)
 			if err != nil || task == nil {
 				continue
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			if loopCtx.Err() != nil {
+				// 领取动作若与关机并发完成，保留对账租约等待下一实例恢复，
+				// 不在关闭边界之后再发起供应商查询。
+				return
+			}
+			ctx, cancel := context.WithTimeout(loopCtx, 30*time.Second)
 			if err := s.reconcileProviderCancellation(ctx, task); err != nil {
-				_ = s.log(task.UserID, task.ID, "error", "上游取消状态对账失败", err.Error())
+				if loopCtx.Err() == nil {
+					_ = s.log(task.UserID, task.ID, "error", "上游取消状态对账失败", err.Error())
+				}
 			}
 			cancel()
 		}
-	}()
+	})
 }
 
 func (s *Service) requestProviderCancellation(ctx context.Context, task *model.Task) error {

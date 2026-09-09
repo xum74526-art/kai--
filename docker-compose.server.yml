@@ -31,6 +31,8 @@ services:
   backend:
     container_name: beidou-kai-backend
     image: beidou-kai-backend:server
+    init: true
+    stop_grace_period: 45s
     build:
       context: .
       dockerfile: backend/Dockerfile

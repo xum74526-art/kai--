@@ -2,12 +2,13 @@ name: beidou-kai
 
 services:
   backend:
-    image: beidou-kai-backend:${KAI_IMAGE_TAG:-simon}
+    image: beidou-kai-backend:${KAI_IMAGE_TAG:?set a unique KAI_IMAGE_TAG in deploy/simon/.env}
     build:
       context: ../..
       dockerfile: backend/Dockerfile
       args:
         GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
+        BUILD_REVISION: ${KAI_BUILD_REVISION:?set KAI_BUILD_REVISION to the checked-out 40-character commit}
     environment:
       CANVAS_BACKEND_ADDR: ":8080"
       CANVAS_BACKEND_DATA_DIR: /data
@@ -37,6 +38,7 @@ services:
     expose:
       - "8080"
     init: true
+    stop_grace_period: 45s
     restart: unless-stopped
     logging:
       options:
@@ -44,11 +46,12 @@ services:
         max-file: "5"
 
   web:
-    image: beidou-kai-web:${KAI_IMAGE_TAG:-simon}
+    image: beidou-kai-web:${KAI_IMAGE_TAG:?set a unique KAI_IMAGE_TAG in deploy/simon/.env}
     build:
       context: ../..
       dockerfile: Dockerfile
       args:
+        BUILD_REVISION: ${KAI_BUILD_REVISION:?set KAI_BUILD_REVISION to the checked-out 40-character commit}
         VITE_APP_BASE_PATH: /kai/
         VITE_TLDRAW_LICENSE_KEY: ${VITE_TLDRAW_LICENSE_KEY:-}
     ports:

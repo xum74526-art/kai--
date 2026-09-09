@@ -8,6 +8,7 @@ export type BackendEnvelope<T> = {
     code: number;
     data: T;
     msg: string;
+    requestId?: string;
 };
 
 export class ApiError extends Error {
@@ -15,14 +16,18 @@ export class ApiError extends Error {
     readonly code?: number;
     readonly retryable: boolean;
     readonly cause?: unknown;
+    readonly requestId?: string;
 
-    constructor(message: string, options: { status?: number; code?: number; retryable?: boolean; cause?: unknown } = {}) {
-        super(message);
+    constructor(message: string, options: { status?: number; code?: number; retryable?: boolean; cause?: unknown; requestId?: string } = {}) {
+        // 只展示服务器生成的追踪编号，防止任意响应内容被当作诊断标识回显。
+        const requestId = typeof options.requestId === "string" && /^[a-f0-9]{32}$/.test(options.requestId) ? options.requestId : undefined;
+        super(requestId ? `${message}（错误编号：${requestId}）` : message);
         this.name = "ApiError";
         this.status = options.status;
         this.code = options.code;
         this.retryable = options.retryable ?? isRetryableStatus(options.status ?? options.code);
         this.cause = options.cause;
+        this.requestId = requestId;
     }
 }
 
@@ -37,6 +42,7 @@ export async function request<T>(promise: Promise<{ data: BackendEnvelope<T>; st
             throw new ApiError(response.data.msg || "请求失败", {
                 status: response.status,
                 code: response.data.code,
+                requestId: response.data.requestId,
                 retryable: isRetryableStatus(response.status) || isRetryableStatus(response.data.code),
             });
         }
@@ -53,6 +59,7 @@ export async function request<T>(promise: Promise<{ data: BackendEnvelope<T>; st
                 code,
                 retryable: isRetryableStatus(status) || isRetryableStatus(code),
                 cause: error,
+                requestId: error.response?.data?.requestId,
             });
         }
         throw error;

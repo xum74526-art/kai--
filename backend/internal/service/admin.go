@@ -400,19 +400,18 @@ func (s *Service) DeleteUser(actor *model.User, userID string) error {
 			return BadAuthRequest("至少需要保留一个管理员")
 		}
 	}
-	if err := s.repo.DeleteUserAuthSessions(user.ID); err != nil {
-		return err
-	}
-	if err := s.repo.DeleteUserTaskTextDeltas(user.ID); err != nil {
-		return err
-	}
 	// 有资金流水后必须保留用户主体，删除入口改为停用并清除全部登录态。
-	user.Status = model.UserStatusDisabled
-	user.UpdatedAt = time.Now()
-	if err := s.repo.Save(user); err != nil {
+	now := time.Now()
+	audit, err := newAdminAuditEvent(actor, "user.disable", "user", user.ID, "停用用户并清除登录态", nil)
+	if err != nil {
 		return err
 	}
-	return s.appendAdminAudit(actor, "user.disable", "user", user.ID, "停用用户并清除登录态", nil)
+	audit.CreatedAt = now
+	err = s.repo.DisableUserWithAudit(user, audit, now)
+	if errors.Is(err, repository.ErrUserAdminStateChanged) {
+		return BadAuthRequest("用户资料已发生变化，请刷新后重试")
+	}
+	return err
 }
 
 func (s *Service) BulkDisableUsers(actor *model.User, req BulkDisableUsersRequest) (*BulkDisableUsersResult, error) {

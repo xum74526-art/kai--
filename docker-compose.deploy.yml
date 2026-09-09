@@ -27,7 +27,9 @@ services:
     restart: unless-stopped
 
   backend:
-    image: ghcr.io/xum74526-art/beidou-kai-backend:${CANVAS_IMAGE_TAG:-latest}
+    image: ${CANVAS_BACKEND_IMAGE:?必须配置发布凭据中的 Backend digest 镜像引用}
+    init: true
+    stop_grace_period: 45s
     environment:
       CANVAS_BACKEND_ADDR: ":8080"
       CANVAS_BACKEND_DATA_DIR: /data
@@ -54,7 +56,7 @@ services:
     restart: unless-stopped
 
   web:
-    image: ghcr.io/xum74526-art/beidou-kai-web:${CANVAS_IMAGE_TAG:-latest}
+    image: ${CANVAS_WEB_IMAGE:?必须配置发布凭据中的 Web digest 镜像引用}
     ports:
       - "${CANVAS_HTTP_PORT:-3000}:3000"
     depends_on:

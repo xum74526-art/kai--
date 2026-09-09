@@ -16,6 +16,7 @@ type taskRouteExecutionPortStub struct {
 	nextAttempts   map[string]*model.RouteAttempt
 	nextErrors     map[string]error
 	processResults map[string]taskRouteExecutionStubResult
+	onProcess      func()
 }
 
 type taskRouteExecutionStubResult struct {
@@ -30,10 +31,60 @@ func (p *taskRouteExecutionPortStub) markRouteAttemptDispatching(attempt *model.
 }
 
 func (p *taskRouteExecutionPortStub) processTask(_ context.Context, task model.Task) (map[string]interface{}, []map[string]interface{}, error) {
+	if p.onProcess != nil {
+		p.onProcess()
+	}
 	routeID := task.RouteID
 	p.processCalls = append(p.processCalls, routeID)
 	result := p.processResults[routeID]
 	return result.result, result.canvasOps, result.err
+}
+
+func TestTaskRouteExecutorDoesNotSubmitWhenShutdownAlreadyStarted(t *testing.T) {
+	ctx, cancel := context.WithCancelCause(context.Background())
+	cancel(errWorkerShuttingDown)
+	p := &taskRouteExecutionPortStub{
+		nextAttempts:   map[string]*model.RouteAttempt{},
+		nextErrors:     map[string]error{},
+		processResults: map[string]taskRouteExecutionStubResult{},
+	}
+
+	result, err := (&taskRouteExecutor{port: p}).execute(ctx, &model.Task{ID: "task-1", RouteID: "route-a"}, &model.RouteAttempt{RouteID: "route-a"})
+	if err != nil {
+		t.Fatalf("execute() state error = %v", err)
+	}
+	if !errors.Is(result.err, errWorkerShuttingDown) {
+		t.Fatalf("execute() task error = %v, want errWorkerShuttingDown", result.err)
+	}
+	if len(p.dispatchCalls) != 0 || len(p.processCalls) != 0 {
+		t.Fatalf("shutdown submitted provider work: dispatch=%v process=%v", p.dispatchCalls, p.processCalls)
+	}
+}
+
+func TestTaskRouteExecutorDoesNotFailOverAfterShutdownCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancelCause(context.Background())
+	first := &model.RouteAttempt{RouteID: "route-a"}
+	second := &model.RouteAttempt{RouteID: "route-b"}
+	p := &taskRouteExecutionPortStub{
+		nextAttempts: map[string]*model.RouteAttempt{"route-a": second},
+		nextErrors:   map[string]error{},
+		processResults: map[string]taskRouteExecutionStubResult{
+			"route-a": {err: context.Canceled},
+			"route-b": {result: map[string]interface{}{"ok": true}},
+		},
+		onProcess: func() { cancel(errWorkerShuttingDown) },
+	}
+
+	result, err := (&taskRouteExecutor{port: p}).execute(ctx, &model.Task{ID: "task-1", RouteID: "route-a"}, first)
+	if err != nil {
+		t.Fatalf("execute() state error = %v", err)
+	}
+	if !errors.Is(result.err, context.Canceled) {
+		t.Fatalf("execute() task error = %v, want context cancellation", result.err)
+	}
+	if len(p.processCalls) != 1 || p.processCalls[0] != "route-a" {
+		t.Fatalf("shutdown attempted a fallback provider: %v", p.processCalls)
+	}
 }
 
 func (p *taskRouteExecutionPortStub) refreshTaskProviderState(*model.Task) error {
