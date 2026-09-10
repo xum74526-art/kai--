@@ -42,11 +42,12 @@ type LoginRequest struct {
 }
 
 type PublicAuthSettings struct {
-	FirstUser           bool `json:"firstUser"`
-	RegistrationEnabled bool `json:"registrationEnabled"`
-	LinuxDOEnabled      bool `json:"linuxdoEnabled"`
-	EmailEnabled        bool `json:"emailEnabled"`
-	EmailCodeRequired   bool `json:"emailCodeRequired"`
+	FirstUser            bool `json:"firstUser"`
+	RegistrationEnabled  bool `json:"registrationEnabled"`
+	LinuxDOEnabled       bool `json:"linuxdoEnabled"`
+	EmailEnabled         bool `json:"emailEnabled"`
+	EmailCodeRequired    bool `json:"emailCodeRequired"`
+	PasswordResetEnabled bool `json:"passwordResetEnabled"`
 }
 
 type AuthSessionResult struct {
@@ -93,11 +94,12 @@ func (s *Service) PublicAuthSettings() (*PublicAuthSettings, error) {
 		return nil, err
 	}
 	return &PublicAuthSettings{
-		FirstUser:           count == 0,
-		RegistrationEnabled: registrationEnabled,
-		LinuxDOEnabled:      count > 0 && s.LinuxDOEnabled(),
-		EmailEnabled:        emailEnabled,
-		EmailCodeRequired:   true,
+		FirstUser:            count == 0,
+		RegistrationEnabled:  registrationEnabled,
+		LinuxDOEnabled:       count > 0 && s.LinuxDOEnabled(),
+		EmailEnabled:         emailEnabled,
+		EmailCodeRequired:    true,
+		PasswordResetEnabled: emailEnabled,
 	}, nil
 }
 
@@ -358,6 +360,10 @@ func validateUsername(value string) error {
 func validatePassword(value string) error {
 	if len([]rune(value)) < 8 {
 		return BadAuthRequest("密码至少 8 位")
+	}
+	// bcrypt 只处理前 72 字节；显式拒绝可避免不同长密码产生相同有效输入。
+	if len([]byte(value)) > 72 {
+		return BadAuthRequest("密码不能超过 72 字节")
 	}
 	return nil
 }

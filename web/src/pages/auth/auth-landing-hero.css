@@ -104,6 +104,24 @@
   font-size: 13px;
 }
 
+.auth-landing .auth-forgot-action,
+.auth-landing .auth-back-action {
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  color: var(--text-soft);
+  font: inherit;
+}
+
+.auth-landing .auth-forgot-action {
+  justify-self: end;
+  padding: 0;
+  font-size: 13px;
+}
+
+.auth-landing .auth-forgot-action:hover,
+.auth-landing .auth-back-action:hover { color: var(--text); }
+
 .auth-landing .auth-form input,
 .auth-landing .prompt-field textarea {
   width: 100%;

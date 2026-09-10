@@ -47,11 +47,13 @@ type OAuthState struct {
 }
 
 type EmailVerificationCode struct {
-	ID        string     `json:"id" gorm:"primaryKey;size:36"`
-	Email     string     `json:"email" gorm:"index;size:160"`
-	CodeHash  string     `json:"-" gorm:"size:64"`
-	Purpose   string     `json:"purpose" gorm:"index;size:32"`
-	ExpiresAt time.Time  `json:"expiresAt" gorm:"index"`
-	UsedAt    *time.Time `json:"usedAt" gorm:"index"`
-	CreatedAt time.Time  `json:"createdAt" gorm:"index"`
+	ID             string     `json:"id" gorm:"primaryKey;size:36"`
+	UserID         string     `json:"userId,omitempty" gorm:"index;size:36"`
+	Email          string     `json:"email" gorm:"index;size:160"`
+	CodeHash       string     `json:"-" gorm:"size:64"`
+	Purpose        string     `json:"purpose" gorm:"index;size:32"`
+	FailedAttempts int        `json:"-"`
+	ExpiresAt      time.Time  `json:"expiresAt" gorm:"index"`
+	UsedAt         *time.Time `json:"usedAt" gorm:"index"`
+	CreatedAt      time.Time  `json:"createdAt" gorm:"index"`
 }

@@ -342,7 +342,7 @@ export type RuntimePolicySetting = {
 };
 
 export function getAuthSettings() {
-    return request<{ firstUser: boolean; registrationEnabled: boolean; linuxdoEnabled: boolean; emailEnabled: boolean; emailCodeRequired: boolean }>(api.get("/auth/settings"));
+    return request<{ firstUser: boolean; registrationEnabled: boolean; linuxdoEnabled: boolean; emailEnabled: boolean; emailCodeRequired: boolean; passwordResetEnabled: boolean }>(api.get("/auth/settings"));
 }
 
 export function linuxDOLoginURL(next: string) {
@@ -390,6 +390,14 @@ export async function login(input: { username: string; password: string }) {
 
 export function sendRegistrationEmailCode(email: string) {
     return request<{ sent: boolean }>(api.post("/auth/email-code", { email }));
+}
+
+export function requestPasswordResetCode(email: string) {
+    return request<{ accepted: boolean }>(api.post("/auth/password-reset/code", { email }));
+}
+
+export function resetPassword(input: { email: string; emailCode: string; newPassword: string }) {
+    return request<{ reset: boolean }>(api.post("/auth/password-reset/confirm", input));
 }
 
 export async function register(input: { username: string; email?: string; emailCode?: string; displayName?: string; password: string }) {

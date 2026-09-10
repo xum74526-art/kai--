@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 
 import { apiClient } from "../src/services/api/request";
 import { buildImageToolbarTools } from "../src/components/canvas/canvas-image-toolbar-tools";
-import { getAuthSession, logout, register, type LocalUser } from "../src/services/api/auth";
+import { getAuthSession, logout, register, requestPasswordResetCode, resetPassword, type LocalUser } from "../src/services/api/auth";
 import { createImportedStorageKey, remapImportedStorageReferences } from "../src/lib/imported-storage";
 import { persistSystemStyleLibraryIds, readSystemStyleLibraryIds } from "../src/lib/canvas/canvas-style-library-storage";
 import { testChannelModelConnection } from "../src/lib/model-connection-test";
@@ -132,6 +132,33 @@ test("registration UI never promises an automatic administrator or skips email v
     expect(source).toContain('message.success("普通用户账号注册成功")');
     expect(source).toContain("const requireCode = Boolean(settings?.emailCodeRequired)");
 });
+
+test.serial("password reset stays in the login panel and uses the dedicated public API", async () => {
+    const source = await Bun.file(new URL("../src/pages/auth/login.tsx", import.meta.url)).text();
+    expect(source).toContain("忘记密码？");
+    expect(source).toContain('setMode("confirm-reset")');
+    expect(source).toContain("邮件服务尚未配置");
+    expect(source).not.toContain("/forgot-password");
+
+    const previousAdapter = apiClient.defaults.adapter;
+    const calls: Array<{ method: string; url: string; data: unknown }> = [];
+    apiClient.defaults.adapter = async (config) => {
+        calls.push({ method: String(config.method), url: String(config.url), data: JSON.parse(String(config.data)) });
+        const data = String(config.url).endsWith("/code") ? { accepted: true } : { reset: true };
+        return { data: { code: 0, data, msg: "" }, status: 200, statusText: "OK", headers: {}, config };
+    };
+    try {
+        await requestPasswordResetCode("creator@example.com");
+        await resetPassword({ email: "creator@example.com", emailCode: "123456", newPassword: "new-password" });
+        expect(calls).toEqual([
+            { method: "post", url: "/auth/password-reset/code", data: { email: "creator@example.com" } },
+            { method: "post", url: "/auth/password-reset/confirm", data: { email: "creator@example.com", emailCode: "123456", newPassword: "new-password" } },
+        ]);
+    } finally {
+        apiClient.defaults.adapter = previousAdapter;
+    }
+});
+
 
 test("imported storage references receive a scoped key and replace stale nested blob URLs", () => {
     const originalWindow = (globalThis as { window?: unknown }).window;

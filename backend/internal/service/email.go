@@ -26,6 +26,7 @@ import (
 
 const emailSettingKey = "email"
 const registrationEmailPurpose = "registration"
+const passwordResetEmailPurpose = "password_reset"
 const registrationCodeTTL = 10 * time.Minute
 
 type EmailSettingRequest struct {
@@ -224,12 +225,16 @@ func (s *Service) VerifyRegistrationEmailCode(email string, rawCode string) (*mo
 }
 
 func (s *Service) emailVerificationCodeHash(email string, code string) (string, error) {
+	return s.emailVerificationCodeHashForPurpose(registrationEmailPurpose, email, code)
+}
+
+func (s *Service) emailVerificationCodeHashForPurpose(purpose string, email string, code string) (string, error) {
 	key, err := s.settingsEncryptionKey()
 	if err != nil {
 		return "", err
 	}
 	mac := hmac.New(sha256.New, key)
-	_, _ = mac.Write([]byte(registrationEmailPurpose + ":" + email + ":" + code))
+	_, _ = mac.Write([]byte(purpose + ":" + email + ":" + code))
 	return hex.EncodeToString(mac.Sum(nil)), nil
 }
 

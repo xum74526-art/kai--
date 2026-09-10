@@ -15,6 +15,8 @@ import (
 
 var ErrDailyUploadLimitExceeded = errors.New("daily upload limit exceeded")
 
+var ErrUserWriteUnavailable = errors.New("user is not active")
+
 var ErrTaskProviderRecoveryConflict = errors.New("task provider recovery is already running")
 
 var ErrTaskProviderCancellationConflict = errors.New("task provider cancellation is already claimed")
@@ -118,6 +120,21 @@ func (r *Repository) Create(value any) error {
 	return r.db.Create(value).Error
 }
 
+// lockActiveUser 在安全敏感写入前锁定用户行，避免账号状态改变后继续落库。
+func lockActiveUser(tx *gorm.DB, userID string) error {
+	var user model.User
+	query := tx.Select("id", "status").Where("id = ?", userID)
+	if tx.Dialector.Name() == "postgres" {
+		query = query.Clauses(clause.Locking{Strength: "UPDATE"})
+	}
+	if err := query.First(&user).Error; err != nil {
+		return err
+	}
+	if user.Status != model.UserStatusActive {
+		return ErrUserWriteUnavailable
+	}
+	return nil
+}
 // Save 是低层兼容入口；涉及状态机或权限边界的写入不得绕过显式事务方法。
 func (r *Repository) Save(value any) error {
 	return r.db.Save(value).Error
