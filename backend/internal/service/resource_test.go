@@ -684,6 +684,7 @@ func TestDetectResourceMimeTypeDoesNotTrustActiveContentDeclaredAsMedia(t *testi
 	}{
 		{name: "html", payload: "<!doctype html><script>alert(1)</script>", fileName: "clip.mp4", declared: "video/mp4", want: "text/html"},
 		{name: "svg", payload: `<svg xmlns="http://www.w3.org/2000/svg"><script/></svg>`, fileName: "image.png", declared: "image/png", want: "image/svg+xml"},
+		{name: "png declared as svg", payload: "\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR", fileName: "image.png", declared: "image/svg+xml", want: "image/png"},
 		{name: "padded html", payload: strings.Repeat(" ", 4096) + "<!doctype html><script>alert(1)</script>", fileName: "clip.mp4", declared: "video/mp4", want: "text/html"},
 		{name: "empty sniff window", payload: strings.Repeat(" ", resourceMimeSniffBytes), fileName: "clip.mp4", declared: "video/mp4", want: "application/octet-stream"},
 		{name: "plain text cannot impersonate video", payload: "not-enough-bytes-to-sniff", fileName: "clip.mp4", declared: "video/mp4", want: "text/plain"},
@@ -814,6 +815,26 @@ func TestHydrateNewAPIChannel1ResourceUsesSignedLocalURL(t *testing.T) {
 	stored, err := svc.repo.Resource("resource-local")
 	if err != nil || stored.Provider != "local" {
 		t.Fatalf("resource provider changed: %#v, %v", stored, err)
+	}
+}
+
+func TestHydrateAIAPIWayLocalImageUsesInlineData(t *testing.T) {
+	svc := newResourceTestService(t)
+	png := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR")
+	resource, err := svc.storeResource("user-1", "image", "reference.png", "image/svg+xml", int64(len(png)), 1, 1, 0, bytes.NewReader(png))
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := canvasGenerationInput{
+		Config:          providerConfig{InterfaceType: string(model.ChannelInterfaceAIAPIWayVideo)},
+		ReferenceImages: []providerMedia{{StorageKey: "resource:" + resource.ID}},
+	}
+	if err := svc.hydrateGenerationMedia("user-1", &input, true, true); err != nil {
+		t.Fatalf("hydrateGenerationMedia() error = %v", err)
+	}
+	image := input.ReferenceImages[0]
+	if image.URL != "" || !strings.HasPrefix(image.DataURL, "data:image/png;base64,") || image.MimeType != "image/png" {
+		t.Fatalf("image = %#v", image)
 	}
 }
 

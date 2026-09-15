@@ -67,9 +67,10 @@ function runDownloadQueue() {
 export async function primeResourceBlobCache(storageKey: string, blob: Blob) {
     const target = await cacheTarget(storageKey);
     if (!target) return "";
-    sessionBlobs.set(target.key, blob);
-    const url = objectUrl(target.key, blob);
-    if (blob.size <= MAX_CACHE_BYTES) void enqueuePersist(target, blob);
+    const normalizedBlob = await normalizeCachedMediaBlob(blob);
+    sessionBlobs.set(target.key, normalizedBlob);
+    const url = objectUrl(target.key, normalizedBlob);
+    if (normalizedBlob.size <= MAX_CACHE_BYTES) void enqueuePersist(target, normalizedBlob);
     return url;
 }
 
@@ -79,17 +80,19 @@ export async function getCachedResourceBlob(storageKey: string) {
     const cached = await blobStore.getItem<Blob>(target.key);
     if (cached) {
         void touchCacheMeta(target).catch(() => undefined);
-        return cached;
+        return repairCachedMediaBlob(target, cached);
     }
     const sessionBlob = sessionBlobs.get(target.key);
-    if (sessionBlob) return sessionBlob;
+    if (sessionBlob) return repairCachedMediaBlob(target, sessionBlob);
     const pending = inFlight.get(target.key);
     if (pending) {
         await pending;
-        return sessionBlobs.get(target.key) || blobStore.getItem<Blob>(target.key);
+        const populated = sessionBlobs.get(target.key) || await blobStore.getItem<Blob>(target.key);
+        return populated ? repairCachedMediaBlob(target, populated) : null;
     }
     await cacheResourceObjectUrl(storageKey);
-    return sessionBlobs.get(target.key) || blobStore.getItem<Blob>(target.key);
+    const populated = sessionBlobs.get(target.key) || await blobStore.getItem<Blob>(target.key);
+    return populated ? repairCachedMediaBlob(target, populated) : null;
 }
 
 async function downloadAndCacheResource(storageKey: string, target: ResourceCacheMeta) {
@@ -141,7 +144,33 @@ async function readCachedObjectUrl(target: ResourceCacheMeta) {
     const blob = await blobStore.getItem<Blob>(target.key);
     if (!blob) return "";
     void touchCacheMeta(target).catch(() => undefined);
-    return objectUrl(target.key, blob);
+    return objectUrl(target.key, await repairCachedMediaBlob(target, blob));
+}
+
+async function repairCachedMediaBlob(target: ResourceCacheMeta, blob: Blob) {
+    const normalized = await normalizeCachedMediaBlob(blob);
+    if (normalized === blob) return blob;
+    const existing = objectUrls.get(target.key);
+    if (existing) URL.revokeObjectURL(existing);
+    objectUrls.delete(target.key);
+    sessionBlobs.set(target.key, normalized);
+    void enqueuePersist(target, normalized);
+    return normalized;
+}
+
+async function normalizeCachedMediaBlob(blob: Blob) {
+    const bytes = new Uint8Array(await blob.slice(0, 16).arrayBuffer());
+    const detected = detectCachedImageMimeType(bytes);
+    return detected && detected !== blob.type ? blob.slice(0, blob.size, detected) : blob;
+}
+
+function detectCachedImageMimeType(bytes: Uint8Array) {
+    if (bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return "image/png";
+    if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg";
+    if (bytes.length >= 6 && String.fromCharCode(...bytes.slice(0, 6)).startsWith("GIF8")) return "image/gif";
+    if (bytes.length >= 12 && String.fromCharCode(...bytes.slice(0, 4)) === "RIFF" && String.fromCharCode(...bytes.slice(8, 12)) === "WEBP") return "image/webp";
+    if (bytes.length >= 2 && bytes[0] === 0x42 && bytes[1] === 0x4d) return "image/bmp";
+    return "";
 }
 
 async function cacheTarget(storageKey: string): Promise<ResourceCacheMeta | null> {

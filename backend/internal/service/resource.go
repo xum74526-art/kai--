@@ -278,6 +278,11 @@ func detectResourceMimeType(sample []byte, fileName string, declared string) str
 	detected := normalizeMimeType(http.DetectContentType(sample))
 	extensionType := normalizeMimeType(mime.TypeByExtension(filepath.Ext(fileName)))
 
+	// PNG、JPEG 等被动媒体有可靠的文件签名时，以实际内容为准。这样既不会
+	// 因客户端误报为 SVG 而破坏预览，也仍由 nosniff 保证浏览器不执行夹带内容。
+	if detected != "" && detected != "application/octet-stream" && detected != "text/plain" && !isActiveDocumentMime(detected) {
+		return detected
+	}
 	// 浏览器提交的 Content-Type 可以伪造。主动内容即使声明成 video/mp4，
 	// 也必须按实际内容记录，后续下载出口才会强制 attachment + sandbox。
 	if active := detectActiveDocumentMime(sample, declared, extensionType); active != "" {

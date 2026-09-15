@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/net/http/httpproxy"
@@ -22,6 +23,11 @@ const (
 	maxOutboundHeaderCount    = 32
 	maxOutboundHeaderBytes    = 16 << 10
 	outboundValidationTimeout = 10 * time.Second
+	outboundDNSFreshTTL       = 30 * time.Minute
+	outboundDNSStaleTTL       = 6 * time.Hour
+	outboundDNSLookupTimeout  = 3 * time.Second
+	outboundDNSRetryDelay     = 150 * time.Millisecond
+	outboundDNSLookupAttempts = 2
 	CustomRelayHeadersHeader  = "X-Canvas-Upstream-Headers"
 	DefaultOutboundUserAgent  = "Beidou-KAIYing/1.0 (+https://github.com/xum74526-art/kai--)"
 )
@@ -36,6 +42,7 @@ var (
 	directOutboundTransport    = newDirectOutboundTransport(resolveOutboundHost)
 	customRelayTransport       = newDirectOutboundTransport(resolveCustomRelayHost)
 	publicResourceTransport    = newDirectOutboundTransport(resolvePublicOutboundHost)
+	sharedOutboundDNSCache     = newOutboundDNSCache()
 	blockedCustomRelayPrefixes = []netip.Prefix{
 		netip.MustParsePrefix("0.0.0.0/8"),
 		netip.MustParsePrefix("100.64.0.0/10"),
@@ -49,6 +56,77 @@ var (
 		netip.MustParsePrefix("2001:db8::/32"),
 	}
 )
+
+type outboundDNSCacheEntry struct {
+	addresses  []net.IP
+	resolvedAt time.Time
+}
+
+// outboundDNSCache 只缓存解析结果，调用方仍需逐次执行私网和保留地址校验。
+// 每个主机的解析锁避免并发生成任务在 DNS 抖动时同时放大失败。
+type outboundDNSCache struct {
+	mu      sync.RWMutex
+	entries map[string]outboundDNSCacheEntry
+	locks   map[string]chan struct{}
+}
+
+func newOutboundDNSCache() *outboundDNSCache {
+	return &outboundDNSCache{
+		entries: make(map[string]outboundDNSCacheEntry),
+		locks:   make(map[string]chan struct{}),
+	}
+}
+
+func cloneIPAddresses(addresses []net.IP) []net.IP {
+	cloned := make([]net.IP, 0, len(addresses))
+	for _, address := range addresses {
+		if address != nil {
+			cloned = append(cloned, append(net.IP(nil), address...))
+		}
+	}
+	return cloned
+}
+
+func (c *outboundDNSCache) load(host string, maxAge time.Duration) ([]net.IP, bool) {
+	if c == nil {
+		return nil, false
+	}
+	c.mu.RLock()
+	entry, ok := c.entries[host]
+	c.mu.RUnlock()
+	if !ok || len(entry.addresses) == 0 || time.Since(entry.resolvedAt) > maxAge {
+		return nil, false
+	}
+	return cloneIPAddresses(entry.addresses), true
+}
+
+func (c *outboundDNSCache) store(host string, addresses []net.IP) {
+	if c == nil || len(addresses) == 0 {
+		return
+	}
+	c.mu.Lock()
+	c.entries[host] = outboundDNSCacheEntry{addresses: cloneIPAddresses(addresses), resolvedAt: time.Now()}
+	c.mu.Unlock()
+}
+
+func (c *outboundDNSCache) acquire(ctx context.Context, host string) (func(), error) {
+	if c == nil {
+		return func() {}, nil
+	}
+	c.mu.Lock()
+	lock := c.locks[host]
+	if lock == nil {
+		lock = make(chan struct{}, 1)
+		c.locks[host] = lock
+	}
+	c.mu.Unlock()
+	select {
+	case lock <- struct{}{}:
+		return func() { <-lock }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
 
 func ValidateOutboundURL(rawURL string) (*url.URL, error) {
 	if len(strings.TrimSpace(rawURL)) > 4096 {
@@ -321,6 +399,7 @@ func newDirectOutboundTransport(resolveHost func(context.Context, string) ([]net
 
 func newOutboundTransportWithProxy(resolveHost func(context.Context, string) ([]net.IP, error), allowEnvironmentProxy bool) *http.Transport {
 	dialer := &net.Dialer{Timeout: 15 * time.Second, KeepAlive: 30 * time.Second}
+	configureOutboundDialer(dialer)
 	var proxy func(*http.Request) (*url.URL, error)
 	if allowEnvironmentProxy {
 		proxy = outboundProxyFromEnvironment
@@ -340,7 +419,18 @@ func newOutboundTransportWithProxy(resolveHost func(context.Context, string) ([]
 			if err != nil {
 				return nil, err
 			}
-			return dialer.DialContext(ctx, network, net.JoinHostPort(addresses[0].String(), port))
+			var lastErr error
+			for _, resolvedAddress := range addresses {
+				connection, dialErr := dialer.DialContext(ctx, network, net.JoinHostPort(resolvedAddress.String(), port))
+				if dialErr == nil {
+					return connection, nil
+				}
+				lastErr = dialErr
+				if ctx.Err() != nil {
+					return nil, ctx.Err()
+				}
+			}
+			return nil, lastErr
 		},
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          100,
@@ -445,9 +535,20 @@ func resolveOutboundHostWithPolicy(ctx context.Context, host string, allowPrivat
 	if !allowPrivateHost && (host == "localhost" || strings.HasSuffix(host, ".localhost")) {
 		return nil, BadAuthRequest("不允许访问本机或内网地址")
 	}
-	addresses, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
-	if err != nil {
-		return nil, BadAuthRequest("外部服务域名解析失败")
+	var addresses []net.IP
+	if literal := net.ParseIP(host); literal != nil {
+		addresses = []net.IP{literal}
+	} else {
+		var err error
+		addresses, err = lookupOutboundHostWithCache(ctx, host, sharedOutboundDNSCache, func(lookupCtx context.Context, lookupHost string) ([]net.IP, error) {
+			return net.DefaultResolver.LookupIP(lookupCtx, "ip", lookupHost)
+		})
+		if err != nil {
+			publicErr := BadAuthRequest("外部服务域名解析失败")
+			publicErr.Retryable = true
+			publicErr.Cause = err
+			return nil, publicErr
+		}
 	}
 	if len(addresses) == 0 {
 		return nil, BadAuthRequest("外部服务域名没有可用地址")
@@ -460,6 +561,53 @@ func resolveOutboundHostWithPolicy(ctx context.Context, host string, allowPrivat
 		}
 	}
 	return addresses, nil
+}
+
+func lookupOutboundHostWithCache(ctx context.Context, host string, cache *outboundDNSCache, lookup func(context.Context, string) ([]net.IP, error)) ([]net.IP, error) {
+	if addresses, ok := cache.load(host, outboundDNSFreshTTL); ok {
+		return addresses, nil
+	}
+	release, err := cache.acquire(ctx, host)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	if addresses, ok := cache.load(host, outboundDNSFreshTTL); ok {
+		return addresses, nil
+	}
+
+	var lastErr error
+	for attempt := 0; attempt < outboundDNSLookupAttempts; attempt++ {
+		lookupCtx, cancel := context.WithTimeout(ctx, outboundDNSLookupTimeout)
+		addresses, lookupErr := lookup(lookupCtx, host)
+		cancel()
+		if len(addresses) > 0 {
+			cache.store(host, addresses)
+			return cloneIPAddresses(addresses), nil
+		}
+		lastErr = lookupErr
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if attempt+1 < outboundDNSLookupAttempts {
+			timer := time.NewTimer(outboundDNSRetryDelay)
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				timer.Stop()
+				return nil, ctx.Err()
+			}
+		}
+	}
+	// 短时 DNS 故障不应中断已在运行的生成任务；仅回退到近期解析成功且仍会
+	// 经过当前 SSRF 规则复核的地址，不缓存失败结果。
+	if addresses, ok := cache.load(host, outboundDNSStaleTTL); ok {
+		return addresses, nil
+	}
+	if lastErr == nil {
+		lastErr = errors.New("DNS lookup returned no addresses")
+	}
+	return nil, lastErr
 }
 
 func blockedOutboundIP(ip net.IP) bool {

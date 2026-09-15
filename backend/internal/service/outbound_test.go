@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -251,5 +252,42 @@ func TestCustomRelayHTTPClientDoesNotFollowRedirects(t *testing.T) {
 	}
 	if redirected {
 		t.Fatal("redirect destination should not receive the request")
+	}
+}
+
+func TestLookupOutboundHostUsesFreshCache(t *testing.T) {
+	cache := newOutboundDNSCache()
+	calls := 0
+	lookup := func(context.Context, string) ([]net.IP, error) {
+		calls++
+		return []net.IP{net.ParseIP("8.8.8.8")}, nil
+	}
+	for range 2 {
+		addresses, err := lookupOutboundHostWithCache(context.Background(), "api.example.com", cache, lookup)
+		if err != nil || len(addresses) != 1 || !addresses[0].Equal(net.ParseIP("8.8.8.8")) {
+			t.Fatalf("addresses = %v, err = %v", addresses, err)
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("lookup calls = %d, want 1", calls)
+	}
+}
+
+func TestLookupOutboundHostFallsBackToRecentAddress(t *testing.T) {
+	cache := newOutboundDNSCache()
+	cache.entries["api.example.com"] = outboundDNSCacheEntry{
+		addresses:  []net.IP{net.ParseIP("8.8.4.4")},
+		resolvedAt: time.Now().Add(-outboundDNSFreshTTL - time.Minute),
+	}
+	calls := 0
+	addresses, err := lookupOutboundHostWithCache(context.Background(), "api.example.com", cache, func(context.Context, string) ([]net.IP, error) {
+		calls++
+		return nil, errors.New("temporary DNS failure")
+	})
+	if err != nil || len(addresses) != 1 || !addresses[0].Equal(net.ParseIP("8.8.4.4")) {
+		t.Fatalf("addresses = %v, err = %v", addresses, err)
+	}
+	if calls != outboundDNSLookupAttempts {
+		t.Fatalf("lookup calls = %d, want %d", calls, outboundDNSLookupAttempts)
 	}
 }

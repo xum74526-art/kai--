@@ -313,7 +313,8 @@ func (s *Service) processCanvasGenerationTask(ctx context.Context, userID string
 	}
 	if resumedProviderRequestID(ctx) == "" {
 		requirePublicURL := input.Config.InterfaceType == "newapi-channel-1" || input.Config.InterfaceType == "newapi-channel-2" || input.Config.InterfaceType == string(model.ChannelInterfaceAIAPIWayVideo) || input.Config.InterfaceType == string(model.ChannelInterfaceVolcengineArkVideo) || input.Config.InterfaceType == string(model.ChannelInterfaceMiniMaxVideo)
-		if err := s.hydrateGenerationMedia(userID, &input, requirePublicURL); err != nil {
+		allowInlineImageData := input.Config.InterfaceType == string(model.ChannelInterfaceAIAPIWayVideo)
+		if err := s.hydrateGenerationMedia(userID, &input, requirePublicURL, allowInlineImageData); err != nil {
 			return nil, err
 		}
 	}
@@ -717,17 +718,26 @@ func metadataStringValues(value any) map[string]string {
 	return values
 }
 
-func (s *Service) hydrateGenerationMedia(userID string, input *canvasGenerationInput, requirePublicURL bool) error {
-	groups := [][]providerMedia{input.ReferenceImages, input.ReferenceVideos, input.ReferenceAudios}
+func (s *Service) hydrateGenerationMedia(userID string, input *canvasGenerationInput, requirePublicURL bool, allowInlineImageData bool) error {
+	// AI API WAY 明确支持图片 data URL；视频和音频仍使用公网地址，避免把大文件塞进 JSON 请求。
+	imageRequiresPublicURL := requirePublicURL && !allowInlineImageData
+	groups := []struct {
+		items            []providerMedia
+		requirePublicURL bool
+	}{
+		{items: input.ReferenceImages, requirePublicURL: imageRequiresPublicURL},
+		{items: input.ReferenceVideos, requirePublicURL: requirePublicURL},
+		{items: input.ReferenceAudios, requirePublicURL: requirePublicURL},
+	}
 	for _, group := range groups {
-		for index := range group {
-			if err := s.hydrateProviderMedia(userID, &group[index], requirePublicURL); err != nil {
+		for index := range group.items {
+			if err := s.hydrateProviderMedia(userID, &group.items[index], group.requirePublicURL); err != nil {
 				return err
 			}
 		}
 	}
 	if input.Mask != nil {
-		return s.hydrateProviderMedia(userID, input.Mask, requirePublicURL)
+		return s.hydrateProviderMedia(userID, input.Mask, imageRequiresPublicURL)
 	}
 	return nil
 }
@@ -793,11 +803,16 @@ func (s *Service) hydrateProviderMedia(userID string, media *providerMedia, requ
 
 func normalizedMediaMimeType(declared string, data []byte) string {
 	declared = strings.TrimSpace(strings.Split(declared, ";")[0])
-	if declared != "" && declared != "application/octet-stream" {
-		return declared
-	}
 	detected := strings.TrimSpace(strings.Split(http.DetectContentType(data), ";")[0])
-	return defaultString(detected, "application/octet-stream")
+	if declared == "" || declared == "application/octet-stream" {
+		return defaultString(detected, "application/octet-stream")
+	}
+	declaredGroup, _, _ := strings.Cut(declared, "/")
+	detectedGroup, _, _ := strings.Cut(detected, "/")
+	if detected != "" && detected != "application/octet-stream" && declaredGroup != "" && declaredGroup == detectedGroup {
+		return detected
+	}
+	return declared
 }
 
 func (s *Service) resolveProviderConfig(config providerConfig) (providerConfig, error) {
@@ -2674,14 +2689,19 @@ func runNewAPIChannel2VideoTask(ctx context.Context, input canvasGenerationInput
 
 	consecutiveQueryFailures := 0
 	for deadline := providerPollingDeadline(ctx); time.Now().Before(deadline); {
-		result, _, err := queryNewAPIChannel2VideoTask(ctx, input, id)
+		result, _, err := queryNewAPIChannel2VideoTask(withProviderRequestKind(ctx, "poll"), input, id)
 		if err != nil {
 			if !isTransientNewAPIChannel2QueryError(err) || consecutiveQueryFailures >= newAPIChannel2VideoMaxQueryRetries {
 				return nil, err
 			}
 			consecutiveQueryFailures++
 			logNewAPIChannel2QueryRetry(ctx, id, consecutiveQueryFailures, err)
-			if err := sleepContext(ctx, newAPIChannel2VideoRetryInterval); err != nil {
+			retryInterval := newAPIChannel2VideoRetryInterval
+			var appErr *AppError
+			if errors.As(err, &appErr) && appErr.Retryable {
+				retryInterval = 5 * time.Second
+			}
+			if err := sleepContext(ctx, retryInterval); err != nil {
 				return nil, err
 			}
 			continue
@@ -2751,6 +2771,10 @@ func isTransientNewAPIChannel2QueryError(err error) bool {
 	var responseErr newAPIChannel2ResponseError
 	if errors.As(err, &responseErr) {
 		return responseErr.Code == "do_request_failed" || strings.Contains(strings.ToLower(responseErr.Message), "do request failed")
+	}
+	var appErr *AppError
+	if errors.As(err, &appErr) && appErr.Retryable {
+		return true
 	}
 	var httpErr providerHTTPError
 	if errors.As(err, &httpErr) {
