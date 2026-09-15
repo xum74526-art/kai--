@@ -93,6 +93,10 @@
   gap: 12px;
 }
 
+.auth-landing .auth-form-login {
+  align-items: start;
+}
+
 .auth-landing .auth-field {
   display: grid;
   min-width: 0;

@@ -135,7 +135,12 @@ test("registration UI never promises an automatic administrator or skips email v
 
 test.serial("password reset stays in the login panel and uses the dedicated public API", async () => {
     const source = await Bun.file(new URL("../src/pages/auth/login.tsx", import.meta.url)).text();
+    const heroStyles = await Bun.file(new URL("../src/pages/auth/auth-landing-hero.css", import.meta.url)).text();
     expect(source).toContain("忘记密码？");
+    expect(source).not.toContain('className="auth-field-heading"');
+    expect(source).toContain('<div className="auth-reset-header">\n                    <div>');
+    expect(heroStyles).toContain(".auth-landing .auth-form-login {\n  align-items: start;\n}");
+    expect(heroStyles).toContain(".auth-landing .auth-forgot-action {\n  justify-self: end;");
     expect(source).toContain('setMode("confirm-reset")');
     expect(source).toContain("邮件服务尚未配置");
     expect(source).not.toContain("/forgot-password");

@@ -128,14 +128,14 @@ export default function LoginPage() {
         return (
             <form className="auth-form auth-form-reset" onSubmit={confirming ? confirmReset : sendResetCode} aria-busy={sendingCode || resetting}>
                 <div className="auth-reset-header">
-                    <button className="auth-back-action" type="button" onClick={returnToLogin}>
-                        <ArrowLeft aria-hidden="true" />
-                        返回登录
-                    </button>
                     <div>
                         <strong>{confirming ? "设置新密码" : "找回密码"}</strong>
                         <small>{confirming ? `验证码已发送至 ${resetEmail}` : "使用注册邮箱验证账号归属"}</small>
                     </div>
+                    <button className="auth-back-action" type="button" onClick={returnToLogin}>
+                        <ArrowLeft aria-hidden="true" />
+                        返回登录
+                    </button>
                 </div>
 
                 {unavailable ? (
