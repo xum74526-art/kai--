@@ -319,11 +319,19 @@ export function AssetLibraryPickerModal({
 
 function PickerCard({ item, selected, onToggle }: { item: AssetLibraryPickerItem; selected: boolean; onToggle: () => void }) {
     const disabled = Boolean(item.disabledReason);
+    const fallback = <div className="assets-cover-fallback">{kindIcon(item.kindLabel)}</div>;
     return (
         <AssetLibraryCard selected={selected} className={cn("asset-picker-card", disabled && "is-disabled")}>
             <button type="button" className="asset-picker-card-action" onClick={onToggle} disabled={disabled} aria-pressed={selected} title={item.disabledReason || item.title}>
                 <div className="assets-cover asset-picker-card-media">
-                    {item.imageUrl || item.imageStorageKey ? <CachedResourceImage storageKey={item.imageStorageKey} src={item.imageUrl} alt={item.title} loading="lazy" decoding="async" className={item.imageFit === "contain" ? "is-contain" : undefined} fallback={<div className="assets-cover-fallback">{kindIcon(item.kindLabel)}</div>} /> : <AssetMediaPreview asset={item.asset} alt={item.title} fallback={<div className="assets-cover-fallback">{kindIcon(item.kindLabel)}</div>} />}
+                    {item.imageUrl || item.imageStorageKey ? (
+                        <CachedResourceImage storageKey={item.imageStorageKey} src={item.imageUrl} alt={item.title} loading="lazy" decoding="async" className={item.imageFit === "contain" ? "is-contain" : undefined} fallback={fallback} />
+                    ) : item.asset?.kind === "video" ? (
+                        // 素材网格不能批量挂载播放器，否则每个视频都会发起 Range 请求并占用解码内存。
+                        fallback
+                    ) : (
+                        <AssetMediaPreview asset={item.asset} alt={item.title} fallback={fallback} />
+                    )}
                     <span className="assets-cover-vignette" aria-hidden="true" />
                     <span className="assets-cover-badges" aria-hidden="true">
                         <span className="assets-cover-badge is-kind">{item.kindLabel}</span></span>

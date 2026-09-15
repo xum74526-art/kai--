@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type ReactNode, type RefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type ClipboardEvent, type CSSProperties, type ReactNode, type RefObject } from "react";
 import { App, Button, Drawer, Modal, Popover, Spin, Tooltip } from "antd";
 import { ArrowDown, ArrowUp, Check, ChevronDown, Clapperboard, Clock3, Copy, Download, FileText, Film, FolderOpen, History, Image as ImageIcon, LoaderCircle, Maximize2, MessageSquareText, Music2, Paperclip, Plus, RefreshCw, Search, SlidersHorizontal, Sparkles, Square, Trash2, X } from "lucide-react";
 import { Link } from "react-router";
@@ -830,6 +830,7 @@ export default function CreatePage() {
         onOpenLibrary: () => setLibraryOpen(true),
         fileInputRef,
         onFileChange: handleFileChange,
+        onPasteFiles: addAttachments,
         onModeChange: selectMode,
         model: selectedModel,
         modelRequirements,
@@ -1089,6 +1090,7 @@ type ComposerProps = {
     onOpenLibrary: () => void;
     fileInputRef: RefObject<HTMLInputElement | null>;
     onFileChange: (event: ChangeEvent<HTMLInputElement>) => void;
+    onPasteFiles: (files: File[]) => void;
     onModeChange: (mode: CreationMode) => void;
     model: string;
     modelRequirements: ModelRequirements;
@@ -1143,8 +1145,26 @@ function CreationComposer(props: ComposerProps) {
         setPreviewType(type);
         setPreviewUrl(url);
     };
+    const handlePasteCapture = (event: ClipboardEvent<HTMLDivElement>) => {
+        if (props.busy || !referencesSupported || !canAddMoreReferences) return;
+        const itemImages = Array.from(event.clipboardData.items)
+            .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+            .flatMap((item) => {
+                const file = item.getAsFile();
+                return file ? [file] : [];
+            });
+        const images = itemImages.length
+            ? itemImages
+            : Array.from(event.clipboardData.files).filter((file) => file.type.startsWith("image/"));
+        if (!images.length) return;
+
+        // 富文本输入框会把粘贴内容转成纯文本；图片必须在捕获阶段先交给统一附件流程。
+        event.preventDefault();
+        event.stopPropagation();
+        props.onPasteFiles(images);
+    };
     return <section className={`creation-chat-composer is-${props.variant}`}>
-        <div className="creation-chat-writing-surface">
+        <div className="creation-chat-writing-surface" onPasteCapture={handlePasteCapture}>
             <input ref={props.fileInputRef} type="file" hidden accept={creationUploadAccept(props.mode)} multiple onChange={props.onFileChange} />
             {primaryAttachment ? <CreationAttachmentThumbnail item={primaryAttachment} primary canAddMore={canAddMoreReferences && !props.busy} onPreview={previewAttachment} onRemove={props.onRemoveAttachment} onAdd={props.onOpenLibrary} /> : <Tooltip title={!referencesSupported ? "当前模型不支持参考媒体" : "从素材库选择参考内容"}><button type="button" className="creation-chat-reference is-paper" onClick={props.onOpenLibrary} disabled={props.busy || !referencesSupported} aria-label="打开素材库选择参考内容"><Plus /><span>参考内容</span></button></Tooltip>}
             <div className="creation-chat-editor">
