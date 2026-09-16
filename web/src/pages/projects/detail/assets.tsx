@@ -46,7 +46,7 @@ import { categoryLabels, categoryLabel, mediaLabel, StatusPill, formatTime, text
 
 const categories = ["all", "character", "environment", "wardrobe", "prop", "weapon", "style", "other"];
 const ALL_FOLDERS = "__all_folders__";
-const pickerCategoryLabels = { all: "全部素材", ...categoryLabels };
+const pickerCategoryLabels = { all: "全部图片", ...categoryLabels };
 const characterFields = [
     ["role", "剧情定位与人物关系"], ["aliases", "别名"], ["appearance", "稳定外貌"], ["physique", "身高、体型与体态"],
     ["clothing", "默认服装造型"], ["personality", "性格与表演基线"], ["props", "固定道具"],
@@ -79,19 +79,19 @@ export default function ProjectAssetsView({ detail, refreshProject }: ProjectDet
     const [form] = Form.useForm<CharacterForm>();
 
     const projectAssetIds = new Set(detail.assets.map((asset) => asset.id));
-    const availableAssets = personalAssets.filter((asset) => !projectAssetIds.has(asset.id));
+    const availableAssets = personalAssets.filter((asset): asset is ImageAsset => asset.kind === "image" && !projectAssetIds.has(asset.id));
     const imageAssets = personalAssets.filter((asset): asset is ImageAsset => asset.kind === "image");
     const availablePickerItems = useMemo<AssetLibraryPickerItem[]>(() => [
         ...availableAssets.map((asset) => ({
             id: asset.id,
             title: asset.title,
-            category: asset.kind === "entity" ? "character" : asset.category || "other",
+            category: asset.category || "other",
             kindLabel: mediaLabel(asset.kind),
             asset,
             description: asset.note,
             searchText: asset.tags.join(" "),
         })),
-        ...externalAssetSources.items,
+        ...externalAssetSources.items.filter((item) => item.external?.item.kind === "image"),
     ], [availableAssets, externalAssetSources.items]);
     const imagePickerItems = useMemo<AssetLibraryPickerItem[]>(() => [
         ...imageAssets.map((asset) => ({
@@ -340,8 +340,8 @@ export default function ProjectAssetsView({ detail, refreshProject }: ProjectDet
                 multiple={false}
                 title="素材库"
                 confirmLabel={() => "加入项目"}
-                emptyTitle="没有可引用的素材"
-                emptyDescription="本地素材已全部加入项目，或切换到插件来源选择外部素材。"
+                emptyTitle="没有可引用的图片"
+                emptyDescription="本地图片已全部加入项目，或切换到插件来源选择外部图片。"
                 onClose={() => setAddOpen(false)}
                 onConfirm={async (ids) => {
                     const selectedItem = availablePickerItems.find((item) => item.id === ids[0]);

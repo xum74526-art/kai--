@@ -37,7 +37,7 @@ import { useUserStore } from "@/stores/use-user-store";
 import { CreationLanding } from "./creation-landing";
 import { CreationMediaPreviewModal, CreationResultMedia } from "./creation-media-result";
 import { buildCreationMentionReferences, creationReferenceMetadata, displayCreationPrompt, expandCreationPrompt, reconcileCreationAttachmentLimit, removeCreationReferenceTokens, selectedCreationReferences, type CreationReference } from "./creation-references";
-import { creationAttachmentFromAsset, creationAttachmentFromAudio, creationAttachmentFromAudioAsset, creationAttachmentFromDocument, creationAttachmentFromImage, creationAttachmentFromVideo, creationAttachmentFromVideoAsset, creationAttachmentKind, creationAudioAsset, creationFileAccepted, creationImageAsset, creationMediaAspectRatio, creationUploadAccept, creationVideoAsset, splitCreationAttachments, type CreationAttachment } from "./creation-assets";
+import { creationAttachmentFromAsset, creationAttachmentFromAudio, creationAttachmentFromDocument, creationAttachmentFromImage, creationAttachmentFromVideo, creationAttachmentKind, creationFileAccepted, creationImageAsset, creationMediaAspectRatio, creationUploadAccept, splitCreationAttachments, type CreationAttachment } from "./creation-assets";
 import { applyCreationTaskOutcomes, creationExpectedTaskCount, creationTaskObservationErrorMessage, failCreationTaskObservation, isCreationTaskTerminalStatus, type CreationConversation, type CreationMessage, type CreationMode, type CreationSettings, type CreationTaskTerminalStatus } from "./creation-task-outcomes";
 
 type CreationViewMode = "chat" | "storyboard";
@@ -411,28 +411,25 @@ export default function CreatePage() {
     };
 
     const libraryItems = useMemo<AssetLibraryPickerItem[]>(() => assets
-        .filter((asset): asset is Extract<Asset, { kind: "image" | "video" | "audio" }> => asset.kind === "image" || asset.kind === "video" || asset.kind === "audio")
+        .filter((asset): asset is Extract<Asset, { kind: "image" }> => asset.kind === "image")
         .map((asset) => ({
             id: asset.id,
             title: asset.title,
             category: asset.category || "other",
-            kindLabel: asset.kind === "video" ? "视频" : asset.kind === "audio" ? "音频" : "图片",
+            kindLabel: "图片",
             asset,
             searchText: asset.tags.join(" "),
-            disabledReason: mode === "image" && asset.kind !== "image" ? "图片创作仅支持参考图" : undefined,
-        })), [assets, mode]);
+        })), [assets]);
     const uploadCreationAsset = async (file: File) => {
         if (file.type.startsWith("video/")) {
             const uploaded = await uploadMediaFile(file, "create-upload");
             return {
-                asset: creationVideoAsset({ title: file.name, uploaded, metadata: { source: "create-upload", fileName: file.name } }),
                 attachment: creationAttachmentFromVideo(file, uploaded),
             };
         }
         if (file.type.startsWith("audio/")) {
             const uploaded = await uploadMediaFile(file, "create-upload");
             return {
-                asset: creationAudioAsset({ title: file.name, uploaded, metadata: { source: "create-upload", fileName: file.name } }),
                 attachment: creationAttachmentFromAudio(file, uploaded),
             };
         }
@@ -468,7 +465,8 @@ export default function CreatePage() {
     };
 
     const uploadLibraryAssets = async (files: FileList | File[]) => {
-        const next = Array.from(files).filter((file) => creationFileAccepted(mode, file));
+        // 素材库只承载可复用图片；视频、音频和文档仍可作为当前会话附件直接上传。
+        const next = Array.from(files).filter((file) => creationFileAccepted("image", file));
         if (!next.length) return [];
         const settled = await Promise.allSettled(next.map(async (file) => {
             const { asset } = await uploadCreationAsset(file);
@@ -489,8 +487,6 @@ export default function CreatePage() {
     const handleLibrarySelect = (selected: Asset[]) => {
         const next = selected.flatMap((asset): CreationAttachment[] => {
             if (asset.kind === "image") return [creationAttachmentFromAsset(asset)];
-            if (asset.kind === "video" && mode !== "image") return [creationAttachmentFromVideoAsset(asset)];
-            if (asset.kind === "audio" && mode !== "image") return [creationAttachmentFromAudioAsset(asset)];
             return [];
         });
         if (!next.length) return;
@@ -925,14 +921,14 @@ export default function CreatePage() {
             items={libraryItems}
             categoryLabels={creationAssetCategoryLabels}
             initialSelectedIds={attachments.filter((item) => item.id.startsWith("asset:")).map((item) => item.id.slice(6))}
-            upload={{ accept: creationUploadAccept(mode), description: mode === "text" ? "支持图片、视频、音频和常用文档；媒体会保存到素材库" : `支持图片${mode === "video" ? "、视频和音频" : ""}，上传后保存到素材库`, onUpload: uploadLibraryAssets }}
+            upload={{ accept: "image/*", description: "仅支持图片，上传后保存到素材库", onUpload: uploadLibraryAssets }}
             onClose={() => setLibraryOpen(false)}
             onConfirm={(ids) => handleLibrarySelect(assets.filter((asset) => ids.includes(asset.id)))}
         />
     </>;
 }
 
-const creationAssetCategoryLabels: Record<string, string> = { all: "全部素材", character: "角色", environment: "场景", wardrobe: "服饰", prop: "道具", weapon: "武器", style: "画风", other: "其他" };
+const creationAssetCategoryLabels: Record<string, string> = { all: "全部图片", character: "角色", environment: "场景", wardrobe: "服饰", prop: "道具", weapon: "武器", style: "画风", other: "其他" };
 
 function CreationHistoryDrawer({ open, conversations, activeId, onClose, onSelect, onDelete }: { open: boolean; conversations: CreationConversation[]; activeId: string; onClose: () => void; onSelect: (conversation: CreationConversation) => void; onDelete: (conversation: CreationConversation) => void }) {
     const [keyword, setKeyword] = useState("");

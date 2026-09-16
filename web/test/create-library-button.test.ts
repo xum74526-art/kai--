@@ -42,6 +42,22 @@ describe("creation library button", () => {
         expect(source).toContain("个素材已上传到素材库并自动选中");
     });
 
+    test("keeps the reusable asset picker image-only", () => {
+        const createSource = readFileSync(resolve(import.meta.dir, "../src/pages/create/index.tsx"), "utf8");
+        const canvasSource = readFileSync(resolve(import.meta.dir, "../src/components/canvas/asset-picker-modal.tsx"), "utf8");
+        const projectSource = readFileSync(resolve(import.meta.dir, "../src/components/canvas/canvas-project-asset-modal.tsx"), "utf8");
+
+        expect(createSource).toContain('asset.kind === "image"');
+        expect(createSource).toContain('upload={{ accept: "image/*"');
+        expect(createSource).toContain('creationFileAccepted("image", file)');
+        expect(createSource).not.toContain("asset: creationVideoAsset");
+        expect(createSource).not.toContain("asset: creationAudioAsset");
+        expect(canvasSource).toContain('asset.kind === "image"');
+        expect(canvasSource).toContain('item.external?.item.kind === "image"');
+        expect(projectSource).toContain('asset.mediaType !== "image"');
+        expect(projectSource).toContain('item.external?.item.kind === "image"');
+    });
+
     test("previews prompt reference images without removing them", () => {
         const createSource = readFileSync(resolve(import.meta.dir, "../src/pages/create/index.tsx"), "utf8");
         const canvasSource = readFileSync(resolve(import.meta.dir, "../src/components/canvas/canvas-node-prompt-panel.tsx"), "utf8");

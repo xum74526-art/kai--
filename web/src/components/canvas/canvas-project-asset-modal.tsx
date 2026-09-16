@@ -19,13 +19,14 @@ export function CanvasProjectAssetModal({ open, detail, initialCategory = "all",
         const mediaById = new Map(mediaAssets.map((asset) => [asset.id, asset]));
         const projectItems = (detail?.assets || []).flatMap((asset): ProjectPickerItem[] => {
             if (asset.category === "character" && asset.character) return [{ id: asset.id, category: "character", folderId: asset.folderId, project: asset, character: asset }];
+            if (asset.mediaType !== "image") return [];
             const media = mediaById.get(asset.id);
-            return asset.mediaType === "model" || asset.mediaType === "entity" ? [] : [{ id: asset.id, category: asset.category || media?.category || "other", folderId: asset.folderId, project: asset, media }];
+            return [{ id: asset.id, category: asset.category || media?.category || "other", folderId: asset.folderId, project: asset, media }];
         });
         if (detail) return projectItems;
         // 自由画布未关联项目时回退到个人素材库。
         return mediaAssets
-            .filter((asset) => asset.kind !== "model" && asset.kind !== "entity")
+            .filter((asset): asset is Extract<Asset, { kind: "image" }> => asset.kind === "image")
             .map((media): ProjectPickerItem => ({ id: media.id, category: media.category || "other", media }));
     }, [detail?.assets, mediaAssets]);
     const localPickerItems = useMemo<AssetLibraryPickerItem[]>(() => items.map((item) => {
@@ -52,7 +53,10 @@ export function CanvasProjectAssetModal({ open, detail, initialCategory = "all",
             searchText: [media?.tags.join(" ") || "", project?.previewText || ""].join(" "),
         };
     }), [items]);
-    const pickerItems = useMemo<AssetLibraryPickerItem[]>(() => [...localPickerItems, ...externalAssetSources.items], [externalAssetSources.items, localPickerItems]);
+    const pickerItems = useMemo<AssetLibraryPickerItem[]>(() => [
+        ...localPickerItems,
+        ...externalAssetSources.items.filter((item) => item.external?.item.kind === "image"),
+    ], [externalAssetSources.items, localPickerItems]);
 
     return (
         <AssetLibraryPickerModal
