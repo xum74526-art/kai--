@@ -94,8 +94,8 @@
     link.href = "/kai/";
     link.target = "_blank";
     link.rel = "noopener noreferrer";
-    link.textContent = "北斗 KAI 影";
-    link.setAttribute("aria-label", "在新窗口打开北斗 KAI 影");
+    link.textContent = "KAI影";
+    link.setAttribute("aria-label", "在新窗口打开 KAI影");
 
     copySiblingTreatment(link, container);
     container.appendChild(link);

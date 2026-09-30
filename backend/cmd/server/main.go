@@ -128,7 +128,7 @@ func main() {
 	// 所有可能失败的启动配置必须先完成校验，避免配置错误时 worker 已经
 	// 领取并标记任务，随后进程又被 log.Fatal 直接终止。
 	svc.StartWorker()
-	log.Printf("北斗 KAI影 backend listening on %s", addr)
+	log.Printf("KAI影 backend listening on %s", addr)
 	if err := serveUntilShutdown(server, svc, shutdownTimeout); err != nil {
 		log.Fatal(err)
 	}

@@ -11,7 +11,7 @@
 把下面这段发给 Codex：
 
 ```text
-请从 https://github.com/xum74526-art/kai--.git 安装北斗 KAI影 Codex 插件。
+请从 https://github.com/xum74526-art/kai--.git 安装 KAI影 Codex 插件。
 请 clone 仓库到 ~/plugins/beidou-kai，确认 .agents/plugins/marketplace.json 和
 plugins/infinite-canvas/.codex-plugin/plugin.json 都存在。然后运行
 codex plugin marketplace add ~/plugins/beidou-kai，

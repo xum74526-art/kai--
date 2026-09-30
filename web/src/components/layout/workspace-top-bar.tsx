@@ -23,7 +23,7 @@ export function WorkspaceTopBar({ sidebarOpen, onToggleSidebar }: { sidebarOpen:
                 <button type="button" className="app-workspace-topbar-icon-button" aria-label={sidebarOpen ? "收起侧栏" : "展开侧栏"} onClick={onToggleSidebar}>
                     {sidebarOpen ? <PanelLeftClose className="size-4" /> : <PanelLeftOpen className="size-4" />}
                 </button>
-                <Link to="/home" className="app-workspace-brand-link inline-flex min-w-0 items-center text-foreground" aria-label="北斗 KAI影工作台" title="北斗 KAI影工作台">
+                <Link to="/home" className="app-workspace-brand-link inline-flex min-w-0 items-center text-foreground" aria-label="KAI影工作台" title="KAI影工作台">
                     <KaiyingBrandLogo compact decorative />
                 </Link>
                 <span className="app-workspace-topbar-divider" aria-hidden />

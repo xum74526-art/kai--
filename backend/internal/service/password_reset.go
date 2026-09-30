@@ -78,7 +78,7 @@ func (s *Service) SendPasswordResetEmailCode(rawEmail string) error {
 		}
 		return err
 	}
-	if err := sendSMTPMail(setting, email, "北斗 KAI影密码重置验证码", passwordResetEmailBody(code)); err != nil {
+	if err := sendSMTPMail(setting, email, "KAI影密码重置验证码", passwordResetEmailBody(code)); err != nil {
 		cleanupErr := s.repo.DeleteEmailVerificationCode(record.ID)
 		// 对外仍保持统一受理响应；服务端保留可诊断日志，且不记录邮箱或验证码。
 		log.Printf("password reset email delivery failed: user_id=%s error_type=%T cleanup_error_type=%T", user.ID, err, cleanupErr)
@@ -158,5 +158,5 @@ func invalidPasswordResetCode() error {
 }
 
 func passwordResetEmailBody(code string) string {
-	return "你正在重置北斗 KAI影登录密码。\n\n验证码：" + code + "\n\n验证码 10 分钟内有效。若非本人操作，请忽略本邮件。"
+	return "你正在重置 KAI影登录密码。\n\n验证码：" + code + "\n\n验证码 10 分钟内有效。若非本人操作，请忽略本邮件。"
 }

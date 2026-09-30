@@ -12,7 +12,7 @@ export function KaiyingBrandLogo({ className, compact = false, decorative = fals
         <span
             className={cn("kaiying-brand-logo", compact && "is-compact", className)}
             role={decorative ? undefined : "img"}
-            aria-label={decorative ? undefined : "北斗 KAI影"}
+            aria-label={decorative ? undefined : "KAI影"}
             aria-hidden={decorative || undefined}
         >
             <img className="kaiying-brand-logo-light" src={publicAssetPath("logo.svg")} alt="" />

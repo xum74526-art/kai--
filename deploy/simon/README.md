@@ -64,7 +64,7 @@ curl --fail https://simon.kai.com/kai/api/health
 <script src="/kai-entry.js" defer></script>
 ```
 
-脚本会复用现有 `#project-links` 容器，在 MatrixFuel 和 WOD 旁边追加唯一的“北斗 KAI 影”入口，目标为 `/kai/`；容器尚未渲染时会等待，不会重建或覆盖公司首页。若线上首页没有该容器，应停止上线并先核对实际 DOM，不要临时复制一套悬浮入口。
+脚本会复用现有 `#project-links` 容器，在 MatrixFuel 和 WOD 旁边追加唯一的“KAI影”入口，目标为 `/kai/`；容器尚未渲染时会等待，不会重建或覆盖公司首页。若线上首页没有该容器，应停止上线并先核对实际 DOM，不要临时复制一套悬浮入口。
 
 ## 4. 上线核对
 

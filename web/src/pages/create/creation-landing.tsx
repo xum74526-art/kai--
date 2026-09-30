@@ -197,7 +197,7 @@ export function CreationLanding({ composer, onUsePrompt, onOpenLibrary, onOpenHi
 
     return (
         <div className="creation-landing" data-scene={activeScene.id}>
-            <section className="creation-stage" aria-label="北斗 KAI影创作舞台">
+            <section className="creation-stage" aria-label="KAI影创作舞台">
                 <img
                     key={`${activeScene.id}-poster`}
                     className="creation-stage-media creation-stage-poster"
@@ -244,7 +244,7 @@ export function CreationLanding({ composer, onUsePrompt, onOpenLibrary, onOpenHi
                 </div>
 
                 <header className="creation-stage-hero" aria-live="polite">
-                    <p className="creation-stage-kicker"><Video aria-hidden="true" />北斗导演台</p>
+                    <p className="creation-stage-kicker"><Video aria-hidden="true" />KAI影导演台</p>
                     <h1>{activeScene.headline}</h1>
                     <p>{activeScene.subtitle}</p>
                 </header>

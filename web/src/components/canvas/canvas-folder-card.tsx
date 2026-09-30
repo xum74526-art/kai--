@@ -35,7 +35,7 @@ export function CanvasFolderCard({ project, projectName, onClick }: CanvasFolder
     };
     const exportProject = async () => {
         try {
-            await exportCanvasProjects([project], project.title || "北斗 KAI影画布");
+            await exportCanvasProjects([project], project.title || "KAI影画布");
         } catch (error) {
             message.error(error instanceof Error ? `画布导出失败：${error.message}` : "画布导出失败");
         }

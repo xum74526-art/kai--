@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="web/public/logo.svg" width="200" alt="北斗 KAI影 logo">
+  <img src="web/public/logo.svg" width="200" alt="KAI影 logo">
 </p>
 
-<h1 align="center">北斗 KAI影</h1>
+<h1 align="center">KAI影</h1>
 
 <p align="center">把一个想法，推进下一场戏</p>
 
@@ -13,7 +13,7 @@
   <img src="https://img.shields.io/badge/Go-1.25-00add8?style=flat-square&logo=go" alt="Go 1.25">
 </p>
 
-北斗 KAI影是一套面向 AI 影视、短剧与视觉内容创作的工作台。它把故事梳理、镜头设计、角色资产、图片/视频/音频生成、素材管理和自由画布放进同一条创作流程，让创作者从一句描述出发，逐步形成可以继续编辑和复用的镜头资产。
+KAI影是一套面向 AI 影视、短剧与视觉内容创作的工作台。它把故事梳理、镜头设计、角色资产、图片/视频/音频生成、素材管理和自由画布放进同一条创作流程，让创作者从一句描述出发，逐步形成可以继续编辑和复用的镜头资产。
 
 - 在线入口：[https://simon.kai.com/kai/](https://simon.kai.com/kai/)
 - GitHub：[xum74526-art/kai--](https://github.com/xum74526-art/kai--)
@@ -156,6 +156,6 @@ cd backend && CANVAS_BACKEND_DATA_DIR=../.local/project-workbench-debug go run .
 
 ## 上游与许可证
 
-北斗 KAI影是在 Open AI Canvas 及其上游 [basketikun/infinite-canvas](https://github.com/basketikun/infinite-canvas) 基础上进行的二次开发。原项目、上游作者及贡献者的版权和署名继续按 [`LICENSE`](LICENSE) 与 [`NOTICE`](NOTICE) 保留。
+KAI影是在 Open AI Canvas 及其上游 [basketikun/infinite-canvas](https://github.com/basketikun/infinite-canvas) 基础上进行的二次开发。原项目、上游作者及贡献者的版权和署名继续按 [`LICENSE`](LICENSE) 与 [`NOTICE`](NOTICE) 保留。
 
 项目采用 MIT License。提交安全问题前请先阅读 [`SECURITY.md`](SECURITY.md)。

@@ -167,8 +167,8 @@
 }
 
 .auth-landing .brand { display: inline-flex; width: fit-content; align-items: center; justify-self: start; }
-.auth-landing .kaiying-brand-logo { position: relative; display: inline-flex; width: 191px; height: 40px; align-items: center; }
-.auth-landing .kaiying-brand-logo img { width: auto; height: 40px; object-fit: contain; }
+.auth-landing .kaiying-brand-logo { position: relative; display: inline-flex; width: 132px; height: 48px; align-items: center; }
+.auth-landing .kaiying-brand-logo img { width: auto; height: 48px; object-fit: contain; }
 .auth-landing[data-theme="dark"] .kaiying-brand-logo-light,
 .auth-landing[data-theme="light"] .kaiying-brand-logo-dark { display: none; }
 

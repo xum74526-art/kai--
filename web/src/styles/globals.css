@@ -787,11 +787,11 @@
     --flow-step-track-width: var(--space-5);      /* 20px 轨道段长 */
     --flow-step-current-glow: 0 0 0 4px var(--cn-active-stroke-soft); /* 当前节点光晕 */
 
-    /* 北斗 KAI影品牌标识：保持横版星轨字标比例，深色主题切换同图形的高对比墨色版本。 */
-    --brand-logo-width: 162px;
-    --brand-logo-height: 34px;
-    --brand-logo-compact-width: 133px;
-    --brand-logo-compact-height: 28px;
+    /* KAI影品牌标识：保留字标与镜头主体，深色主题切换同图形的高对比暖白版本。 */
+    --brand-logo-width: 118px;
+    --brand-logo-height: 42px;
+    --brand-logo-compact-width: 100px;
+    --brand-logo-compact-height: 36px;
 }
 
 @layer base {
@@ -1393,7 +1393,7 @@
         outline-offset: -2px;
     }
 
-    /* 北斗 KAI影只在顶部出现一次，页面标题负责交代当前工作区位置。 */
+    /* KAI影只在顶部出现一次，页面标题负责交代当前工作区位置。 */
     .app-workspace-brand-link {
         flex: 0 0 auto;
         border-radius: var(--r-md);

@@ -4,7 +4,7 @@
 
 ## 0. 项目事实与边界
 
-- 项目是“北斗 KAI影”AI 影视创作工作台，当前仍在快速开发，数据结构和外部接口可能直接调整；除非用户明确要求，不为旧字段和旧数据编写迁移兼容层。
+- 项目是“KAI影”AI 影视创作工作台，当前仍在快速开发，数据结构和外部接口可能直接调整；除非用户明确要求，不为旧字段和旧数据编写迁移兼容层。
 - 前端位于 `web/`，技术栈是 Vite、React 19、TypeScript、React Router、Ant Design 6、Tailwind CSS 4、Zustand、TanStack Query。
 - 后端位于 `backend/`，技术栈是 Go、Gin、GORM、SQLite；生产/部署也支持 PostgreSQL、Redis、Docker Compose。
 - `canvas-agent/` 和 `plugins/` 是相对独立的运行单元，修改其代码时先读取各自 README 和局部规则，不把主应用约定臆测套过去。

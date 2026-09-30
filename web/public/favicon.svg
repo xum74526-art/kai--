@@ -2,9 +2,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="210 0 130 128" role="img" aria-labelledby="title">
   <title id="title">KAI影</title>
   <style>
-    :root { --ink-start: #090806; --ink-mid: #2c2821; --ink-end: #080705; --detail: #4c453b; }
+    :root { --ink-start: #090806; --ink-mid: #2c2821; --ink-end: #080705; --detail: #4c453b; --cutout: #f7f3eb; }
     @media (prefers-color-scheme: dark) {
-      :root { --ink-start: #faf7f0; --ink-mid: #d8d1c4; --ink-end: #f2eee6; --detail: #d2cabc; }
+      :root { --ink-start: #faf7f0; --ink-mid: #d8d1c4; --ink-end: #f2eee6; --detail: #d2cabc; --cutout: #090908; }
     }
   </style>
   <defs>
@@ -40,7 +40,16 @@
   <circle cx="305" cy="29" r="8.4" fill="url(#red)" opacity=".9" filter="url(#rough)"/>
   <circle cx="305" cy="29" r="11.5" fill="#a73a2b" opacity=".12" filter="url(#wash)"/>
   <use href="#ying" transform="translate(244 31) scale(.76)" fill="none" stroke="url(#ink)" stroke-width="6.1" filter="url(#rough)"/>
-  <g fill="none" stroke="#a73a2b" stroke-width="2.2" stroke-linecap="round" opacity=".7">
-    <path d="M222 49v-9h9M319 90v9h-9"/>
+  <g transform="translate(260 69)" stroke-linejoin="round">
+    <circle r="13.2" fill="var(--cutout)" stroke="url(#ink)" stroke-width="2.4"/>
+    <g fill="url(#ink)" opacity=".94">
+      <path d="M0-10.1 7.3-5.8 4.5 1.2 0-2.4z"/>
+      <path d="M0-10.1 7.3-5.8 4.5 1.2 0-2.4z" transform="rotate(60)"/>
+      <path d="M0-10.1 7.3-5.8 4.5 1.2 0-2.4z" transform="rotate(120)"/>
+      <path d="M0-10.1 7.3-5.8 4.5 1.2 0-2.4z" transform="rotate(180)"/>
+      <path d="M0-10.1 7.3-5.8 4.5 1.2 0-2.4z" transform="rotate(240)"/>
+      <path d="M0-10.1 7.3-5.8 4.5 1.2 0-2.4z" transform="rotate(300)"/>
+    </g>
+    <circle r="3.1" fill="var(--cutout)"/>
   </g>
 </svg>
