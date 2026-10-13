@@ -38,6 +38,8 @@ import { CreationAgentEntry } from "./creation-agent-entry";
 import { createCreationSubmitGate } from "./creation-submit-gate";
 import { creationVideoConfig } from "./creation-generation-config";
 import { CreationLoginDialog } from "./creation-login-dialog";
+import { createCreationImageBatch, restoreCreationImageBatchAfterReload, retryableCreationImageBatchItems, summarizeCreationImageBatch, updateCreationImageBatchItem } from "./creation-image-batch";
+import { executeCreationImageBatch } from "./creation-image-generation";
 
 const AssetLibraryPickerModal = lazy(() => import("@/components/assets/asset-library-picker-modal").then((module) => ({ default: module.AssetLibraryPickerModal })));
 const loadCreationRuntime = () => import("./creation-runtime");
@@ -137,7 +139,7 @@ export default function CreatePage() {
     const activeGenerationTaskIdsRef = useRef(new Set<string>());
     const retryPreparingRef = useRef(new Set<string>());
     const submitGateRef = useRef(createCreationSubmitGate());
-    const pendingRetryRef = useRef<{ context: CreationRetryContext; lockKey: string } | null>(null);
+    const pendingRetryRef = useRef<{ context?: CreationRetryContext; lockKey: string; imageMessageId?: string } | null>(null);
     const [retrySequence, setRetrySequence] = useState(0);
     const [composerPreferencesInitialized, setComposerPreferencesInitialized] = useState(false);
     promptRef.current = prompt;
@@ -272,7 +274,7 @@ export default function CreatePage() {
         setConversationScope(null);
         void loadCreationConversations<CreationConversation>().then((stored) => {
             if (cancelled || getActiveUserScope() !== scope || (useUserStore.getState().user?.id || null) !== userId) return;
-            const next = stored?.length ? stored : [newConversation()];
+            const next = stored?.length ? stored.map((conversation) => ({ ...conversation, messages: conversation.messages.map(restoreCreationImageBatchAfterReload) })) : [newConversation()];
             conversationsRef.current = next;
             setConversations(next);
             setActiveId(next[0].id);
@@ -606,7 +608,7 @@ export default function CreatePage() {
         }
     }, [addAsset, busy, referenceReplacementBusy, replaceAttachmentReference, toast]);
 
-    const submit = async (retryContext?: CreationRetryContext, retryLockKey?: string) => {
+    const submit = async (retryContext?: CreationRetryContext, retryLockKey?: string, imageMessageId?: string) => {
         const releaseRetryLock = () => {
             if (retryLockKey) retryPreparingRef.current.delete(retryLockKey);
         };
@@ -617,6 +619,13 @@ export default function CreatePage() {
         const releaseSubmitGate = () => submitGateRef.current.release();
         const text = prompt.trim();
         if (!text || busy || !activeConversation) {
+            releaseRetryLock();
+            releaseSubmitGate();
+            return;
+        }
+        const imageRetryMessage = imageMessageId ? activeConversation.messages.find((item) => item.id === imageMessageId && item.mode === "image") : undefined;
+        if (imageMessageId && (!imageRetryMessage?.imageBatch || !retryableCreationImageBatchItems(imageRetryMessage.imageBatch).length)) {
+            toast.info("没有可重试的失败图片，请先核对任务状态");
             releaseRetryLock();
             releaseSubmitGate();
             return;
@@ -687,18 +696,19 @@ export default function CreatePage() {
         const referenceMetadata = skillExecution.metadata;
         followLatestMessageRef.current = true;
         const userMessage = newMessage("user", text, { mode, model: selectedModel, attachments, references, settings });
-        const assistantMessage = newMessage("assistant", "", { mode, model: selectedModel, status: mode === "text" && textStreaming ? "streaming" : "pending", settings, ...retryContext });
+        const assistantMessage = imageRetryMessage || newMessage("assistant", "", {
+            mode, model: selectedModel, status: mode === "text" && textStreaming ? "streaming" : "pending", settings, ...retryContext,
+            ...(mode === "image" ? { imageBatch: createCreationImageBatch(Math.max(1, Math.min(imageProfile.maxOutputs, Math.floor(Number(count) || 1)))) } : {}),
+        });
         const originConversationId = activeConversation.id;
         const updateOriginAssistant = (updater: (item: CreationMessage) => CreationMessage) => updateConversationMessage(originConversationId, assistantMessage.id, updater);
         const boundTaskIds = new Set<string>();
-        const boundTaskIdsByBatchIndex = new Map<number, string>();
         const boundTasks = new Map<string, GenerationTask>();
         const bindTask = (task: GenerationTask) => {
-            if (typeof task.clientContext?.batchIndex === "number") boundTaskIdsByBatchIndex.set(task.clientContext.batchIndex, task.id);
             boundTaskIds.add(task.id);
             activeGenerationTaskIdsRef.current.add(task.id);
             boundTasks.set(task.id, task);
-            updateOriginAssistant((item) => ({ ...item, generationStage: task.stage, generationOperation: task.operation, generationErrorCode: task.errorCode, taskIds: Array.from(new Set([...(item.taskIds || []), task.id])), clientOperationId: task.clientOperationId, retryOf: task.retryOf, attemptGroupId: task.attemptGroupId }));
+            if (mode !== "image") void updateOriginAssistant((item) => ({ ...item, generationStage: task.stage, generationOperation: task.operation, generationErrorCode: task.errorCode, taskIds: Array.from(new Set([...(item.taskIds || []), task.id])), clientOperationId: task.clientOperationId, retryOf: task.retryOf, attemptGroupId: task.attemptGroupId })).catch((error) => toast.error(generationErrorMessage(error)));
             if (abortRef.current === controller) {
                 abortRef.current = null;
                 setBusy(false);
@@ -708,7 +718,7 @@ export default function CreatePage() {
             ...conversation,
             title: conversation.messages.length ? conversation.title : text.slice(0, 24),
             updatedAt: new Date().toISOString(),
-            messages: [...conversation.messages, userMessage, assistantMessage],
+            messages: imageRetryMessage ? conversation.messages : [...conversation.messages, userMessage, assistantMessage],
         }));
         setPrompt("");
         setAttachments([]);
@@ -749,48 +759,20 @@ export default function CreatePage() {
                 if (!result.text?.trim()) throw new Error("后端任务没有返回文本");
                 updateOriginAssistant((item) => ({ ...item, content: result.text || "", reasoning: result.reasoning }));
             } else if (mode === "image") {
-                const taskCount = Math.max(1, Math.min(imageProfile.maxOutputs, Math.floor(Number(count) || 1)));
-                const settled = await runtime.runGenerationOperationOnce(retryContext?.clientOperationId, () => runtime.runBackendGenerationTaskBatch({
-                    mode: "image",
-                    prompt: expandedPrompt,
-                    config: { ...requestConfig, count: "1" },
-                    referenceImages,
-                    signal: requestLifecycle.signal,
-                    metadata: { source: "create-page", conversationId: activeConversation.id, messageId: assistantMessage.id, ...referenceMetadata },
+                const batch = assistantMessage.imageBatch!;
+                await executeCreationImageBatch({
+                    runtime,
+                    request: {
+                        mode: "image", prompt: expandedPrompt, config: requestConfig, referenceImages,
+                        signal: requestLifecycle.signal,
+                        metadata: { source: "create-page", conversationId: originConversationId, messageId: assistantMessage.id, ...referenceMetadata },
+                    },
+                    count: batch.count,
+                    items: imageRetryMessage ? retryableCreationImageBatchItems(batch) : batch.items,
+                    messageId: assistantMessage.id,
+                    updateMessage: updateOriginAssistant,
                     onTaskUpdate: bindTask,
-                    count: taskCount,
-                    ...retryContext,
-                }));
-                if (requestLifecycle.signal.aborted) throw new DOMException("Aborted", "AbortError");
-                const boundTaskIdList = Array.from(boundTaskIds);
-                const generatedTasks = settled.flatMap((entry, batchIndex) => {
-                    if (entry.status !== "fulfilled") return [];
-                    return [{
-                        result: entry.value,
-                        taskId: boundTaskIdsByBatchIndex.get(batchIndex) || boundTaskIdList[batchIndex],
-                        batchIndex,
-                    }];
                 });
-                const taskFailures = settled.filter((entry): entry is PromiseRejectedResult => entry.status === "rejected");
-                const storedImages = await Promise.allSettled(generatedTasks.map(async ({ result, taskId, batchIndex }) => {
-                    if (!taskId) throw new Error("生成任务缺少稳定任务标识");
-                    const task = completedCreationGenerationTask(runtime, { taskId, task: boundTasks.get(taskId), mode: "image", prompt: expandedPrompt, result, conversationId: activeConversation.id, messageId: assistantMessage.id, batchIndex, batchCount: taskCount });
-                    const materialized = await runtime.consumeGenerationTaskMessage(task, assistantMessage.id, async ({ resultUrls, resultStorageKeys, effectKey }) => {
-                        await updateOriginAssistant((item) => runtime.applyGenerationConsumerEffect(item, effectKey, (current) => ({ ...current, status: "done" as const, content: "图片已生成", ...(resultUrls.length ? { resultUrls: Array.from(new Set([...(current.resultUrls || []), ...resultUrls])) } : {}), ...(resultStorageKeys.length ? { resultStorageKeys: Array.from(new Set([...(current.resultStorageKeys || []), ...resultStorageKeys])) } : {}) })).value);
-                    }, { signal: requestLifecycle.signal });
-                    const urls = runtime.generationTaskMaterializedUrls(materialized);
-                    if (!urls.length) throw new Error("图片结果资源不可用");
-                    return urls;
-                }));
-                const resultUrls = storedImages.flatMap((entry) => entry.status === "fulfilled" ? entry.value : []);
-                const resourceFailures = storedImages.filter((entry) => entry.status === "rejected");
-                const failedCount = taskFailures.length + resourceFailures.length;
-                if (!resultUrls.length) {
-                    const reason = taskFailures[0]?.reason || resourceFailures[0]?.reason;
-                    throw reason instanceof Error ? reason : new Error("后端任务没有返回图片");
-                }
-                if (failedCount) toast.warning(`${resultUrls.length} 张图片已生成，${failedCount} 张生成失败`);
-                updateOriginAssistant((item) => ({ ...item, content: failedCount ? `${resultUrls.length} 张图片已生成，${failedCount} 张失败` : "图片已生成" }));
             } else {
                 const result = await runtime.runGenerationOperationOnce(retryContext?.clientOperationId, () => runtime.runBackendGenerationTask({
                     mode: "video",
@@ -813,8 +795,23 @@ export default function CreatePage() {
                 }, { signal: requestLifecycle.signal });
                 if (!runtime.generationTaskMaterializedUrls(materialized)[0]) throw new Error("视频结果资源不可用");
             }
-            updateOriginAssistant((item) => ({ ...item, status: "done" }));
+            await updateOriginAssistant((item) => item.imageBatch ? summarizeCreationImageBatch(item) : { ...item, status: "done" });
         } catch (error) {
+            if (mode === "image" && assistantMessage.imageBatch) {
+                const failure = generationErrorMessage(error);
+                await updateOriginAssistant((item) => {
+                    let next = item;
+                    for (const slot of item.imageBatch?.items || []) {
+                        if (slot.status !== "pending") continue;
+                        next = updateCreationImageBatchItem(next, slot.batchIndex, {
+                            status: "unknown", failurePhase: slot.taskId ? "generation" : "submission",
+                            error: `${failure} 请先核对原任务状态，避免重复生成。`,
+                        });
+                    }
+                    return { ...summarizeCreationImageBatch(next), error: failure };
+                }).catch((saveError) => toast.error(`图片任务状态保存失败：${generationErrorMessage(saveError)}`));
+                return;
+            }
             if (runtime.isGenerationTaskCancelled(error, requestLifecycle.signal)) {
                 updateOriginAssistant((item) => ({ ...item, status: "cancelled", content: "已停止" }));
                 return;
@@ -838,7 +835,7 @@ export default function CreatePage() {
         const pending = pendingRetryRef.current;
         if (!pending) return;
         pendingRetryRef.current = null;
-        void submit(pending.context, pending.lockKey);
+        void submit(pending.context, pending.lockKey, pending.imageMessageId);
     }, [retrySequence]);
 
     const startNewConversation = () => {
@@ -965,6 +962,15 @@ export default function CreatePage() {
     const retryFailedMessage = async (item: CreationMessage, index: number) => {
         const previous = item.role === "assistant" ? activeConversation?.messages[index - 1] : item;
         if (!previous?.content || busy) return;
+        if (item.imageBatch) {
+            if (retryPreparingRef.current.has(item.id) || !retryableCreationImageBatchItems(item.imageBatch).length) return;
+            retryPreparingRef.current.add(item.id);
+            // 多图原地补失败槽位，不能删除成功图片后按原数量重做整批。
+            restoreMessageDraft(previous);
+            pendingRetryRef.current = { lockKey: item.id, imageMessageId: item.id };
+            setRetrySequence((current) => current + 1);
+            return;
+        }
         const retryOf = item.taskIds?.[0];
         const restoreForRetry = () => {
             followLatestMessageRef.current = true;

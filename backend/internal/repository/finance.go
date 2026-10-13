@@ -112,6 +112,9 @@ func (r *Repository) CreditLedgerReferenceExists(referenceKey string) (bool, err
 
 func (r *Repository) CreateTaskWithCreditReservation(task *model.Task, order *model.BillingOrder, activeTaskLimit int) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := lockTaskAdmission(tx, task.ID); err != nil {
+			return err
+		}
 		if err := r.requireActiveLogicalModelForTask(tx, task); err != nil {
 			return err
 		}
@@ -127,6 +130,9 @@ func (r *Repository) CreateTaskWithCreditReservation(task *model.Task, order *mo
 
 func (r *Repository) CreateTaskWithActiveLimit(task *model.Task, activeTaskLimit int) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := lockTaskAdmission(tx, task.ID); err != nil {
+			return err
+		}
 		if err := r.requireActiveLogicalModelForTask(tx, task); err != nil {
 			return err
 		}
@@ -141,6 +147,9 @@ func (r *Repository) RetryTaskWithBilling(userID string, prepared *model.Task, o
 	var task model.Task
 	taskID := prepared.ID
 	err := r.db.Transaction(func(tx *gorm.DB) error {
+		if err := lockTaskAdmission(tx, taskID); err != nil {
+			return err
+		}
 		if err := enforceActiveTaskLimit(tx, userID, activeTaskLimit); err != nil {
 			return err
 		}
@@ -183,6 +192,15 @@ func (r *Repository) RetryTaskWithBilling(userID string, prepared *model.Task, o
 		return tx.First(&task, "id = ? AND user_id = ?", taskID, userID).Error
 	})
 	return &task, err
+}
+
+// SQLite 必须先取得写锁再读取准入条件，否则 WAL 读快照可能无法升级为写事务，
+// 此时 busy_timeout 也无法等待。空匹配的 UPDATE 同样会取得写锁，不改变任务内容。
+func lockTaskAdmission(tx *gorm.DB, taskID string) error {
+	if tx.Dialector.Name() != "sqlite" {
+		return nil
+	}
+	return tx.Model(&model.Task{}).Where("id = ?", taskID).UpdateColumn("updated_at", gorm.Expr("updated_at")).Error
 }
 
 func enforceActiveTaskLimit(tx *gorm.DB, userID string, activeTaskLimit int) error {

@@ -24,6 +24,8 @@ import { resolveImageUrl } from "@/services/image-storage";
 import { Button } from "antd";
 import { CanvasImagePreview } from "@/components/canvas/canvas-image-preview";
 import { AppModal } from "@/components/ui/product/app-modal";
+import { Callout } from "@/components/ui/product/callout";
+import { creationImageBatchSummary, retryableCreationImageBatchItems } from "./creation-image-batch";
 
 export function CreationMessageView({
     item,
@@ -45,7 +47,8 @@ export function CreationMessageView({
     const brandName = useAppearanceStore((state) => state.appearance.brandName);
     if (item.role === "user") return <CreationUserMessage item={item} shotNumber={shotNumber} onEditUserMessage={onEditUserMessage} />;
     const mode = item.mode || "text";
-    const stateLabel = item.status === "pending" ? "生成中" : item.status === "cancelled" ? "已停止" : item.status === "error" ? "生成失败" : "";
+    const imageSummary = mode === "image" && item.imageBatch ? creationImageBatchSummary(item.imageBatch) : undefined;
+    const stateLabel = item.status === "pending" ? "生成中" : imageSummary?.unknown ? "状态待确认" : imageSummary?.failed && imageSummary.succeeded ? "部分失败" : item.status === "cancelled" ? "已停止" : item.status === "error" ? "生成失败" : "";
     const heading =
         mode !== "text" ? (
             <>
@@ -59,7 +62,7 @@ export function CreationMessageView({
                         {brandName}正在生成{mode === "video" ? "视频" : "图像"}……
                     </span>
                 ) : item.status === "done" ? (
-                    <span className="creation-message-progress-copy">你的{mode === "video" ? "视频" : "图像"}已创建</span>
+                    <span className="creation-message-progress-copy">{imageSummary ? imageSummary.label : `你的${mode === "video" ? "视频" : "图像"}已创建`}</span>
                 ) : null}
                 {item.status === "done" ? (
                     <button type="button" className="creation-message-variant-action" onClick={onCreateVariant}>
@@ -292,7 +295,12 @@ export function MediaResult({
     const resultAssetIds = alignedResultUrls.length || resultStorageKeys.length ? creationResultAssetIds(assets, { messageId: item.id, taskIds: item.taskIds || [], resultUrls: alignedResultUrls, resultStorageKeys }) : [];
     const expectedResultCount = resultStorageKeys.length || alignedResultUrls.length;
     const canContinueWithResults = expectedResultCount > 0 && resultAssetIds.length === expectedResultCount;
-    if (item.status === "pending") return <CreationMediaPending mode={item.mode || "image"} ratio={item.settings?.ratio} />;
+    const batchNotice = item.mode === "image" && item.imageBatch ? <CreationImageBatchNotice item={item} onRetryFailure={onRetryFailure} /> : null;
+    if (item.status === "pending" && !expectedResultCount) return <><CreationMediaPending mode={item.mode || "image"} ratio={item.settings?.ratio} />{batchNotice}</>;
+    if (item.mode === "image" && item.imageBatch && (!expectedResultCount || !displayResultUrls.length)) {
+        const summary = creationImageBatchSummary(item.imageBatch);
+        return <>{batchNotice}{summary.succeeded ? <Callout tone="info" title="图片已生成，预览暂时不可用">请刷新页面重新加载，已有结果不会重新生成。</Callout> : null}</>;
+    }
     if ((item.status === "error" || item.status === "cancelled") && !expectedResultCount)
         return (
             <div className="creation-media-error">
@@ -352,6 +360,7 @@ export function MediaResult({
                     ))}
                 </div>
             )}
+            {batchNotice}
             <div className="creation-media-actions">
                 <span>{isVideo ? "视频结果" : `${displayResultUrls.length} 张图片`}</span>
                 <Button type="link" size="small" loading={openingCanvas} disabled={!canContinueWithResults} title={canContinueWithResults ? undefined : "素材保存完成后才能转入画布"} onClick={() => onContinueCanvas(resultAssetIds)}>
@@ -372,6 +381,28 @@ export function MediaResult({
             </div>
             <CreationMediaPreviewModal url={previewUrl} type={previewType} onClose={() => setPreviewUrl("")} />
         </div>
+    );
+}
+
+function CreationImageBatchNotice({ item, onRetryFailure }: { item: CreationMessage; onRetryFailure: () => void }) {
+    const batch = item.imageBatch!;
+    const summary = creationImageBatchSummary(batch);
+    if (!summary.failed && !summary.unknown && !summary.pending) return null;
+    const failures = batch.items.filter((entry) => entry.status === "failed" || entry.status === "unknown");
+    const retryable = retryableCreationImageBatchItems(batch);
+    const saveOnly = retryable.length > 0 && retryable.every((entry) => entry.failurePhase === "materialization");
+    return (
+        <Callout tone={summary.failed || summary.unknown ? "warning" : "info"} title={summary.label} role="status" aria-live="polite">
+            {item.error && !failures.some((entry) => entry.error?.includes(item.error!)) ? <p>{generationErrorMessage(item.error)}</p> : null}
+            {failures.map((entry) => (
+                <p key={entry.batchIndex}>
+                    第 {entry.batchIndex + 1} 张：{entry.status === "unknown" ? "提交或任务状态待确认" : entry.failurePhase === "materialization" ? "已生成，保存失败" : entry.failurePhase === "submission" ? "提交失败" : "生成失败"}
+                    {entry.error ? `；${generationErrorMessage(entry.error)}` : ""}
+                    {entry.status === "unknown" && !entry.taskId ? "。请先在任务中心核对结果，避免重复生成和计费。" : ""}
+                </p>
+            ))}
+            {retryable.length ? <Button size="small" disabled={summary.pending > 0} onClick={onRetryFailure}>{saveOnly ? "只重试保存" : "只重试失败项"}</Button> : null}
+        </Callout>
     );
 }
 

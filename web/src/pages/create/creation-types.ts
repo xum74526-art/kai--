@@ -10,6 +10,15 @@ export type CreationStatus = "streaming" | "pending" | "done" | "error" | "cance
 export type CreationSettings = { ratio: string; seconds: string; quality: string; videoQuality: string; count: string };
 export type CreationRetryContext = GenerationRetryContext & { retryContextsByBatchIndex?: GenerationRetryContext[] };
 
+export type CreationImageBatchItem = {
+    batchIndex: number;
+    taskId?: string;
+    status: "pending" | "succeeded" | "failed" | "unknown";
+    error?: string;
+    failurePhase?: "submission" | "generation" | "materialization";
+};
+export type CreationImageBatch = { count: number; items: CreationImageBatchItem[] };
+
 export type CreationMessage = {
     id: string;
     role: "user" | "assistant";
@@ -35,6 +44,7 @@ export type CreationMessage = {
     attemptGroupId?: string;
     generationStage?: string;
     generationEffectKeys?: string[];
+    imageBatch?: CreationImageBatch;
 };
 export type CreationConversation = { id: string; title: string; updatedAt: string; canvasId?: string; messages: CreationMessage[] };
 

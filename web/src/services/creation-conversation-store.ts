@@ -9,6 +9,7 @@ type PendingCreationMessage = {
     mode?: string;
     status?: string;
     taskIds?: string[];
+    imageBatch?: { items: Array<{ taskId?: string; status: "pending" | "succeeded" | "failed" | "unknown" }> };
 };
 
 export type StoredCreationConversation = {
@@ -36,18 +37,25 @@ function isRecoverableCreationMessage(message: PendingCreationMessage) {
     return message.status === "pending" || message.status === "error";
 }
 
+function recoverableCreationTaskIds(message: PendingCreationMessage) {
+    if (message.role === "assistant" && message.mode === "image" && message.imageBatch) {
+        return message.imageBatch.items.flatMap((item) => item.taskId && (item.status === "pending" || item.status === "unknown") ? [item.taskId] : []);
+    }
+    return isRecoverableCreationMessage(message) ? message.taskIds || [] : [];
+}
+
 export function pendingCreationTaskKey(conversations: StoredCreationConversation[]) {
     return conversations
-        .flatMap((conversation) => conversation.messages.flatMap((message) => (isRecoverableCreationMessage(message) ? [`${conversation.id}:${message.id}:${(message.taskIds || []).join(",")}`] : [])))
+        .flatMap((conversation) => conversation.messages.flatMap((message) => {
+            const ids = recoverableCreationTaskIds(message);
+            return ids.length ? [`${conversation.id}:${message.id}:${ids.join(",")}`] : [];
+        }))
         .join("|");
 }
 
 export function pendingCreationTaskIds(conversations: StoredCreationConversation[]) {
     const taskIds = conversations.flatMap((conversation) =>
-        conversation.messages.flatMap((message) => {
-            if (!isRecoverableCreationMessage(message)) return [];
-            return message.taskIds || [];
-        }),
+        conversation.messages.flatMap(recoverableCreationTaskIds),
     );
     return Array.from(new Set(taskIds));
 }

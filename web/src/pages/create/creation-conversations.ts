@@ -3,7 +3,8 @@ import { generationErrorMessage } from "@/lib/generation-error";
 import type { BackendGenerationResult } from "@/services/api/generation-task";
 import type { GenerationTask } from "@/services/api/task-center";
 import { creationAttachmentKind, type CreationAttachment } from "./creation-assets";
-import type { CreationConversation, CreationMessage, CreationShotRailEntry } from "./creation-types";
+import type { CreationConversation, CreationImageBatchItem, CreationMessage, CreationShotRailEntry } from "./creation-types";
+import { summarizeCreationImageBatch, updateCreationImageBatchItem } from "./creation-image-batch";
 
 type CreationRuntime = typeof import("./creation-runtime");
 type PersistedCreationTask = GenerationTask & { creationResultUrls?: string[]; creationResultStorageKeys?: string[]; creationError?: string };
@@ -60,12 +61,15 @@ export function attachCreationTaskContexts(tasks: GenerationTask[], conversation
         for (const [messageIndex, message] of conversation.messages.entries()) {
             if (message.role !== "assistant" || !message.taskIds?.length) continue;
             const prompt = conversation.messages[messageIndex - 1]?.role === "user" ? conversation.messages[messageIndex - 1].content : "";
-            for (const [batchIndex, taskId] of message.taskIds.entries()) contexts.set(taskId, { prompt, clientContext: { conversationId: conversation.id, messageId: message.id, batchIndex, batchCount: message.taskIds.length } });
+            for (const [index, taskId] of message.taskIds.entries()) {
+                const batchIndex = message.imageBatch ? message.imageBatch.items.find((item) => item.taskId === taskId)?.batchIndex : index;
+                contexts.set(taskId, { prompt, clientContext: { conversationId: conversation.id, messageId: message.id, ...(batchIndex !== undefined ? { batchIndex } : {}), batchCount: message.imageBatch?.count ?? message.taskIds.length } });
+            }
         }
     }
     return tasks.map((task) => {
         const context = contexts.get(task.id);
-        return context ? { ...task, prompt: context.prompt, clientContext: context.clientContext } : task;
+        return context ? { ...task, prompt: context.prompt, clientContext: { ...context.clientContext, ...task.clientContext } } : task;
     });
 }
 
@@ -102,6 +106,14 @@ export function reconcileCreationTaskMessages(runtime: CreationRuntime, conversa
                 changed = true;
                 return { ...message, ...recovery };
             }
+            if (message.role === "assistant" && message.mode === "image" && message.imageBatch) {
+                const recovered = reconcileCreationImageBatch(message, matches);
+                if (recovered === message) return message;
+                completedAt = matches.reduce((latest, task) => conversationTimestamp(task.updatedAt) > conversationTimestamp(latest) ? task.updatedAt : latest, completedAt);
+                conversationChanged = true;
+                changed = true;
+                return recovered;
+            }
             if (message.role !== "assistant" || message.status !== "pending") return message;
             const expectedTaskCount = Math.max(0, ...matches.map((task) => task.clientContext?.batchCount || 0));
             if (!matches.length || (expectedTaskCount > 0 && matches.length < expectedTaskCount) || matches.some((task) => task.status === "queued" || task.status === "running")) return message;
@@ -128,6 +140,43 @@ export function reconcileCreationTaskMessages(runtime: CreationRuntime, conversa
         return conversationChanged ? { ...conversation, messages, updatedAt: completedAt } : conversation;
     });
     return changed ? next : conversations;
+}
+
+function reconcileCreationImageBatch(message: CreationMessage, tasks: PersistedCreationTask[]): CreationMessage {
+    let next = message;
+    for (const task of tasks) {
+        const batch = next.imageBatch!;
+        const item = batch.items.find((entry) => entry.taskId === task.id)
+            || batch.items.find((entry) => entry.batchIndex === task.clientContext?.batchIndex && !entry.taskId);
+        if (!item || item.status === "succeeded") continue;
+        const patch: Partial<Omit<CreationImageBatchItem, "batchIndex">> = { taskId: task.id, error: undefined, failurePhase: undefined };
+        if (task.status === "queued" || task.status === "running") {
+            patch.status = "pending";
+        } else if (task.status === "succeeded") {
+            const resultUrls = creationTaskResultUrls(task);
+            const resultStorageKeys = creationTaskResultStorageKeys(task);
+            if (!task.creationError && (resultUrls.length || resultStorageKeys.length)) {
+                patch.status = "succeeded";
+                next = {
+                    ...next,
+                    ...(resultUrls.length ? { resultUrls: Array.from(new Set([...(next.resultUrls || []), ...resultUrls])) } : {}),
+                    ...(resultStorageKeys.length ? { resultStorageKeys: Array.from(new Set([...(next.resultStorageKeys || []), ...resultStorageKeys])) } : {}),
+                };
+            } else {
+                patch.status = "failed";
+                patch.failurePhase = "materialization";
+                patch.error = generationErrorMessage(task.creationError || "图片已生成，但结果暂时无法读取，请重试保存");
+            }
+        } else {
+            patch.status = "failed";
+            patch.failurePhase = task.mediaStage || task.canRecoverMedia ? "materialization" : "generation";
+            patch.error = generationErrorMessage(task.creationError || task.error || (task.status === "cancelled" ? "任务已停止" : "图片生成失败"));
+        }
+        if (item.taskId === patch.taskId && item.status === patch.status && item.error === patch.error && item.failurePhase === patch.failurePhase && next === message) continue;
+        next = updateCreationImageBatchItem(next, item.batchIndex, patch);
+    }
+    // 每次任务推送只包含一个任务，依据持久槽位汇总，不等待整批同时回传。
+    return next === message ? message : summarizeCreationImageBatch(next);
 }
 
 function creationTaskResultUrls(task: PersistedCreationTask) {
