@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import type { AssetLibraryPickerFolder, AssetLibraryPickerItem } from "@/components/assets/asset-library-picker-modal";
-import "@/lib/plugins/builtin";
 import { createHostedAssetSources, type HostedAssetSource } from "@/services/external-asset-sources";
 import type { ExternalAssetFolder, ExternalAssetItem, ExternalAssetPickerReference } from "@/lib/plugins/plugin-types";
 import { usePluginStore } from "@/stores/use-plugin-store";
@@ -26,10 +25,34 @@ export type ExternalAssetSourceState = {
 export function useExternalAssetSources(open: boolean): ExternalAssetSourceState {
     const hydrated = usePluginStore((state) => state.hydrated);
     const installations = usePluginStore((state) => state.installations);
-    const sources = useMemo(() => createHostedAssetSources(hydrated ? installations : []), [hydrated, installations]);
+    const needsEagle = open && hydrated && installations.some((installation) => installation.manifest.id === "eagle-asset-connector");
+    const [eagleLoaded, setEagleLoaded] = useState(false);
     const [loadedSources, setLoadedSources] = useState<LoadedAssetSource[]>([]);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState("");
+
+    useEffect(() => {
+        if (!needsEagle) {
+            setEagleLoaded(true);
+            return;
+        }
+
+        let cancelled = false;
+        setEagleLoaded(false);
+        void import("@/lib/plugins/builtin/eagle")
+            .catch(() => undefined)
+            .finally(() => {
+                if (!cancelled) setEagleLoaded(true);
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [needsEagle]);
+
+    const sources = useMemo(() => {
+        if (!hydrated || (needsEagle && !eagleLoaded)) return [];
+        return createHostedAssetSources(installations);
+    }, [eagleLoaded, hydrated, installations, needsEagle]);
 
     useEffect(() => {
         const controller = new AbortController();

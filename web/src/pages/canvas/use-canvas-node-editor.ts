@@ -1,18 +1,21 @@
-import { useCallback, useState, type Dispatch, type SetStateAction } from "react";
+import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { App } from "antd";
-import { saveAs } from "file-saver";
 
 import { NODE_DEFAULT_SIZE } from "@/constant/canvas";
 import { FOLDER_COLLAPSED_HEIGHT, FOLDER_COLLAPSED_WIDTH, FRAME_COLLAPSED_HEIGHT, FRAME_COLLAPSED_WIDTH, getFrameChildIds, isCanvasFolderNode, isFrameNode } from "@/lib/canvas/canvas-frame";
+import { buildCanvasMediaDownloadFileName } from "@/lib/canvas/canvas-media-download";
+import { writeCanvasNodePrompt } from "@/lib/canvas/canvas-node-prompt";
 import { applyBatchPrimaryImage, applyNodeConfigPatch } from "@/lib/canvas/canvas-project-domain";
-import { audioExtension, imageExtension, resetGenerationTaskMetadata } from "@/lib/canvas/canvas-project-generation";
+import { resetGenerationTaskMetadata } from "@/lib/canvas/canvas-project-generation";
 import { CONTENT_MODERATION_ERROR_CODE, isContentModerationError } from "@/lib/generation-error";
+import { downloadBrowserMedia } from "@/services/browser-download";
 import { ensureCanvasNodeAsset } from "@/services/project-asset-sync";
 import { CanvasNodeType, type CanvasFolderStyle, type CanvasFolderTheme, type CanvasNodeData, type CanvasNodeMetadata, type Position } from "@/types/canvas";
 
 type UseCanvasNodeEditorOptions = {
     canvasId: string;
+    canvasTitle: string;
     domainProjectId?: string;
     nodesRef: { current: CanvasNodeData[] };
     setNodes: Dispatch<SetStateAction<CanvasNodeData[]>>;
@@ -25,6 +28,7 @@ type UseCanvasNodeEditorOptions = {
 
 export function useCanvasNodeEditor({
     canvasId,
+    canvasTitle,
     domainProjectId,
     nodesRef,
     setNodes,
@@ -38,6 +42,10 @@ export function useCanvasNodeEditor({
     const queryClient = useQueryClient();
     const [collapsingBatchIds, setCollapsingBatchIds] = useState<Set<string>>(new Set());
     const [openingBatchIds, setOpeningBatchIds] = useState<Set<string>>(new Set());
+    const batchMotionTimers = useRef(new Map<string, number>());
+    useEffect(() => () => {
+        batchMotionTimers.current.forEach((timer) => window.clearTimeout(timer));
+    }, []);
 
     const handleNodeResize = useCallback((nodeId: string, width: number, height: number, position?: Position) => {
         setNodes((current) => {
@@ -47,9 +55,11 @@ export function useCanvasNodeEditor({
                 const nextPosition = position || node.position;
                 if (node.width === width && node.height === height && node.position.x === nextPosition.x && node.position.y === nextPosition.y) return node;
                 changed = true;
-                const resized = { ...node, width, height, position: nextPosition };
+                // 打上「用户手动定过尺寸」标记：图片按真实比例自动适配时要避让它，
+                // 否则每次图片重新加载都会把用户拉过的尺寸改回去。
+                const resized = { ...node, width, height, position: nextPosition, metadata: { ...node.metadata, manualSize: true } };
                 if (!isFrameNode(node) || node.metadata?.frame?.collapsed) return resized;
-                return { ...resized, metadata: { ...node.metadata, frame: { collapsed: false, expandedWidth: width, expandedHeight: height } } };
+                return { ...resized, metadata: { ...resized.metadata, frame: { collapsed: false, expandedWidth: width, expandedHeight: height } } };
             });
             return changed ? next : current;
         });
@@ -115,16 +125,26 @@ export function useCanvasNodeEditor({
     }, [setNodes]);
 
     const toggleBatchExpanded = useCallback((nodeId: string) => {
-        const isExpanded = Boolean(nodesRef.current.find((node) => node.id === nodeId)?.metadata?.imageBatchExpanded);
+        const root = nodesRef.current.find((node) => node.id === nodeId);
+        if (!root?.metadata?.isBatchRoot) return;
+        const isExpanded = Boolean(root.metadata.imageBatchExpanded);
+        window.clearTimeout(batchMotionTimers.current.get(nodeId));
         const updateMotionState = isExpanded ? setCollapsingBatchIds : setOpeningBatchIds;
+        const clearMotionState = isExpanded ? setOpeningBatchIds : setCollapsingBatchIds;
+        clearMotionState((current) => {
+            const next = new Set(current);
+            next.delete(nodeId);
+            return next;
+        });
         updateMotionState((current) => new Set(current).add(nodeId));
-        window.setTimeout(() => {
+        batchMotionTimers.current.set(nodeId, window.setTimeout(() => {
+            batchMotionTimers.current.delete(nodeId);
             updateMotionState((current) => {
                 const next = new Set(current);
                 next.delete(nodeId);
                 return next;
             });
-        }, isExpanded ? 320 : 260);
+        }, isExpanded ? 320 : 445 + (root.metadata.batchChildIds?.length || 1) * 24));
         setNodes((current) => current.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, imageBatchExpanded: !node.metadata?.imageBatchExpanded } } : node)));
     }, [nodesRef, setNodes]);
 
@@ -143,21 +163,26 @@ export function useCanvasNodeEditor({
     const handleNodePromptChange = useCallback((nodeId: string, prompt: string) => {
         setNodes((current) => current.map((node) => {
             if (node.id !== nodeId) return node;
-            const hasExistingContent = (node.type === CanvasNodeType.Text && Boolean(node.metadata?.content?.trim())) || (node.type === CanvasNodeType.Image && Boolean(node.metadata?.content));
             const previousPrompt = node.metadata?.composerContent ?? node.metadata?.prompt ?? "";
+            const promptChanged = prompt !== previousPrompt;
             const moderationFailure = node.metadata?.generationErrorCode === CONTENT_MODERATION_ERROR_CODE || isContentModerationError(node.metadata?.errorDetails);
-            const metadata = moderationFailure && prompt !== previousPrompt
+            const metadata = moderationFailure && promptChanged
                 ? resetGenerationTaskMetadata(node.metadata, node.metadata?.content ? "success" : "idle")
                 : node.metadata;
-            const promptTemplateMetadata = prompt !== previousPrompt && metadata?.promptTemplateOperation
-                ? { promptTemplateOperation: undefined, promptTemplateVariables: undefined }
-                : {};
-            return { ...node, metadata: hasExistingContent ? { ...metadata, ...promptTemplateMetadata, composerContent: prompt } : { ...metadata, ...promptTemplateMetadata, prompt, composerContent: prompt } };
+            return writeCanvasNodePrompt(node, prompt, {
+                metadata,
+                clearPromptTemplate: promptChanged && Boolean(metadata?.promptTemplateOperation),
+            });
         }));
     }, [setNodes]);
 
     const handleConfigNodeChange = useCallback((nodeId: string, patch: Partial<CanvasNodeMetadata>) => {
-        setNodes((current) => current.map((node) => (node.id === nodeId ? applyNodeConfigPatch(node, patch) : node)));
+        setNodes((current) => {
+            const next = current.map((node) => (node.id === nodeId ? applyNodeConfigPatch(node, patch) : node));
+            // 生成入口读取 nodesRef；同步写入，避免刚修改工作流比例就立即生成时仍提交旧值。
+            nodesRef.current = next;
+            return next;
+        });
         if (!patch.assetCategory) return;
         const node = nodesRef.current.find((item) => item.id === nodeId);
         if (!node?.metadata?.content?.trim()) return;
@@ -171,12 +196,22 @@ export function useCanvasNodeEditor({
             .catch((error) => message.error(error instanceof Error ? error.message : "资产分类更新失败"));
     }, [canvasId, domainProjectId, message, nodesRef, queryClient, setNodes]);
 
-    const downloadNodeImage = useCallback((node: CanvasNodeData) => {
-        if ((node.type !== CanvasNodeType.Image && node.type !== CanvasNodeType.Video && node.type !== CanvasNodeType.Audio) || !node.metadata?.content) return;
-        saveAs(node.metadata.content, `canvas-${node.type}-${node.id}.${node.type === CanvasNodeType.Video ? "mp4" : node.type === CanvasNodeType.Audio ? audioExtension(node.metadata.mimeType) : imageExtension(node.metadata.content)}`);
-    }, []);
+    const downloadNodeImage = useCallback(async (node: CanvasNodeData) => {
+        if (node.metadata?.imageLayerGroup?.compositeStatus && node.metadata.imageLayerGroup.compositeStatus !== "ready") { message.warning("请等待图层合成成功后再下载"); return; }
+        const supported = node.type === CanvasNodeType.Image || node.type === CanvasNodeType.Video || node.type === CanvasNodeType.Audio;
+        const content = node.metadata?.content?.trim();
+        const storageKey = node.metadata?.storageKey?.trim();
+        if (!supported || (!content && !storageKey)) return;
+        try {
+            const downloadName = buildCanvasMediaDownloadFileName(canvasTitle, node);
+            await downloadBrowserMedia({ storageKey, url: content, fileName: downloadName });
+        } catch (error) {
+            message.error(error instanceof Error ? error.message : "下载失败");
+        }
+    }, [canvasTitle, message]);
 
     const saveNodeAsset = useCallback(async (node: CanvasNodeData) => {
+        if (node.metadata?.imageLayerGroup?.compositeStatus && node.metadata.imageLayerGroup.compositeStatus !== "ready") { message.warning("请等待图层合成成功后再保存素材"); return; }
         if (node.type !== CanvasNodeType.Text && node.type !== CanvasNodeType.Image && node.type !== CanvasNodeType.Video && node.type !== CanvasNodeType.Audio) return message.error("当前节点类型不能保存为素材");
         if (!node.metadata?.content?.trim()) return message.error("当前节点没有可保存的内容");
         try {

@@ -7,29 +7,25 @@ import (
 	"strings"
 	"testing"
 
-	"infinite-canvas/backend/internal/model"
+	"yingce/backend/internal/model"
 )
+
+func TestPasswordResetRateLimitSubjectNormalizesAndHashesEmail(t *testing.T) {
+	first := passwordResetRateLimitSubject(" Creator@Example.com ")
+	second := passwordResetRateLimitSubject("creator@example.com")
+	if first != second {
+		t.Fatalf("normalized subjects differ: %q != %q", first, second)
+	}
+	if first == "creator@example.com" || strings.Contains(first, "@") || len(first) != 64 {
+		t.Fatalf("rate limit subject is not a SHA-256 digest: %q", first)
+	}
+}
 
 func TestAuthorizeSystemProxyAllowsConfiguredGenerationModel(t *testing.T) {
 	channel := &model.ModelChannel{APIFormat: "openai", ModelsJSON: `["gpt-image-1"]`}
 	body := []byte(`{"model":"gpt-image-1","prompt":"test"}`)
 	if err := authorizeSystemProxy(channel, model.ChannelInterfaceOpenAIImage, http.MethodPost, "/images/generations", "application/json", body); err != nil {
 		t.Fatalf("authorizeSystemProxy() error = %v", err)
-	}
-}
-
-func TestSystemMiniMaxProviderRequestID(t *testing.T) {
-	if got, ok := systemMiniMaxProviderRequestID("/v2/query/video_generation/task-1"); !ok || got != "task-1" {
-		t.Fatalf("provider request id = %q, ok = %v", got, ok)
-	}
-	for _, value := range []string{
-		"/v2/query/video_generation/",
-		"/v2/query/video_generation/..",
-		"/v2/query/video_generation/task%2Fforeign",
-	} {
-		if _, ok := systemMiniMaxProviderRequestID(value); ok {
-			t.Fatalf("unsafe provider request path accepted: %s", value)
-		}
 	}
 }
 
@@ -51,6 +47,7 @@ func TestAuthorizeCustomRelayAllowsModelsAndAgentEndpoints(t *testing.T) {
 		{method: http.MethodGet, target: "https://api.example.com/v1/models", apiFormat: "openai"},
 		{method: http.MethodPost, target: "https://api.example.com/v1/responses", apiFormat: "openai", contentType: "application/json"},
 		{method: http.MethodPost, target: "https://api.example.com/v1/chat/completions", apiFormat: "openai", contentType: "application/json; charset=utf-8"},
+		{method: http.MethodPost, target: "https://api.anthropic.com/v1/messages", apiFormat: "claude", contentType: "application/json"},
 		{method: http.MethodPost, target: "https://api.example.com/v1/audio/speech", apiFormat: "openai", contentType: "application/json"},
 		{method: http.MethodPost, target: "https://api.example.com/v1/images/edits", apiFormat: "openai", contentType: "multipart/form-data; boundary=test"},
 		{method: http.MethodPost, target: "https://api.example.com/v1/images/edits", apiFormat: "openai", contentType: "application/json"},
@@ -65,7 +62,6 @@ func TestAuthorizeCustomRelayAllowsModelsAndAgentEndpoints(t *testing.T) {
 		{method: http.MethodGet, target: "https://api.novita.ai/v3/async/task-result?task_id=task-1", apiFormat: "openai"},
 		{method: http.MethodPost, target: "https://ark.cn-beijing.volces.com/api/v3/images/generations", apiFormat: "openai", contentType: "application/json"},
 		{method: http.MethodPost, target: "https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks", apiFormat: "openai", contentType: "application/json"},
-		{method: http.MethodPost, target: "https://workspace.cn-beijing.maas.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation", apiFormat: "openai", contentType: "application/json"},
 		{method: http.MethodGet, target: "https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks/task-1", apiFormat: "openai"},
 		{method: http.MethodPost, target: "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:streamGenerateContent?alt=sse", apiFormat: "gemini", contentType: "application/json"},
 		{method: http.MethodPost, target: "https://generativelanguage.googleapis.com/v1beta/models/veo-3.0-generate-preview:predictLongRunning", apiFormat: "gemini", contentType: "application/json"},
@@ -82,25 +78,25 @@ func TestAuthorizeCustomRelayAllowsModelsAndAgentEndpoints(t *testing.T) {
 	}
 }
 
-func TestAuthorizeSystemProxyAllowsBailianNativeImageEndpoint(t *testing.T) {
-	channel := &model.ModelChannel{APIFormat: "openai", ModelsJSON: `["qwen-image-3.0-pro"]`}
-	body := []byte(`{"model":"qwen-image-3.0-pro","input":{"messages":[]}}`)
-	if err := authorizeSystemProxy(channel, model.ChannelInterfaceBailianImage, http.MethodPost, bailianImageGenerationPath, "application/json", body); err != nil {
-		t.Fatalf("authorizeSystemProxy() error = %v", err)
-	}
-	if err := authorizeSystemProxy(channel, model.ChannelInterfaceBailianImage, http.MethodPost, "/compatible-mode/v1/images/generations", "application/json", body); err == nil {
-		t.Fatal("OpenAI compatible image endpoint must not be accepted for Bailian native images")
-	}
-}
-
-func TestSystemProxyTargetUsesBailianWorkspaceOrigin(t *testing.T) {
-	got, err := systemProxyTarget("https://workspace.cn-beijing.maas.aliyuncs.com/compatible-mode/v1", model.ChannelInterfaceBailianImage, bailianImageGenerationPath)
+func TestAuthorizeCustomRelayAllowsOnlyOfficialAgnesPollQuery(t *testing.T) {
+	target, err := url.Parse("https://apihub.agnes-ai.com/agnesapi?video_id=video-1&model_name=agnes-video-2.5")
 	if err != nil {
-		t.Fatalf("systemProxyTarget() error = %v", err)
+		t.Fatal(err)
 	}
-	want := "https://workspace.cn-beijing.maas.aliyuncs.com" + bailianImageGenerationPath
-	if got != want {
-		t.Fatalf("target = %q, want %q", got, want)
+	if err := authorizeCustomRelay(http.MethodGet, target, "openai", ""); err != nil {
+		t.Fatalf("authorizeCustomRelay() Agnes poll error = %v", err)
+	}
+	for _, raw := range []string{
+		"https://apihub.agnes-ai.com/agnesapi?video_id=video-1",
+		"https://apihub.agnes-ai.com/agnesapi?video_id=video-1&model_name=agnes-video-2.5&extra=1",
+	} {
+		invalid, parseErr := url.Parse(raw)
+		if parseErr != nil {
+			t.Fatal(parseErr)
+		}
+		if err := authorizeCustomRelay(http.MethodGet, invalid, "openai", ""); err == nil {
+			t.Fatalf("authorizeCustomRelay(%q) should fail", raw)
+		}
 	}
 }
 
@@ -115,6 +111,8 @@ func TestAuthorizeCustomRelayRejectsArbitraryRequestsAndCredentialQueries(t *tes
 		{method: http.MethodGet, target: "https://api.example.com/account", apiFormat: "openai"},
 		{method: http.MethodGet, target: "https://api.example.com/v1/models?api_key=secret", apiFormat: "openai"},
 		{method: http.MethodPost, target: "https://api.example.com/v1/responses", apiFormat: "openai", contentType: "text/plain"},
+		{method: http.MethodPost, target: "https://api.anthropic.com/v1/messages", apiFormat: "claude", contentType: "text/plain"},
+		{method: http.MethodGet, target: "https://api.anthropic.com/v1/messages", apiFormat: "claude"},
 		{method: http.MethodPost, target: "https://api.example.com/v1/account", apiFormat: "openai", contentType: "multipart/form-data; boundary=test"},
 		{method: http.MethodPost, target: "https://api.example.com/v1/../account/chat/completions", apiFormat: "openai", contentType: "application/json"},
 		{method: http.MethodPost, target: "https://api.example.com/v1/models/gemini:streamGenerateContent?alt=sse&token=secret", apiFormat: "gemini", contentType: "application/json"},
@@ -180,6 +178,23 @@ func TestAuthorizeSystemProxyMiniMaxVideoCreateAndPoll(t *testing.T) {
 	}
 	if err := authorizeSystemProxy(channel, model.ChannelInterfaceMiniMaxVideo, http.MethodPost, "/v2/video_generation", "application/json", []byte(`{"model":"unapproved"}`)); err == nil {
 		t.Fatal("unapproved MiniMax model should be rejected")
+	}
+}
+
+func TestAuthorizeSystemProxyAgnesVideoCreateAndPoll(t *testing.T) {
+	channel := &model.ModelChannel{APIFormat: "openai", ModelsJSON: `["agnes-video-2.5"]`}
+	createBody := []byte(`{"model":"agnes-video-2.5","prompt":"test","mode":"text","seconds":"5","size":"720P"}`)
+	if err := authorizeSystemProxy(channel, model.ChannelInterfaceAgnesVideo, http.MethodPost, "/videos", "application/json", createBody); err != nil {
+		t.Fatalf("Agnes create authorization error = %v", err)
+	}
+	if err := authorizeSystemProxy(channel, model.ChannelInterfaceAgnesVideo, http.MethodGet, "/agnesapi", "", nil); err != nil {
+		t.Fatalf("Agnes poll authorization error = %v", err)
+	}
+	if err := authorizeSystemProxy(channel, model.ChannelInterfaceAgnesVideo, http.MethodPost, "/videos", "multipart/form-data; boundary=test", createBody); err == nil {
+		t.Fatal("expected Agnes multipart create to be rejected")
+	}
+	if err := authorizeSystemProxy(channel, model.ChannelInterfaceAgnesVideo, http.MethodGet, "/videos/task-1", "", nil); err == nil {
+		t.Fatal("expected unsupported Agnes poll path to be rejected")
 	}
 }
 

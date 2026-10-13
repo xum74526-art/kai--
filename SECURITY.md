@@ -7,7 +7,8 @@
 ## 报告漏洞
 
 请不要通过公开 Issue 披露尚未修复的漏洞。优先使用 GitHub 仓库的
-[Private vulnerability reporting](https://github.com/xum74526-art/kai--/security/advisories/new)。
+[Private vulnerability reporting](https://github.com/ddcat-ai/open-ai-canvas/security/advisories/new)，
+或发送邮件至 `ddcat666@126.com`。
 
 报告中请包含受影响版本、复现步骤、影响范围和可行的缓解建议。请勿访问、下载或修改不属于你的数据，也不要对公开实例进行持续压测。
 
@@ -15,9 +16,8 @@
 
 ## 部署者责任
 
-- 生产环境必须使用 HTTPS，并将 `CANVAS_CORS_ORIGINS` 设置为明确的完整前端 Origin；通配符会被拒绝。
+- 生产环境必须使用 HTTPS，并将 `CANVAS_CORS_ORIGINS` 设置为明确的前端 Origin。
 - 首个管理员应在服务暴露公网前完成注册，公开注册默认保持关闭。
 - 数据目录、PostgreSQL/SQLite、备份和 `.settings-key` 必须限制为服务账号可读。
 - 系统模型渠道和 OSS 使用最小权限密钥，并设置供应商侧预算与告警。
-- 私网模型上游只按主机精确放行；用户提交的远程素材地址不得访问本机、私网、链路本地或特殊用途地址。
 - 不要将 `.env`、数据库、日志、备份或真实密钥提交到 Git。

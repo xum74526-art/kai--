@@ -1,6 +1,8 @@
-import { canvasNodeToAsset, declaredCanvasNodeAssetCategory, findCanvasNodeAsset, type CanvasAssetSource } from "@/lib/canvas/canvas-node-asset";
+import { canvasNodeToAsset, declaredCanvasNodeAssetCategory, findCanvasNodeAsset, requiresMaterializedCanvasAsset, type CanvasAssetSource } from "@/lib/canvas/canvas-node-asset";
+import { canvasVideoAssetPreviewUrl } from "@/lib/canvas/canvas-media-preview";
 import { readImageMeta } from "@/lib/image-utils";
 import { parseBackendGenerationResult, type BackendGenerationResult } from "@/services/api/generation-task";
+import { ApiError } from "@/services/api/request";
 import { linkProjectAsset, moveProjectAsset, updateProjectAssetCategory } from "@/services/api/projects";
 import type { GenerationTask, GenerationTaskOutput } from "@/services/api/task-center";
 import { getMediaBlob, resolveMediaUrl, setMediaBlob } from "@/services/file-storage";
@@ -9,10 +11,11 @@ import { withGenerationArtifactCommitLock } from "@/services/generation-asset-re
 import { uploadGeneratedAssetToConfiguredSources } from "@/services/external-asset-sources";
 import { getImageBlob, resolveImageUrl, setImageBlob } from "@/services/image-storage";
 import { generationArtifactStorageKey, loadOrStoreGenerationArtifact } from "@/services/generation-artifact-sink";
-import { createLocalDreaminaTaskEffectStore } from "@/services/local-dreamina-generation";
 import { createProviderNeutralGenerationTaskEffectStore } from "@/services/provider-neutral-generation-effects";
-import { saveRemoteUserDataNow } from "@/services/user-data-sync";
+import { getCachedResourceBlob } from "@/services/resource-blob-cache";
+import { hasRemoteUserDataSyncSession, loadAssetsForUse, saveRemoteUserDataNow } from "@/services/user-data-sync";
 import { getActiveUserScope } from "@/lib/user-scope";
+import { normalizeAssetCategory } from "@/lib/asset-category";
 import { runGenerationConsumer } from "@/services/generation-consumer-lifecycle";
 import { useAssetStore, type AssetCategory, type AssetStatus, type NewAsset } from "@/stores/use-asset-store";
 import type { CanvasNodeData } from "@/types/canvas";
@@ -39,10 +42,52 @@ export type CanvasNodeAssetResult = {
 };
 
 const pendingAssetSyncs = new Map<string, Promise<CanvasNodeAssetResult>>();
+const DEFAULT_RATE_LIMIT_RETRY_MS = 60_000;
+const MAX_RATE_LIMIT_RETRY_MS = 5 * 60_000;
+
+type CanvasAssetSyncRetryOptions = {
+    signal?: AbortSignal;
+    maxRetries?: number;
+    wait?: (delayMs: number, signal?: AbortSignal) => Promise<void>;
+};
+
+function waitForCanvasAssetSyncRetry(delayMs: number, signal?: AbortSignal) {
+    return new Promise<void>((resolve, reject) => {
+        if (signal?.aborted) {
+            reject(new DOMException("The operation was aborted", "AbortError"));
+            return;
+        }
+        const timer = globalThis.setTimeout(() => {
+            signal?.removeEventListener("abort", onAbort);
+            resolve();
+        }, delayMs);
+        const onAbort = () => {
+            globalThis.clearTimeout(timer);
+            reject(new DOMException("The operation was aborted", "AbortError"));
+        };
+        signal?.addEventListener("abort", onAbort, { once: true });
+    });
+}
+
+export async function retryCanvasAssetSyncAfterRateLimit<T>(operation: () => Promise<T>, options: CanvasAssetSyncRetryOptions = {}): Promise<T> {
+    const maxRetries = Math.max(0, options.maxRetries ?? 2);
+    const wait = options.wait ?? waitForCanvasAssetSyncRetry;
+    for (let attempt = 0; ; attempt += 1) {
+        throwIfAborted(options.signal);
+        try {
+            return await operation();
+        } catch (error) {
+            if (!(error instanceof ApiError) || error.status !== 429 || attempt >= maxRetries) throw error;
+            const delayMs = Math.min(MAX_RATE_LIMIT_RETRY_MS, Math.max(0, error.retryAfterMs ?? DEFAULT_RATE_LIMIT_RETRY_MS));
+            await wait(delayMs, options.signal);
+        }
+    }
+}
 
 export function ensureCanvasNodeAsset(options: EnsureCanvasNodeAssetOptions) {
     const scope = getActiveUserScope();
-    const identity = options.taskId || options.node.metadata?.taskId || options.node.metadata?.storageKey || options.node.id;
+    const taskIdentity = options.taskId || options.node.metadata?.taskId || options.node.metadata?.storageKey || options.node.id;
+    const identity = options.node.metadata?.imageLayerGroup || options.node.metadata?.layerExtraction ? `${taskIdentity}:${options.node.metadata.storageKey || ""}` : taskIdentity;
     const key = [scope, options.domainProjectId || "personal", options.canvasId, options.node.id, identity].join(":");
     const pending = pendingAssetSyncs.get(key);
     if (pending) return pending;
@@ -55,9 +100,16 @@ async function persistCanvasNodeAsset(options: EnsureCanvasNodeAssetOptions): Pr
     throwIfAborted(options.signal);
     const store = useAssetStore.getState();
     let asset = findCanvasNodeAsset(store.assets, options.node, options.canvasId, options.taskId);
+    if (!asset && options.node.metadata?.assetId) {
+        await loadAssetsForUse([options.node.metadata.assetId]);
+        throwIfAborted(options.signal);
+        asset = findCanvasNodeAsset(useAssetStore.getState().assets, options.node, options.canvasId, options.taskId);
+    }
     const declaredCategory = options.category || declaredCanvasNodeAssetCategory(options.node);
     let created = false;
     if (!asset) {
+        // 受管生成结果必须采用已登记的身份，不能以随机 ID 再建一份。
+        if (requiresMaterializedCanvasAsset(options.node, options.taskId)) throw new Error("生成素材尚未加载，请重新读取生成结果");
         const input = canvasNodeToAsset(options.node, { canvasId: options.canvasId, source: options.source, taskId: options.taskId });
         if (!input) throw new Error("当前节点没有可保存的素材内容");
         const assetId = store.addAsset(options.category ? { ...input, category: options.category } : input);
@@ -69,7 +121,14 @@ async function persistCanvasNodeAsset(options: EnsureCanvasNodeAssetOptions): Pr
         store.updateAsset(asset.id, { category: declaredCategory });
         asset = useAssetStore.getState().assets.find((item) => item.id === asset?.id) || asset;
     }
-    if (!options.domainProjectId) return { assetId: asset.id, created, linkedToProject: false };
+    // 生成结果先以本地资产完成闭环；未建立云端同步会话时，后续登录同步会
+    // 继续上传素材和画布，不能把一个可恢复的本地成功报告成失败。
+    if (!hasRemoteUserDataSyncSession()) return { assetId: asset.id, created, linkedToProject: false };
+    if (!options.domainProjectId) {
+        await saveRemoteUserDataNow();
+        throwIfAborted(options.signal);
+        return { assetId: asset.id, created, linkedToProject: false };
+    }
     await syncAssetToProject(asset.id, options.domainProjectId, declaredCategory, options.folderId, options.signal);
     return { assetId: asset.id, created, linkedToProject: true };
 }
@@ -91,7 +150,7 @@ async function syncAssetToProject(assetId: string, domainProjectId: string, cate
         domainProjectId,
         {
             assetId: asset.id,
-            category: category || asset.category || "other",
+            category: normalizeAssetCategory(category || asset.category),
             folderId,
         },
         signal,
@@ -101,7 +160,7 @@ async function syncAssetToProject(assetId: string, domainProjectId: string, cate
     if (folderId !== undefined && (linked.folderId || "") !== folderId) linked = (await moveProjectAsset(domainProjectId, asset.id, folderId, signal)).asset;
     throwIfAborted(signal);
     useAssetStore.getState().updateAsset(asset.id, {
-        category: linked.category as AssetCategory,
+        category: normalizeAssetCategory(linked.category),
         status: linked.status as AssetStatus,
         primaryVersionId: linked.primaryVersionId,
         metadata: { ...asset.metadata, projectIds: [...new Set([...linkedProjectIds, domainProjectId])] },
@@ -170,7 +229,7 @@ async function storedGenerationImage(result: NonNullable<BackendGenerationResult
     const blob = await loadOrStoreGenerationArtifact({
         effectKey: storageKey,
         read: (key) => getImageBlob(key),
-        materialize: () => fetchGenerationResultBlob(result.dataUrl, "image", signal),
+        materialize: async () => (await fetch(result.dataUrl, { signal })).blob(),
         write: async (key, artifact) => {
             await setImageBlob(key, artifact);
         },
@@ -197,7 +256,7 @@ async function storedGenerationMedia(dataUrl: string, effectKey: string, mediaTy
     const blob = await loadOrStoreGenerationArtifact({
         effectKey: storageKey,
         read: (key) => getMediaBlob(key),
-        materialize: () => fetchGenerationResultBlob(dataUrl, mediaType, signal),
+        materialize: async () => (await fetch(dataUrl, { signal })).blob(),
         write: async (key, artifact) => {
             await setMediaBlob(key, artifact);
         },
@@ -217,53 +276,24 @@ async function storedGenerationMedia(dataUrl: string, effectKey: string, mediaTy
     };
 }
 
-type GenerationResultMediaType = "image" | "video" | "audio";
-
-/**
- * 生成结果常来自会过期的上游 URL。落入本地缓存前先确认 HTTP 成功且内容仍是目标媒体，
- * 避免把 HTML/JSON 错误页伪装成可预览的素材保存下来。
- */
-export async function fetchGenerationResultBlob(url: string, mediaType: GenerationResultMediaType, signal?: AbortSignal) {
-    const response = await fetch(url, { signal });
-    if (!response.ok) throw new Error(`${generationResultMediaLabel(mediaType)}结果下载失败（HTTP ${response.status}）`);
-
-    const contentType = normalizedMimeType(response.headers.get("content-type"));
-    if (contentType && !isExpectedGenerationResultMime(contentType, mediaType)) {
-        throw new Error(`${generationResultMediaLabel(mediaType)}结果下载失败（上游返回了非${generationResultMediaLabel(mediaType)}内容：${contentType}）`);
-    }
-
-    const blob = await response.blob();
-    if (!blob.size) throw new Error(`${generationResultMediaLabel(mediaType)}结果下载失败（上游返回空文件）`);
-
-    const blobType = normalizedMimeType(blob.type);
-    if (blobType && !isExpectedGenerationResultMime(blobType, mediaType)) {
-        throw new Error(`${generationResultMediaLabel(mediaType)}结果下载失败（上游返回了非${generationResultMediaLabel(mediaType)}内容：${blobType}）`);
-    }
-    if (!contentType && !blobType && await looksLikeTextualUpstreamError(blob)) {
-        throw new Error(`${generationResultMediaLabel(mediaType)}结果下载失败（上游返回了错误页面）`);
-    }
-    return blob;
-}
-
-function normalizedMimeType(value: string | null | undefined) {
-    return (value || "").split(";", 1)[0].trim().toLowerCase();
-}
-
-function isExpectedGenerationResultMime(mimeType: string, mediaType: GenerationResultMediaType) {
-    if (mimeType.startsWith(`${mediaType}/`)) return true;
-    // 少数签名下载地址会省略具体 MIME；二进制兜底本身不是错误内容。
-    return mimeType === "application/octet-stream" || mimeType === "application/binary" || mimeType === "binary/octet-stream";
-}
-
-async function looksLikeTextualUpstreamError(blob: Blob) {
-    const prefix = (await blob.slice(0, 1024).text()).trimStart().toLowerCase();
-    return /^(<!doctype\s+html|<html|<head|<body|<\?xml)/.test(prefix)
-        || /^(\{|\[)\s*"?(error|code|message|status)"?\s*[:}]/.test(prefix)
-        || /^(accessdenied|access denied|expired|signaturedoesnotmatch|forbidden|not found|unauthorized)\b/.test(prefix);
-}
-
-function generationResultMediaLabel(mediaType: GenerationResultMediaType) {
-    return mediaType === "image" ? "图片" : mediaType === "video" ? "视频" : "音频";
+async function cachedRemoteGenerationVideo(video: NonNullable<BackendGenerationResult["video"]>, signal?: AbortSignal) {
+    if (!video.storageKey) throw new Error("生成视频缺少云端资源标识");
+    throwIfAborted(signal);
+    const blob = await getCachedResourceBlob(video.storageKey);
+    throwIfAborted(signal);
+    if (!blob) throw new Error("生成视频资源缓存失败，未标记为成功");
+    const url = await resolveMediaUrl(video.storageKey, video.dataUrl);
+    throwIfAborted(signal);
+    if (!url) throw new Error("生成视频资源地址为空，未标记为成功");
+    return {
+        url,
+        storageKey: video.storageKey,
+        width: video.width || 0,
+        height: video.height || 0,
+        durationMs: video.durationMs,
+        bytes: video.bytes || blob.size,
+        mimeType: video.mimeType || blob.type || "video/mp4",
+    };
 }
 
 async function generationOutputAsset(input: Parameters<MaterializeGenerationTaskOutput>[0], scope: string): Promise<NewAsset> {
@@ -286,6 +316,7 @@ async function generationOutputAsset(input: Parameters<MaterializeGenerationTask
         return {
             kind: "image",
             title: "生成图片",
+            category: "material",
             coverUrl: stored.url,
             tags: ["生成"],
             status: "confirmed",
@@ -306,15 +337,7 @@ async function generationOutputAsset(input: Parameters<MaterializeGenerationTask
         const video = result.video;
         if (!video) throw new Error("生成任务缺少视频输出");
         const stored = video.storageKey
-            ? {
-                  url: await resolveMediaUrl(video.storageKey, video.dataUrl),
-                  storageKey: video.storageKey,
-                  width: video.width || 0,
-                  height: video.height || 0,
-                  durationMs: video.durationMs,
-                  bytes: video.bytes || 0,
-                  mimeType: video.mimeType || "video/mp4",
-              }
+            ? await cachedRemoteGenerationVideo(video, input.signal)
             : await storedGenerationMedia(
                   video.dataUrl,
                   input.effectKey,
@@ -333,7 +356,8 @@ async function generationOutputAsset(input: Parameters<MaterializeGenerationTask
         return {
             kind: "video",
             title: "生成视频",
-            coverUrl: stored.url,
+            category: "material",
+            coverUrl: canvasVideoAssetPreviewUrl(stored.url),
             tags: ["生成"],
             status: "confirmed",
             source: "生成任务",
@@ -376,6 +400,7 @@ async function generationOutputAsset(input: Parameters<MaterializeGenerationTask
     return {
         kind: "audio",
         title: "生成音频",
+        category: "material",
         coverUrl: "",
         tags: ["生成"],
         status: "confirmed",
@@ -389,13 +414,6 @@ async function generationOutputAsset(input: Parameters<MaterializeGenerationTask
             mimeType: stored.mimeType || "audio/mpeg",
         },
     };
-}
-
-let generationTaskEffectStoreInstance: ReturnType<typeof createLocalDreaminaTaskEffectStore> | undefined;
-
-function generationTaskEffectStore() {
-    generationTaskEffectStoreInstance ??= createLocalDreaminaTaskEffectStore();
-    return generationTaskEffectStoreInstance;
 }
 
 const materializeGenerationOutput: MaterializeGenerationTaskOutput = createIdempotentMaterializeOutput({
@@ -428,16 +446,6 @@ const materializeGenerationOutput: MaterializeGenerationTaskOutput = createIdemp
     },
 });
 
-const dreaminaGenerationTaskMaterializer = createGenerationTaskMaterializer({
-    effects: {
-        claim: (effectKey, taskId) => generationTaskEffectStore().claim(effectKey, taskId),
-        renew: (effectKey, taskId) => generationTaskEffectStore().renew(effectKey, taskId),
-        complete: (effectKey, taskId, result) => generationTaskEffectStore().complete(effectKey, taskId, result),
-        release: (effectKey, taskId) => generationTaskEffectStore().release(effectKey, taskId),
-    },
-    materializeOutput: materializeGenerationOutput,
-});
-
 function remoteGenerationTaskMaterializer() {
     return createGenerationTaskMaterializer({
         // 每个页面实例持有自己的租约；共享浏览器 storage + Web Lock 提供跨标签原子权威。
@@ -447,22 +455,22 @@ function remoteGenerationTaskMaterializer() {
 }
 
 function generationTaskMaterializer(task: GenerationTask) {
-    return task.provider === "dreamina-cli" ? dreaminaGenerationTaskMaterializer : remoteGenerationTaskMaterializer();
+    return remoteGenerationTaskMaterializer();
 }
 
 export async function materializeGenerationTaskAssets(task: GenerationTask, signal?: AbortSignal): Promise<GenerationTask> {
     return generationTaskMaterializer(task).materialize(projectGenerationTaskResult(task), signal);
 }
 
-export function attachGenerationTaskNode(task: GenerationTask, nodeId: string, outputIndex: number, consumer: Parameters<typeof dreaminaGenerationTaskMaterializer.attachNode>[3], signal?: AbortSignal) {
+export function attachGenerationTaskNode(task: GenerationTask, nodeId: string, outputIndex: number, consumer: Parameters<ReturnType<typeof generationTaskMaterializer>["attachNode"]>[3], signal?: AbortSignal) {
     return generationTaskMaterializer(task).attachNode(task, nodeId, outputIndex, consumer, signal);
 }
 
-export function attachGenerationTaskMessage(task: GenerationTask, messageId: string, outputIndex: number, consumer: Parameters<typeof dreaminaGenerationTaskMaterializer.attachMessage>[3], signal?: AbortSignal) {
+export function attachGenerationTaskMessage(task: GenerationTask, messageId: string, outputIndex: number, consumer: Parameters<ReturnType<typeof generationTaskMaterializer>["attachMessage"]>[3], signal?: AbortSignal) {
     return generationTaskMaterializer(task).attachMessage(task, messageId, outputIndex, consumer, signal);
 }
 
-export function resumeGenerationTaskAgent(task: GenerationTask, continuationId: string, consumer: Parameters<typeof dreaminaGenerationTaskMaterializer.resumeAgent>[2], signal?: AbortSignal) {
+export function resumeGenerationTaskAgent(task: GenerationTask, continuationId: string, consumer: Parameters<ReturnType<typeof generationTaskMaterializer>["resumeAgent"]>[2], signal?: AbortSignal) {
     return generationTaskMaterializer(task).resumeAgent(task, continuationId, consumer, signal);
 }
 
@@ -525,12 +533,13 @@ export async function consumeGenerationTaskAgent(
 export async function consumeGenerationTaskMessage(
     task: GenerationTask,
     messageId: string,
-    consumer: (input: { task: GenerationTask; resultUrls: string[]; effectKey: string; signal?: AbortSignal }) => Promise<void> | void,
+    consumer: (input: { task: GenerationTask; resultUrls: string[]; resultStorageKeys: string[]; effectKey: string; signal?: AbortSignal }) => Promise<void> | void,
     dependencies: {
         signal?: AbortSignal;
         managed?: true;
         materialize?: typeof materializeGenerationTaskAssets;
         materializedUrls?: typeof generationTaskMaterializedUrls;
+        materializedStorageKeys?: typeof generationTaskMaterializedStorageKeys;
         attachMessage?: typeof attachGenerationTaskMessage;
     } = {},
 ): Promise<GenerationTask> {
@@ -539,6 +548,7 @@ export async function consumeGenerationTaskMessage(
     }
     const materialized = await (dependencies.materialize ?? materializeGenerationTaskAssets)(task, dependencies.signal);
     const resultUrls = (dependencies.materializedUrls ?? generationTaskMaterializedUrls)(materialized);
+    const resultStorageKeys = (dependencies.materializedStorageKeys ?? generationTaskMaterializedStorageKeys)(materialized);
     const attach = dependencies.attachMessage ?? attachGenerationTaskMessage;
     const outputs = materialized.outputs?.filter((output) => output.materializedAssetId) ?? [];
     for (const output of outputs) {
@@ -547,7 +557,7 @@ export async function consumeGenerationTaskMessage(
             messageId,
             output.outputIndex,
             async ({ effectKey, signal }) => {
-                await consumer({ task: materialized, resultUrls, effectKey, signal });
+                await consumer({ task: materialized, resultUrls, resultStorageKeys, effectKey, signal });
             },
             dependencies.signal,
         );
@@ -560,8 +570,25 @@ export function generationTaskMaterializedUrls(task: GenerationTask): string[] {
     return (task.outputs || []).flatMap((output) => {
         const asset = output.materializedAssetId ? assets.find((candidate) => candidate.id === output.materializedAssetId) : undefined;
         if (!asset) return [];
-        if (asset.kind === "image") return [asset.data.dataUrl || asset.coverUrl];
-        if (asset.kind === "video" || asset.kind === "audio") return [asset.data.url];
+        if (asset.kind === "image") return [asset.data.dataUrl || asset.coverUrl].filter(Boolean);
+        if (asset.kind === "video" || asset.kind === "audio") return [asset.data.url].filter(Boolean);
         return [];
+    });
+}
+
+/**
+ * 返回生成结果的稳定素材定位符。对于远程资源是 resource:<id>，对于本地降级素材是
+ * 本地 IndexedDB storageKey。它可以持久化到历史记录，不能被短时效签名 URL 替代。
+ */
+export function generationTaskMaterializedStorageKeys(task: GenerationTask): string[] {
+    const assets = useAssetStore.getState().assets;
+    return (task.outputs || []).flatMap((output) => {
+        const asset = output.materializedAssetId ? assets.find((candidate) => candidate.id === output.materializedAssetId) : undefined;
+        const storageKey = asset && (asset.kind === "image" || asset.kind === "video" || asset.kind === "audio") ? asset.data.storageKey : "";
+        if (storageKey) return [storageKey];
+        // 物化结果复用时（幂等命中、换标签页、素材尚未同步）本地索引里可能没有这条素材，
+        // 结果自己带着稳定的 resource:<id>；丢掉它会把已经生成成功的结果判成无法读取，
+        // 展示地址随后仍由渲染层按需续签。
+        return output.providerArtifactRef ? [output.providerArtifactRef] : [];
     });
 }

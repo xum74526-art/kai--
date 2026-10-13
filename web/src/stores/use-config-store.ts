@@ -1,45 +1,99 @@
-import { useMemo } from "react";
-import { create } from "zustand";
-import { createJSONStorage, persist } from "zustand/middleware";
-import { nanoid } from "nanoid";
-
-import { projectDesktopLocalChannelRuntime } from "@/lib/desktop-local-channel";
 import { scopedLocalStorage } from "@/lib/user-scope";
+import { useMemo } from "react";
+import type { ModelTag } from "@/lib/model-tags";
+import { create } from "zustand";
+import { persist, createJSONStorage } from "zustand/middleware";
+import { nanoid } from "nanoid";
 import { modelProtocolCapability, normalizeModelProtocol, type ModelProtocol } from "@/lib/model-protocols";
 import { normalizeVideoDuration, normalizeVideoResolution } from "@/lib/video-generation-options";
-import type { ModelCapabilityConfig } from "@/lib/model-capabilities";
-import { useLocalDreaminaModelStore } from "@/stores/use-local-dreamina-model-store";
+import { type ModelCapabilityConfig } from "@/lib/model-capabilities";
 import { useUserStore } from "@/stores/use-user-store";
-import type { DreaminaLocalModel } from "@/services/local-dreamina-model-catalog";
-import type { CapabilitySpec } from "@/services/api/logical-models";
-import { configuredApiBaseURL } from "@/lib/app-base-path";
+import type { CapabilitySpec, PublicChannelModelAvailability, PublicLogicalModelPriceTier } from "@/services/api/logical-models";
+import { type WorkflowFieldMapping, normalizeRunningHubCapability, normalizeRunningHubWorkflowKind, normalizeSavedWorkflowFields, mergeWorkflowFieldMappings, normalizeWorkflowFieldMappings } from "./config-workflow-fields";
+import {
+    decodeChannelModel,
+    modelOptionName,
+    modelOptionsFromChannels,
+    normalizeModelOptionValue,
+    CHANNEL_MODEL_SEPARATOR,
+    uniqueModelOptions,
+    encodeChannelModel,
+    hasSystemModelPrice,
+    isChannelModelValue,
+    modelDisplayName,
+    modelIcon,
+    modelOptionLabel,
+} from "./config-model-options";
+import { normalizeRawModelName } from "./config-model-options";
 
-export type ApiCallFormat = "openai" | "gemini";
+export { CHANNEL_MODEL_SEPARATOR, normalizeRawModelName, uniqueModelOptions } from "./config-model-options";
+export { mergeWorkflowFieldMappings, normalizeRunningHubCapability, normalizeRunningHubWorkflowKind, normalizeWorkflowFieldMappings, type WorkflowFieldMapping } from "./config-workflow-fields";
+export { decodeChannelModel, encodeChannelModel, hasSystemModelPrice, isChannelModelValue, modelDisplayName, modelIcon, modelOptionLabel, modelOptionName, modelOptionsFromChannels, normalizeModelOptionValue } from "./config-model-options";
+
+export type ApiCallFormat = "openai" | "gemini" | "claude";
 export type ChannelInterfaceType = ModelProtocol;
 export type ChannelHeader = { name: string; value: string };
+export type RunningHubCapability = "image" | "video" | "audio";
+export type RunningHubWorkflowKind = "workflow" | "app";
+export type RunningHubWorkflow = {
+    kind?: RunningHubWorkflowKind;
+    capability?: RunningHubCapability;
+    workflowId: string;
+    webappId?: string;
+    title?: string;
+    description?: string;
+    fields?: WorkflowFieldMapping[];
+    workflowJson?: Record<string, unknown>;
+    optionalImageMode?: string;
+    raw?: Record<string, unknown>;
+};
 
-// 这是只读目录适配器的内部键，不是供应渠道或数据库实体 ID。
+export type RunningHubConfig = {
+    enabled: boolean;
+    baseUrl: string;
+    apiKey: string;
+    walletApiKey: string;
+    /** 仅用于 RunningHub 参考素材上传，通常填写企业级 API Key。 */
+    uploadApiKey?: string;
+    useWallet: boolean;
+    capability: RunningHubCapability;
+    selectedKind: RunningHubWorkflowKind;
+    workflowId: string;
+    workflows: RunningHubWorkflow[];
+};
+
+export type WorkflowGraphPreview = {
+    nodes: Array<{ id: string; title?: string; classType?: string }>;
+    edges: Array<{ from: string; to: string }>;
+};
+
+// 兼容仍在使用旧目录标识的会话恢复和模型选择器。
 export const PUBLIC_MODEL_CATALOG_ID = "managed";
 
 export type ModelChannel = {
     id: string;
     name: string;
+    sortOrder?: number;
     baseUrl: string;
-    allowLocalChannel?: boolean;
     apiKey: string;
     secretKey?: string;
     headers?: ChannelHeader[];
     apiFormat: ApiCallFormat;
     interfaceType?: ChannelInterfaceType;
     models: string[];
+    // 仅平台目录使用：将已保存的旧 SKU 选择重定向到当前模型家族。
+    modelAliases?: Record<string, string>;
     scope?: "system" | "user";
     enabled?: boolean;
     hasApiKey?: boolean;
     hasSecretKey?: boolean;
     concurrencyLimit?: number;
+    proxyUrl?: string;
     modelCosts?: Array<{
         model: string;
         displayName?: string;
+        channelLabel?: string;
+        tags?: ModelTag[];
         description?: string;
         icon?: string;
         capability: ModelCapability;
@@ -54,18 +108,22 @@ export type ModelChannel = {
         logicalModelId?: string;
         logicalCapabilitySpec?: CapabilitySpec;
         logicalCapabilityProfiles?: CapabilitySpec[];
+        logicalPriceTiers?: PublicLogicalModelPriceTier[];
         defaultOptions?: Record<string, unknown>;
+        availability?: PublicChannelModelAvailability;
+        available?: boolean;
     }>;
-    transport?: "backend-channel" | "local-runtime";
-    localModels?: DreaminaLocalModel[];
 };
 
 export type AiConfig = {
-    channelMode: "remote" | "local";
+    channelMode: "remote";
     baseUrl: string;
     apiKey: string;
     apiFormat: ApiCallFormat;
     channels: ModelChannel[];
+    runningHub: RunningHubConfig;
+    /** 仅用于单次生成任务路由，不属于全局渠道启用状态。 */
+    taskWorkflowProvider?: "model" | "runninghub";
     model: string;
     imageModel: string;
     videoModel: string;
@@ -74,11 +132,24 @@ export type AiConfig = {
     audioVoice: string;
     audioFormat: string;
     audioSpeed: string;
+    audioLanguage: string;
+    audioDialect: string;
     audioInstructions: string;
+    audioEmotionControlMethod: string;
+    audioEmotionRandom: string;
+    audioEmotionHappy: string;
+    audioEmotionAngry: string;
+    audioEmotionSad: string;
+    audioEmotionAfraid: string;
+    audioEmotionDisgusted: string;
+    audioEmotionMelancholic: string;
+    audioEmotionSurprised: string;
+    audioEmotionCalm: string;
     videoSeconds: string;
     vquality: string;
     videoGenerateAudio: string;
     videoWatermark: string;
+    videoArkPrivateAssetUpload: string;
     systemPrompt: string;
     models: string[];
     imageModels: string[];
@@ -92,21 +163,21 @@ export type AiConfig = {
     canvasImageCount: string;
 };
 
-// 保留历史 storage key，避免品牌调整后用户的模型渠道配置看似丢失。
 export const CONFIG_STORE_KEY = "open_ai_canvas:ai_config_store";
 export type ModelCapability = "image" | "video" | "text" | "audio";
-const CHANNEL_MODEL_SEPARATOR = "::";
 const OPENAI_BASE_URL = "https://api.openai.com";
 const GEMINI_BASE_URL = "https://generativelanguage.googleapis.com";
 const LEGACY_DEFAULT_MODEL_NAMES = new Set(["gpt-image-2", "grok-imagine-video", "gpt-5.5", "gpt-4o-mini-tts"]);
 
 export const defaultConfig: AiConfig = {
-    channelMode: "local",
+    channelMode: "remote",
     baseUrl: OPENAI_BASE_URL,
     apiKey: "",
     apiFormat: "openai",
     // 创作端模型目录只能来自后台公开逻辑模型和用户自定义渠道，不能内置供应商模型。
     channels: [],
+    runningHub: { enabled: false, baseUrl: "https://www.runninghub.cn", apiKey: "", walletApiKey: "", uploadApiKey: "", useWallet: false, capability: "image", selectedKind: "workflow", workflowId: "", workflows: [] },
+    taskWorkflowProvider: "model",
     model: "",
     imageModel: "",
     videoModel: "",
@@ -115,11 +186,24 @@ export const defaultConfig: AiConfig = {
     audioVoice: "alloy",
     audioFormat: "mp3",
     audioSpeed: "1",
+    audioLanguage: "",
+    audioDialect: "",
     audioInstructions: "",
+    audioEmotionControlMethod: "与音色参考音频相同",
+    audioEmotionRandom: "false",
+    audioEmotionHappy: "0",
+    audioEmotionAngry: "0",
+    audioEmotionSad: "0",
+    audioEmotionAfraid: "0",
+    audioEmotionDisgusted: "0",
+    audioEmotionMelancholic: "0",
+    audioEmotionSurprised: "0",
+    audioEmotionCalm: "0",
     videoSeconds: "6",
     vquality: "720",
     videoGenerateAudio: "true",
     videoWatermark: "false",
+    videoArkPrivateAssetUpload: "true",
     systemPrompt: "",
     models: [],
     imageModels: [],
@@ -221,8 +305,6 @@ export function filterModelsByCapability(models: string[], capability?: ModelCap
         const decoded = decodeChannelModel(model);
         const channel = decoded ? channels?.find((item) => item.id === decoded.channelId) : undefined;
         const modelName = decoded?.model || modelOptionName(model);
-        const local = channel?.localModels?.find((item) => item.id === modelName);
-        if (local) return local.modality === capability;
         const costEntry = channel?.modelCosts?.find((item) => item.model === modelName);
         // 协议层优先级最高：协议决定 API 端点，明确属于其他能力时直接排除，
         // 防止用户将 video/image/audio 协议的模型误标为 text 后混入文本下拉。
@@ -254,8 +336,11 @@ export function configuredModelMatchesCapability(config: AiConfig, model: string
 }
 
 function isAiConfigReady(config: AiConfig, model: string) {
+    if (config.taskWorkflowProvider === "runninghub") {
+        const key = config.runningHub.apiKey;
+        return Boolean(config.runningHub.enabled && config.runningHub.baseUrl.trim() && key.trim() && config.runningHub.workflowId.trim());
+    }
     const channel = resolveModelChannel(config, model);
-    if (channel.transport === "local-runtime") return channel.enabled !== false && Boolean(channel.localModels?.some((item) => item.id === modelOptionName(model)));
     return Boolean(model.trim() && channel.baseUrl.trim() && channel.apiKey.trim());
 }
 
@@ -277,7 +362,7 @@ export const useConfigStore = create<ConfigStore>()(
                         createModelChannel({
                             ...channel,
                             id: channel.id || `system-${index + 1}`,
-                            name: channel.name || `系统渠道 ${index + 1}`,
+                            name: "系统模型",
                             scope: "system",
                             apiKey: channel.apiKey || "system",
                         }),
@@ -305,7 +390,37 @@ export const useConfigStore = create<ConfigStore>()(
 export function normalizeConfigSnapshot(snapshot: ConfigStoreSnapshot | undefined = {}) {
     // 坏存储/旧版本快照可能是 undefined 或缺 config，兜底为 defaultConfig，保证渲染不崩溃
     const persistedConfig = (snapshot?.config || {}) as Partial<AiConfig>;
-    const config = { ...defaultConfig, ...persistedConfig };
+    const persistedRunningHub = persistedConfig.runningHub;
+    const runningHubCapability = normalizeRunningHubCapability(persistedRunningHub?.capability, defaultConfig.runningHub.capability);
+    const runningHubWorkflows = Array.isArray(persistedRunningHub?.workflows)
+        ? persistedRunningHub.workflows
+              .filter((item): item is RunningHubWorkflow => Boolean(item && typeof item === "object" && String(item.workflowId || "").trim()))
+              .map((item) => {
+                  const capability = normalizeRunningHubCapability(item.capability, runningHubCapability);
+                  return {
+                      ...item,
+                      kind: normalizeRunningHubWorkflowKind(item.kind),
+                      workflowId: String(item.workflowId || "").trim(),
+                      capability,
+                      fields: normalizeSavedWorkflowFields(item, capability),
+                  };
+              })
+        : [];
+    const runningHubWorkflowID = String(persistedRunningHub?.workflowId || "").trim();
+    const runningHubSelectedKind = persistedRunningHub?.selectedKind ? normalizeRunningHubWorkflowKind(persistedRunningHub.selectedKind) : normalizeRunningHubWorkflowKind(runningHubWorkflows.find((item) => item.workflowId === runningHubWorkflowID)?.kind);
+    const config = {
+        ...defaultConfig,
+        ...persistedConfig,
+        taskWorkflowProvider: "model" as const,
+        runningHub: {
+            ...defaultConfig.runningHub,
+            ...(persistedRunningHub || {}),
+            capability: runningHubCapability,
+            selectedKind: runningHubSelectedKind,
+            workflowId: runningHubWorkflowID,
+            workflows: runningHubWorkflows,
+        },
+    };
     const hasPersistedChannels = Array.isArray(persistedConfig.channels);
     if (!hasPersistedChannels) config.channels = [];
     const channels = normalizeChannels(config, !hasPersistedChannels);
@@ -318,7 +433,7 @@ export function normalizeConfigSnapshot(snapshot: ConfigStoreSnapshot | undefine
     return {
         config: {
             ...config,
-            channelMode: "local" as const,
+            channelMode: "remote" as const,
             apiFormat: normalizeApiFormat(config.apiFormat),
             channels,
             models,
@@ -330,13 +445,26 @@ export function normalizeConfigSnapshot(snapshot: ConfigStoreSnapshot | undefine
             audioVoice: config.audioVoice || defaultConfig.audioVoice,
             audioFormat: config.audioFormat || defaultConfig.audioFormat,
             audioSpeed: config.audioSpeed || defaultConfig.audioSpeed,
+            audioLanguage: config.audioLanguage || "",
+            audioDialect: config.audioDialect || "",
             audioInstructions: config.audioInstructions || "",
+            audioEmotionControlMethod: config.audioEmotionControlMethod || defaultConfig.audioEmotionControlMethod,
+            audioEmotionRandom: config.audioEmotionRandom || defaultConfig.audioEmotionRandom,
+            audioEmotionHappy: config.audioEmotionHappy || defaultConfig.audioEmotionHappy,
+            audioEmotionAngry: config.audioEmotionAngry || defaultConfig.audioEmotionAngry,
+            audioEmotionSad: config.audioEmotionSad || defaultConfig.audioEmotionSad,
+            audioEmotionAfraid: config.audioEmotionAfraid || defaultConfig.audioEmotionAfraid,
+            audioEmotionDisgusted: config.audioEmotionDisgusted || defaultConfig.audioEmotionDisgusted,
+            audioEmotionMelancholic: config.audioEmotionMelancholic || defaultConfig.audioEmotionMelancholic,
+            audioEmotionSurprised: config.audioEmotionSurprised || defaultConfig.audioEmotionSurprised,
+            audioEmotionCalm: config.audioEmotionCalm || defaultConfig.audioEmotionCalm,
             // 旧版全局 systemPrompt 会跨任务污染请求；提示词定制现已按 operation 由服务端编译。
             systemPrompt: "",
             videoSeconds: normalizeVideoDuration(config.videoSeconds),
             vquality: normalizeVideoResolution(config.vquality),
             videoGenerateAudio: config.videoGenerateAudio || "true",
             videoWatermark: config.videoWatermark || "false",
+            videoArkPrivateAssetUpload: config.videoArkPrivateAssetUpload || "true",
             transparentBackground: config.transparentBackground === "true" ? "true" : "false",
             canvasImageCount: config.canvasImageCount || defaultConfig.canvasImageCount,
             imageModels,
@@ -355,43 +483,13 @@ function normalizeSelectedModel(value: string, channels: ModelChannel[], options
 export function useEffectiveConfig() {
     const config = useConfigStore((state) => state.config);
     const customChannelsEnabled = useUserStore((state) => state.features.customChannelsEnabled);
-    const catalogState = useLocalDreaminaModelStore((state) => state.state);
-    const dreaminaModels = useLocalDreaminaModelStore((state) => state.models);
-    return useMemo(() => effectiveConfigWithDreamina(effectiveConfigForCustomChannels(config, customChannelsEnabled), catalogState, dreaminaModels), [catalogState, config, customChannelsEnabled, dreaminaModels]);
+    return useMemo(() => effectiveConfigForCustomChannels(config, customChannelsEnabled), [config, customChannelsEnabled]);
 }
 
 export function effectiveConfigForCustomChannels(config: AiConfig, customChannelsEnabled: boolean): AiConfig {
     if (customChannelsEnabled) return config;
-    const channels = config.channels.filter((channel) => channel.scope === "system" || channel.transport === "local-runtime");
+    const channels = config.channels.filter((channel) => channel.scope === "system");
     return normalizeConfigSnapshot({ config: { ...config, channels } }).config;
-}
-
-export function effectiveConfigWithDreamina(config: AiConfig, catalogState: "idle" | "loading" | "ready" | "error", dreaminaModels: DreaminaLocalModel[]): AiConfig {
-    if (catalogState !== "ready" || !dreaminaModels.length) return { ...config, channelMode: "local" };
-    const channel: ModelChannel = {
-        id: "local:dreamina-cli",
-        name: "官方即梦 CLI",
-        baseUrl: "",
-        apiKey: "",
-        apiFormat: "openai",
-        models: dreaminaModels.map((item) => item.id),
-        scope: "user",
-        enabled: true,
-        transport: "local-runtime",
-        localModels: dreaminaModels,
-    };
-    const channels = [...config.channels.filter((item) => item.id !== channel.id), channel];
-    const models = modelOptionsFromChannels(channels);
-    return {
-        ...config,
-        channelMode: "local",
-        channels,
-        models,
-        imageModels: filterModelsByCapability(models, "image", channels),
-        videoModels: filterModelsByCapability(models, "video", channels),
-        textModels: filterModelsByCapability(models, "text", channels),
-        audioModels: filterModelsByCapability(models, "audio", channels),
-    };
 }
 
 export function createModelChannel(channel?: Partial<ModelChannel>): ModelChannel {
@@ -401,8 +499,8 @@ export function createModelChannel(channel?: Partial<ModelChannel>): ModelChanne
     return {
         id: channel?.id?.trim() || nanoid(),
         name: channel?.name?.trim() || "新渠道",
+        sortOrder: channel?.sortOrder ?? 0,
         baseUrl: providedBaseUrl || (interfaceType ? defaultBaseUrlForChannelInterface(interfaceType) : defaultBaseUrlForApiFormat(apiFormat)),
-        allowLocalChannel: channel?.allowLocalChannel === true,
         apiKey: channel?.apiKey || "",
         secretKey: channel?.secretKey || "",
         headers: Array.isArray(channel?.headers) ? channel.headers.map((header) => ({ name: String(header.name || ""), value: String(header.value || "") })) : [],
@@ -415,78 +513,6 @@ export function createModelChannel(channel?: Partial<ModelChannel>): ModelChanne
         hasSecretKey: channel?.hasSecretKey,
         modelCosts: channel?.modelCosts?.map((item) => ({ ...item, protocol: normalizeModelProtocol(item.protocol) })),
     };
-}
-
-export function encodeChannelModel(channelId: string, model: string) {
-    return `${channelId}${CHANNEL_MODEL_SEPARATOR}${model.trim()}`;
-}
-
-export function isChannelModelValue(value: string) {
-    return value.includes(CHANNEL_MODEL_SEPARATOR);
-}
-
-export function decodeChannelModel(value: string) {
-    const local = /^local:dreamina-cli:([A-Za-z0-9][A-Za-z0-9._:-]{0,119})$/.exec(value.trim());
-    if (local) return { channelId: "local:dreamina-cli", model: local[1] };
-    const index = value.indexOf(CHANNEL_MODEL_SEPARATOR);
-    if (index < 0) return null;
-    return { channelId: value.slice(0, index), model: value.slice(index + CHANNEL_MODEL_SEPARATOR.length) };
-}
-
-export function modelOptionName(value: string) {
-    return decodeChannelModel(value)?.model || value;
-}
-
-export function modelDisplayName(config: AiConfig, value: string) {
-    const model = modelOptionName(value);
-    const channel = resolveModelChannel(config, value);
-    const displayName = channel.modelCosts?.find((item) => item.model === model)?.displayName?.trim();
-    if (displayName) return displayName;
-    return channel.scope === "system" ? "系统模型" : model;
-}
-
-export function modelIcon(config: AiConfig, value: string) {
-    const model = modelOptionName(value);
-    return resolveModelChannel(config, value).modelCosts?.find((item) => item.model === model)?.icon || "";
-}
-
-export function modelOptionLabel(config: AiConfig, value: string) {
-    const decoded = decodeChannelModel(value);
-    if (!decoded) return modelDisplayName(config, value);
-    const channel = config.channels.find((item) => item.id === decoded.channelId);
-    const displayName = modelDisplayName(config, value);
-    // 平台前台模型只展示公开名称；供应来源和内部目录适配器不属于创作端信息。
-    if (!channel || channel.scope === "system") return displayName;
-    return `${displayName}（${channel.name}）`;
-}
-
-export function modelOptionsFromChannels(channels: ModelChannel[]) {
-    return uniqueModelOptions(
-        channels.flatMap((channel) =>
-            channel.models
-                .map(normalizeRawModelName)
-                .filter(Boolean)
-                .filter((model) => channel.scope !== "system" || hasSystemModelPrice(channel, model))
-                .map((model) => (channel.transport === "local-runtime" ? `local:dreamina-cli:${model}` : encodeChannelModel(channel.id, model))),
-        ),
-    );
-}
-
-export function hasSystemModelPrice(channel: ModelChannel, model: string) {
-    if (channel.scope !== "system") return true;
-    return channel.modelCosts?.some((item) => item.model === model && Number.isFinite(item.unitPriceMicrocredits) && item.unitPriceMicrocredits >= 0) === true;
-}
-
-export function normalizeModelOptionValue(value: unknown, channels: ModelChannel[]) {
-    const model = typeof value === "string" ? value.trim() : "";
-    if (!normalizeRawModelName(model)) return "";
-    const decoded = decodeChannelModel(model);
-    if (decoded) {
-        const channel = channels.find((item) => item.id === decoded.channelId);
-        return channel && channel.models.includes(decoded.model) ? model : "";
-    }
-    const channel = channels.find((item) => item.models.includes(model)) || channels[0];
-    return channel && channel.models.includes(model) ? encodeChannelModel(channel.id, model) : "";
 }
 
 export function resolveModelChannel(config: AiConfig, value: string) {
@@ -502,7 +528,7 @@ export function logicalModelIDForConfig(config: AiConfig) {
 }
 
 export function channelConnectionSignature(channel: ModelChannel) {
-    return [channel.baseUrl.trim(), channel.apiKey.trim(), channel.secretKey?.trim() || "", channel.apiFormat, channel.interfaceType || "auto", channel.allowLocalChannel === true ? "local:1" : "local:0", JSON.stringify(channel.headers || [])].join("\n");
+    return [channel.baseUrl.trim(), channel.apiKey.trim(), channel.secretKey?.trim() || "", channel.apiFormat, channel.interfaceType || "auto", JSON.stringify(channel.headers || [])].join("\n");
 }
 
 export function resolveModelRequestConfig(config: AiConfig, value: string) {
@@ -510,18 +536,17 @@ export function resolveModelRequestConfig(config: AiConfig, value: string) {
     const model = modelOptionName(value || config.model);
     const modelProtocol = channel.modelCosts?.find((item) => item.model === model)?.protocol;
     const interfaceType = modelProtocol || channel.interfaceType;
-    return projectDesktopLocalChannelRuntime({
+    return {
         ...config,
         model,
         baseUrl: channel.baseUrl,
-        allowLocalChannel: channel.allowLocalChannel === true,
         apiKey: channel.apiKey,
         secretKey: channel.secretKey,
         headers: channel.headers,
-        apiFormat: interfaceType ? (interfaceType === "gemini-veo" || interfaceType === "gemini-image" ? ("gemini" as const) : ("openai" as const)) : channel.apiFormat,
+        apiFormat: interfaceType ? (interfaceType === "gemini-veo" || interfaceType === "gemini-image" ? ("gemini" as const) : interfaceType === "claude-api" ? ("claude" as const) : ("openai" as const)) : channel.apiFormat,
         interfaceType,
         channelId: channel.scope === "system" ? channel.id : "",
-    });
+    };
 }
 
 function normalizeChannels(config: AiConfig, ensureDefault = true) {
@@ -569,19 +594,13 @@ export function defaultBaseUrlForApiFormat(apiFormat: ApiCallFormat) {
 export function defaultBaseUrlForChannelInterface(interfaceType?: ChannelInterfaceType) {
     if (interfaceType === "gemini-veo" || interfaceType === "gemini-image") return GEMINI_BASE_URL;
     if (interfaceType === "novita-video") return "https://api.novita.ai/v3";
+    if (interfaceType === "volcengine-ark-agent-plan-image" || interfaceType === "volcengine-ark-agent-plan-video") return "https://ark.cn-beijing.volces.com/api/plan/v3";
     if (interfaceType === "volcengine-ark-image" || interfaceType === "volcengine-ark-video") return "https://ark.cn-beijing.volces.com/api/v3";
     if (interfaceType === "volcengine-jimeng-image" || interfaceType === "volcengine-jimeng-video") return "https://visual.volcengineapi.com";
     if (interfaceType === "minimax-video") return "https://api.minimaxi.com";
-    if (
-        interfaceType === "bailian-image" ||
-        interfaceType === "grok-image" ||
-        interfaceType === "newapi" ||
-        interfaceType === "newapi-channel-1" ||
-        interfaceType === "newapi-channel-2" ||
-        interfaceType === "aiapiway-video" ||
-        interfaceType === "xai-video"
-    )
-        return "";
+    if (interfaceType === "bailian-image") return "https://dashscope.aliyuncs.com";
+    if (interfaceType === "aiapiway-video") return "";
+    if (interfaceType === "grok-image" || interfaceType === "newapi" || interfaceType === "newapi-channel-1" || interfaceType === "newapi-channel-2" || interfaceType === "xai-video") return "";
     return OPENAI_BASE_URL;
 }
 
@@ -590,7 +609,7 @@ function capabilityForChannelInterface(interfaceType?: ChannelInterfaceType): Mo
 }
 
 function normalizeApiFormat(apiFormat: unknown): ApiCallFormat {
-    return apiFormat === "gemini" ? "gemini" : "openai";
+    return apiFormat === "gemini" || apiFormat === "claude" ? apiFormat : "openai";
 }
 
 function normalizeChannelInterfaceType(value: unknown): ChannelInterfaceType | undefined {
@@ -601,46 +620,57 @@ function uniqueRawModels(models: string[]) {
     return Array.from(new Set((models || []).map(normalizeRawModelName).filter(Boolean)));
 }
 
-function uniqueModelOptions(models: string[]) {
-    return Array.from(
-        new Set(
-            (models || [])
-                .filter((model): model is string => typeof model === "string")
-                .map((model) => model.trim())
-                .filter(Boolean),
-        ),
-    );
-}
-
-function normalizeRawModelName(value: unknown) {
-    if (typeof value !== "string") return "";
-    const model = modelOptionName(value).trim();
-    return model && model !== "undefined" && model !== "null" ? model : "";
-}
-
 export function buildApiUrl(baseUrl: string, path: string) {
     let normalizedBaseUrl = resolveBackendApiUrl(baseUrl).replace(/\/+$/, "");
     normalizedBaseUrl = normalizeArkPlanBaseUrl(normalizedBaseUrl);
-    const lowerBaseUrl = normalizedBaseUrl.toLowerCase();
-    const apiBaseUrl = isSystemProxyBaseUrl(normalizedBaseUrl) || lowerBaseUrl.endsWith("/v1") || lowerBaseUrl.endsWith("/api/v3") || lowerBaseUrl.endsWith("/api/plan/v3") ? normalizedBaseUrl : `${normalizedBaseUrl}/v1`;
-    return `${apiBaseUrl}${path}`;
+    const requestPath = path.startsWith("/") ? path : `/${path}`;
+    if (isSystemProxyBaseUrl(normalizedBaseUrl)) return `${normalizedBaseUrl}${requestPath}`;
+
+    const knownPrefixes = ["/api/plan/v3", "/api/v3", "/v1beta", "/v1", "/v2", "/v3"];
+    const requestPrefixFor = (value: string) =>
+        knownPrefixes.find((prefix) => {
+            const lower = value.toLowerCase();
+            return lower === prefix || lower.startsWith(`${prefix}/`) || lower.startsWith(`${prefix}?`) || lower.startsWith(`${prefix}#`);
+        }) || "";
+    const basePrefixFor = (value: string) =>
+        knownPrefixes.find((prefix) => {
+            const lower = value.toLowerCase();
+            return lower.endsWith(prefix) || lower.includes(`${prefix}/`) || lower.includes(`${prefix}?`) || lower.includes(`${prefix}#`);
+        }) || "";
+    const basePrefix = basePrefixFor(normalizedBaseUrl);
+    const requestPrefix = requestPrefixFor(requestPath);
+    if (requestPrefix) {
+        const root = basePrefix ? normalizedBaseUrl.slice(0, -basePrefix.length) : normalizedBaseUrl;
+        return `${root}${requestPath}`;
+    }
+    return `${normalizedBaseUrl}${basePrefix ? "" : "/v1"}${requestPath}`;
 }
 
 export function resolveBackendApiUrl(value: string) {
     const url = value.trim();
     if (!url.startsWith("/api/")) return url;
-    const backendBaseUrl = configuredApiBaseURL(import.meta.env.VITE_CANVAS_BACKEND_URL)
+    const backendBaseUrl = String(import.meta.env.VITE_CANVAS_BACKEND_URL || "/api")
         .trim()
         .replace(/\/+$/, "");
     return backendBaseUrl === "/api" ? url : `${backendBaseUrl}${url.slice("/api".length)}`;
 }
 
 export function isSystemProxyBaseUrl(baseUrl: string) {
-    const marker = "/api/ai/system/";
-    const index = baseUrl.toLowerCase().indexOf(marker);
-    if (index < 0) return false;
-    const channelId = baseUrl.slice(index + marker.length);
-    return Boolean(channelId && !channelId.includes("/") && !channelId.includes("?") && !channelId.includes("#"));
+    return Boolean(systemProxyChannelId(baseUrl));
+}
+
+export function systemProxyChannelId(baseUrl: string) {
+    const value = baseUrl.trim();
+    const lowerValue = value.toLowerCase();
+    for (const marker of ["/api/ai/system/", "/api/"]) {
+        const index = lowerValue.lastIndexOf(marker);
+        if (index < 0) continue;
+        const remainder = value.slice(index + marker.length);
+        if (/[/?#]/.test(remainder)) continue;
+        const channelId = remainder.trim();
+        if (channelId && !channelId.includes("\\") && !["v1", "v1beta", "v2", "v3", "plan", "ai"].includes(channelId.toLowerCase())) return channelId;
+    }
+    return "";
 }
 
 function normalizeArkPlanBaseUrl(baseUrl: string) {

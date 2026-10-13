@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"infinite-canvas/backend/internal/model"
+	"yingce/backend/internal/model"
 )
 
 func TestPostgresAssetIDMigration(t *testing.T) {
@@ -91,12 +91,6 @@ func TestPostgresAssetIDMigration(t *testing.T) {
 	}
 	if err := db.Create(&model.AssetVersion{ID: "version-1", AssetID: assetID, Version: 1}).Error; err != nil {
 		t.Fatalf("insert asset version: %v", err)
-	}
-	if err := db.Create(&model.User{ID: "admin-1", Username: "admin-one", Role: model.UserRoleAdmin, Status: model.UserStatusActive}).Error; err != nil {
-		t.Fatalf("insert first admin: %v", err)
-	}
-	if err := db.Create(&model.User{ID: "admin-2", Username: "admin-two", Role: model.UserRoleAdmin, Status: model.UserStatusActive}).Error; err == nil {
-		t.Fatal("insert second admin error = nil")
 	}
 }
 

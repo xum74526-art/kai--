@@ -2,26 +2,47 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
-	"infinite-canvas/backend/internal/database"
-	"infinite-canvas/backend/internal/handler"
-	"infinite-canvas/backend/internal/repository"
-	"infinite-canvas/backend/internal/service"
+	"yingce/backend/internal/database"
+	"yingce/backend/internal/handler"
+	"yingce/backend/internal/logging"
+	"yingce/backend/internal/repository"
+	"yingce/backend/internal/service"
+	"yingce/backend/internal/updaterclient"
 
 	"github.com/gin-gonic/gin"
 )
 
 func main() {
+	logConfig, err := logging.ConfigFromEnv()
+	if err != nil {
+		log.Fatal(err)
+	}
+	logging.Setup(logConfig)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	if err := run(ctx); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func run(ctx context.Context) error {
 	dataDir := env("CANVAS_BACKEND_DATA_DIR", "data")
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
-		log.Fatal(err)
+		return err
 	}
 	db, err := database.Open(database.Config{
 		Driver:  env("CANVAS_DATABASE_DRIVER", "sqlite"),
@@ -29,128 +50,126 @@ func main() {
 		DataDir: dataDir,
 	})
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	if err := database.ConfigurePool(db); err != nil {
-		log.Fatal(err)
+		return err
 	}
-	if err := database.MigrateSchema(db); err != nil {
-		log.Fatal(err)
+	sqlDB, err := db.DB()
+	if err != nil {
+		return err
+	}
+	defer sqlDB.Close()
+	autoMigrate, err := envBool("CANVAS_AUTO_MIGRATE", true)
+	if err != nil {
+		return err
+	}
+	if autoMigrate {
+		err = database.MigrateSchema(db)
+	} else {
+		err = database.RequireSchemaVersion(db)
+	}
+	if err != nil {
+		return err
 	}
 
 	repo := repository.New(db)
 	addr := env("CANVAS_BACKEND_ADDR", ":8080")
-	capabilities := service.RuntimeCapabilitiesForDeployment(addr, os.Getenv("CANVAS_DESKTOP_LOCAL_CHANNELS_ENABLED"))
-	svc := service.NewWithRuntimeCapabilities(repo, dataDir, capabilities)
+	svc := service.New(repo, dataDir)
+	if updaterToken := strings.TrimSpace(os.Getenv("CANVAS_UPDATER_TOKEN")); updaterToken != "" {
+		svc.ConfigureUpdateManager(updaterclient.New(env("CANVAS_UPDATER_SOCKET", "/run/open-ai-canvas-updater/updater.sock"), updaterToken))
+	}
+	defer svc.Close()
 	if err := svc.ValidateRuntime(); err != nil {
-		log.Fatal(err)
+		return err
 	}
 	if err := svc.EnsureSystemChannelModels(); err != nil {
-		log.Fatal(err)
+		return err
 	}
 	if err := svc.EnsureDefaultPromptTemplates(); err != nil {
-		log.Fatal(err)
+		return err
 	}
 	if err := svc.EnsureBuiltinProjectWorkflowTemplate(); err != nil {
-		log.Fatal(err)
+		return err
 	}
 	if err := svc.EnsureBuiltinSkills(); err != nil {
-		log.Fatal(err)
+		return err
+	}
+	if err := svc.EnsureSkillPackages(); err != nil {
+		return err
+	}
+	if err := svc.EnsureBuiltinTools(); err != nil {
+		return err
 	}
 	if summary, err := svc.MigrateLegacyStorage(); err != nil {
-		log.Printf("storage migration skipped after error: %v", err)
+		slog.Warn("storage migration skipped after error", "error", err)
 	} else if summary.Backup != "" {
-		log.Printf("storage migration completed: tasks=%d assets=%d projects=%d backup=%s", summary.Tasks, summary.Assets, summary.Projects, summary.Backup)
+		slog.Info("storage migration completed", "tasks", summary.Tasks, "assets", summary.Assets, "projects", summary.Projects, "backup", summary.Backup)
 	}
 	r := gin.New()
-	if err := configureTrustedProxies(r, os.Getenv("CANVAS_TRUSTED_PROXIES")); err != nil {
-		log.Fatal(err)
-	}
-	r.Use(handler.RequestIDMiddleware())
-	r.Use(gin.LoggerWithFormatter(func(param gin.LogFormatterParams) string {
-		return fmt.Sprintf("%s - [%s] \"%s %s\" %d %s %s\n", param.ClientIP, param.TimeStamp.Format(time.RFC3339), param.Method, redactCanvasSharePath(param.Path), param.StatusCode, param.Latency, param.ErrorMessage)
-	}), gin.Recovery())
+	// 访问日志：成功的查询类请求只在 debug 级别输出，避免轮询和列表查询把日志打爆。
+	r.Use(logging.AccessLog(redactCanvasSharePath), logging.Recovery())
+	r.Use(handler.RequestCorrelationMiddleware())
 	corsMiddleware, err := cors()
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	r.Use(corsMiddleware)
 	handler.ConfigureRuntime(svc)
 	api := r.Group("/api")
-	api.GET("/health", func(c *gin.Context) {
-		c.JSON(200, gin.H{"code": 0, "data": gin.H{"status": "ok"}, "msg": "ok"})
-	})
-	api.GET("/ready", func(c *gin.Context) {
-		ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
-		defer cancel()
-		report, err := svc.Readiness(ctx)
-		if err != nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"code": http.StatusServiceUnavailable, "data": report, "msg": "服务尚未就绪", "requestId": c.Writer.Header().Get("X-Request-ID")})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"code": 0, "data": report, "msg": "ok"})
-	})
+	status := newSystemStatus(db, svc)
+	registerSystemStatusRoutes(api, status)
 	handler.RegisterOAuthCallbackRoutes(r, svc)
-	handler.RegisterAuthRoutes(api, svc)
-	handler.RegisterFeatureAvailabilityRoutes(api, svc)
-	handler.RegisterResponseInterceptionRoutes(api, svc)
-	handler.RegisterAdminRoutes(api, svc)
-	handler.RegisterAdminAnalyticsRoutes(api, svc)
-	handler.RegisterAnnouncementRoutes(api, svc)
-	handler.RegisterFinanceRoutes(api, svc)
-	handler.RegisterLibTVRoutes(api, svc)
-	handler.RegisterTapNowRoutes(api, svc)
-	// 登录态模型目录代理：避免浏览器直连各上游时分别处理 CORS。
-	handler.RegisterChannelModelRoutes(api, svc)
-	handler.RegisterLogicalModelRoutes(api, svc)
-	handler.RegisterSystemProxyRoutes(api, svc)
-	handler.RegisterCustomRelayRoutes(api, svc)
-	handler.RegisterTaskRoutes(api, svc)
-	handler.RegisterSessionRoutes(api, svc)
-	handler.RegisterSkillRoutes(api, svc)
-	handler.RegisterUserDataRoutes(api, svc)
-	handler.RegisterPluginRoutes(api, svc)
-	projectAPI := api.Group("")
-	projectAPI.Use(handler.RequireFeature(svc, service.FeatureShortDrama))
-	handler.RegisterProjectRoutes(projectAPI, svc)
-	handler.RegisterCanvasShareRoutes(api, svc)
+	handler.RegisterCanvasAPI(api, svc)
+	r.NoRoute(handler.SystemProxyNoRouteHandler(svc))
 
-	shutdownTimeout, err := durationEnv("CANVAS_SHUTDOWN_TIMEOUT", 30*time.Second)
+	listener, err := net.Listen("tcp", addr)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
-	server := &http.Server{
-		Addr:              addr,
-		Handler:           r,
-		ReadHeaderTimeout: 10 * time.Second,
-		IdleTimeout:       2 * time.Minute,
+	workerTimeout, err := envDuration("CANVAS_SHUTDOWN_TIMEOUT", 10*time.Minute)
+	if err != nil {
+		_ = listener.Close()
+		return err
 	}
-	// 所有可能失败的启动配置必须先完成校验，避免配置错误时 worker 已经
-	// 领取并标记任务，随后进程又被 log.Fatal 直接终止。
+	httpServer := &http.Server{Handler: r, ReadHeaderTimeout: 10 * time.Second}
 	svc.StartWorker()
-	log.Printf("KAI影 backend listening on %s", addr)
-	if err := serveUntilShutdown(server, svc, shutdownTimeout); err != nil {
-		log.Fatal(err)
-	}
-}
+	// 启动后回填存量视频的播放副本转码（幂等，无待处理项即退出）。
+	go svc.BackfillPlaybackTranscodes()
+	status.markStarted()
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- httpServer.Serve(listener) }()
+	slog.Info("backend listening", "addr", addr)
 
-func configureTrustedProxies(r *gin.Engine, raw string) error {
-	proxies := make([]string, 0)
-	for _, value := range strings.Split(raw, ",") {
-		value = strings.TrimSpace(value)
-		if value == "" {
-			continue
+	var serveFailure error
+	select {
+	case <-ctx.Done():
+	case err := <-serveErr:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serveFailure = fmt.Errorf("HTTP 服务异常退出：%w", err)
 		}
-		// 不能用全网段恢复 Gin 的旧默认行为；只允许部署者填写实际反向代理
-		// 的 IP/CIDR，避免客户端伪造 X-Forwarded-For 绕过登录与注册限流。
-		if value == "*" || value == "0.0.0.0/0" || value == "::/0" {
-			return fmt.Errorf("CANVAS_TRUSTED_PROXIES must contain exact proxy IPs or narrow CIDRs, got %q", value)
-		}
-		proxies = append(proxies, value)
 	}
-	if err := r.SetTrustedProxies(proxies); err != nil {
-		return fmt.Errorf("CANVAS_TRUSTED_PROXIES is invalid: %w", err)
+
+	status.beginDrain()
+	var shutdownFailures []error
+	if serveFailure != nil {
+		shutdownFailures = append(shutdownFailures, serveFailure)
 	}
+	httpShutdownCtx, httpShutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer httpShutdownCancel()
+	if err := httpServer.Shutdown(httpShutdownCtx); err != nil {
+		_ = httpServer.Close()
+		shutdownFailures = append(shutdownFailures, fmt.Errorf("关闭 HTTP 服务：%w", err))
+	}
+	workerCtx, workerCancel := context.WithTimeout(context.Background(), workerTimeout)
+	defer workerCancel()
+	if err := svc.StopWorker(workerCtx); err != nil {
+		shutdownFailures = append(shutdownFailures, fmt.Errorf("等待后台任务退出：%w", err))
+	}
+	if err := errors.Join(shutdownFailures...); err != nil {
+		return err
+	}
+	slog.Info("backend stopped gracefully")
 	return nil
 }
 
@@ -174,24 +193,37 @@ func env(key string, fallback string) string {
 	return value
 }
 
-func durationEnv(key string, fallback time.Duration) (time.Duration, error) {
+func envBool(key string, fallback bool) (bool, error) {
 	value := strings.TrimSpace(os.Getenv(key))
 	if value == "" {
 		return fallback, nil
 	}
-	duration, err := time.ParseDuration(value)
-	if err != nil || duration <= 0 {
-		return 0, fmt.Errorf("%s must be a positive duration, got %q", key, value)
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return false, fmt.Errorf("%s 必须是 true 或 false", key)
 	}
-	return duration, nil
+	return parsed, nil
 }
 
-const corsAllowedHeaders = "Accept, Content-Type, Authorization, X-Requested-With, X-Canvas-Scene, X-Idempotency-Key, X-Canvas-Upstream-URL, X-Canvas-Upstream-Format, X-Canvas-Upstream-Headers, X-Canvas-Allow-Local-Channel, X-Canvas-Upstream-Base-URL"
+func envDuration(key string, fallback time.Duration) (time.Duration, error) {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil || parsed <= 0 {
+		return 0, fmt.Errorf("%s 必须是正数时长，例如 10m", key)
+	}
+	return parsed, nil
+}
+
+const corsAllowedHeaders = "Accept, Content-Type, Authorization, X-Requested-With, X-Canvas-Scene, X-Idempotency-Key, X-Canvas-Trace-ID, X-Canvas-Upstream-URL, X-Canvas-Upstream-Format, X-Canvas-Upstream-Base-URL"
 
 const corsAllowedMethods = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
 
 type corsPolicy struct {
-	origins map[string]struct{}
+	origins  map[string]struct{}
+	allowAny bool
 }
 
 func cors() (gin.HandlerFunc, error) {
@@ -201,10 +233,6 @@ func cors() (gin.HandlerFunc, error) {
 	}
 	return func(c *gin.Context) {
 		origin := strings.TrimSpace(c.GetHeader("Origin"))
-		if origin == "" && credentialedUnsafeRequest(c) {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"code": http.StatusForbidden, "data": nil, "msg": "登录态写请求必须携带有效来源"})
-			return
-		}
 		if origin != "" && !allowedOriginWithPolicy(c, origin, policy) {
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"code": http.StatusForbidden, "data": nil, "msg": "不允许的跨域来源"})
 			return
@@ -215,6 +243,7 @@ func cors() (gin.HandlerFunc, error) {
 			c.Header("Vary", "Origin, Access-Control-Request-Method, Access-Control-Request-Headers")
 		}
 		c.Header("Access-Control-Allow-Headers", corsAllowedHeaders)
+		c.Header("Access-Control-Expose-Headers", "X-Request-ID, X-Canvas-Trace-ID, X-Diagnostic-Bundle-ID, X-Diagnostic-Schema-Version")
 		c.Header("Access-Control-Allow-Methods", corsAllowedMethods)
 		c.Header("Access-Control-Max-Age", "86400")
 		if c.Request.Method == "OPTIONS" {
@@ -241,7 +270,8 @@ func parseCORSPolicy(raw string) (corsPolicy, error) {
 			continue
 		}
 		if value == "*" {
-			return corsPolicy{}, fmt.Errorf("CANVAS_CORS_ORIGINS cannot use * when credentialed requests are enabled")
+			policy.allowAny = true
+			continue
 		}
 		normalized, err := normalizeCORSOrigin(value)
 		if err != nil {
@@ -272,61 +302,26 @@ func allowedOriginWithPolicy(c *gin.Context, origin string, policy corsPolicy) b
 	if err != nil {
 		return false
 	}
-	if _, ok := policy.origins[normalizedOrigin]; ok {
-		return true
-	}
 	parsed, err := url.Parse(normalizedOrigin)
 	if err != nil {
 		return false
 	}
-	// 反向代理应把外部 Host 写入 Request.Host。协议优先读取真实 TLS；代理场景只信任
-	// 部署者配置的公网地址，不读取客户端可伪造的 X-Forwarded-Proto/Host。
-	requestOrigin, ok := requestOriginForCORS(c)
-	if ok && normalizedOrigin == requestOrigin {
+	requestHost := c.Request.Host
+	if forwardedHost := strings.TrimSpace(c.GetHeader("X-Forwarded-Host")); forwardedHost != "" {
+		requestHost = strings.TrimSpace(strings.Split(forwardedHost, ",")[0])
+	}
+	if strings.EqualFold(parsed.Host, strings.TrimSpace(requestHost)) {
+		return true
+	}
+	if policy.allowAny {
+		return true
+	}
+	if _, ok := policy.origins[normalizedOrigin]; ok {
 		return true
 	}
 	if len(policy.origins) > 0 {
 		return false
 	}
-	// 未显式配置 CORS 时只给纯本地开发兜底；公网 API 不能因为访问者的页面
-	// 来自 localhost 就信任该来源。
-	originHost := strings.ToLower(parsed.Hostname())
-	requestHost := ""
-	if c != nil && c.Request != nil {
-		requestURL := &url.URL{Scheme: "http", Host: strings.TrimSpace(c.Request.Host)}
-		requestHost = strings.ToLower(requestURL.Hostname())
-	}
-	return localCORSHost(originHost) && localCORSHost(requestHost)
-}
-
-func localCORSHost(host string) bool {
-	host = strings.TrimSpace(strings.ToLower(host))
-	return host == "localhost" || host == "127.0.0.1" || host == "::1"
-}
-
-func credentialedUnsafeRequest(c *gin.Context) bool {
-	if c == nil || c.Request == nil {
-		return false
-	}
-	switch c.Request.Method {
-	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
-	default:
-		return false
-	}
-	value, err := c.Cookie(service.SessionCookieName)
-	return err == nil && strings.TrimSpace(value) != ""
-}
-
-func requestOriginForCORS(c *gin.Context) (string, bool) {
-	if c == nil || c.Request == nil || strings.TrimSpace(c.Request.Host) == "" {
-		return "", false
-	}
-	scheme := "http"
-	if c.Request.TLS != nil {
-		scheme = "https"
-	} else if configured, err := url.Parse(strings.TrimSpace(os.Getenv("CANVAS_PUBLIC_BASE_URL"))); err == nil && configured != nil && (configured.Scheme == "http" || configured.Scheme == "https") && strings.EqualFold(configured.Host, strings.TrimSpace(c.Request.Host)) {
-		scheme = strings.ToLower(configured.Scheme)
-	}
-	normalized, err := normalizeCORSOrigin(scheme + "://" + strings.TrimSpace(c.Request.Host))
-	return normalized, err == nil
+	host := strings.ToLower(parsed.Hostname())
+	return (host == "localhost" || host == "127.0.0.1" || host == "::1") && (parsed.Scheme == "http" || parsed.Scheme == "https")
 }

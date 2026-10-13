@@ -1,13 +1,17 @@
 import { forwardRef, useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties, ClipboardEvent, KeyboardEvent, MouseEvent, PointerEvent, TextareaHTMLAttributes } from "react";
+import type { CSSProperties, ClipboardEvent, DragEvent, KeyboardEvent, TextareaHTMLAttributes } from "react";
 import { createPortal } from "react-dom";
-import { ArrowLeft, ChevronRight, FileText, Folder, Image as ImageIcon, Music2, Pencil, Search, Sparkles, UserRound, Video } from "lucide-react";
 
 import { canvasThemes } from "@/lib/canvas-theme";
-import { useThemeStore } from "@/stores/use-theme-store";
-import { buildAssetMentionReferences, canvasResourceMentionToken, type CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
-import { useAssetStore, type AssetCategory } from "@/stores/use-asset-store";
-import { CanvasNodeType } from "@/types/canvas";
+import { useActiveTheme } from "@/stores/canvas/use-canvas-theme-store";
+import { buildAssetMentionReferences, canvasResourceMentionToken, findCanvasResourceAutoLinkMatch, type CanvasResourceAutoLinkMatch, type CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
+import { useAssetStore } from "@/stores/use-asset-store";
+import { useResolvedCanvasResourceReferences } from "./use-resolved-canvas-resource-references";
+import { InlineReferencePreview, referencePreviewUrl, syncInlineMentionPreviews } from "./canvas-mention-chips";
+import { MentionMenu, clamp, mentionCaretRect } from "./canvas-mention-menu";
+import { getEditableSelection, renderEditableContent, serializeEditableValue, setEditableSelection } from "./canvas-mention-editable";
+
+export { TOOL_ICON_MAP } from "./canvas-mention-chips";
 
 type MentionState = {
     start: number;
@@ -15,12 +19,12 @@ type MentionState = {
     query: string;
 };
 
-type EditableSelection = {
+export type EditableSelection = {
     start: number;
     end: number;
 };
 
-type MentionTextPart =
+export type MentionTextPart =
     | {
           type: "text";
           text: string;
@@ -34,21 +38,34 @@ type MentionTextPart =
 type Props = Omit<TextareaHTMLAttributes<HTMLTextAreaElement>, "onChange" | "value"> & {
     value: string;
     references: CanvasResourceReference[];
+    onSelectReference?: (reference: CanvasResourceReference) => CanvasResourceReference | undefined;
     onChange: (value: string) => void;
     onSubmit?: () => void;
     containerClassName?: string;
     highlightLabels?: boolean;
     mentionMenuWidth?: number;
-    sendOnEnter?: boolean;
+    sendOnEnter?: boolean | "both";
     onContentSizeChange?: (height: number) => void;
     includeAssetLibrary?: boolean;
+    activeDropReferenceId?: string | null;
+    onReferenceFilesDrop?: (reference: CanvasResourceReference, files: File[]) => void;
+    autoLinkEnabled?: boolean;
 };
 
+// 回车提交语义由调用方决定：false 只在 ⌘/Ctrl+Enter 提交，"both" 两种都提交；Shift+Enter 始终换行。
+function shouldSubmitOnEnter(event: { key: string; ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }, sendOnEnter: boolean | "both") {
+    if (event.key !== "Enter" || event.shiftKey) return false;
+    const modifier = event.ctrlKey || event.metaKey;
+    if (sendOnEnter === false) return modifier;
+    if (sendOnEnter === "both") return true;
+    return !modifier;
+}
+
 export const CanvasResourceMentionTextarea = forwardRef<HTMLTextAreaElement, Props>(function CanvasResourceMentionTextarea(
-    { value, references, onChange, onSubmit, onKeyDown, className, containerClassName, style, highlightLabels = true, mentionMenuWidth = 320, sendOnEnter = true, onContentSizeChange, includeAssetLibrary = false, ...props },
+    { value, references, onSelectReference, onChange, onSubmit, onKeyDown, className, containerClassName, style, highlightLabels = true, mentionMenuWidth = 320, sendOnEnter = true, onContentSizeChange, includeAssetLibrary = false, activeDropReferenceId, onReferenceFilesDrop, autoLinkEnabled = false, ...props },
     forwardedRef,
 ) {
-    const rawTheme = useThemeStore((state) => state.theme);
+    const rawTheme = useActiveTheme();
     const assets = useAssetStore((state) => state.assets);
     const theme = canvasThemes[rawTheme as keyof typeof canvasThemes] ?? canvasThemes.dark;
     const containerRef = useRef<HTMLDivElement | null>(null);
@@ -56,23 +73,35 @@ export const CanvasResourceMentionTextarea = forwardRef<HTMLTextAreaElement, Pro
     const editorRef = useRef<HTMLDivElement | null>(null);
     const composingRef = useRef(false);
     const pendingSelectionRef = useRef<number | null>(null);
+    const pendingScrollTopRef = useRef<number | null>(null);
     const lastRenderedValueRef = useRef("");
     const [mention, setMention] = useState<MentionState | null>(null);
     const [activeIndex, setActiveIndex] = useState(-1);
-    const assetReferences = useMemo(() => includeAssetLibrary ? buildAssetMentionReferences(assets) : [], [assets, includeAssetLibrary]);
-    const activeCanvasReferences = useMemo(() => references.filter((item) => item.active), [references]);
-    const availableReferences = useMemo(() => [...activeCanvasReferences, ...assetReferences], [activeCanvasReferences, assetReferences]);
+    const [autoLinkCursor, setAutoLinkCursor] = useState<number | null>(null);
+    const autoLinkSuggestionRef = useRef<HTMLButtonElement | null>(null);
+    const [autoLinkPosition, setAutoLinkPosition] = useState<{ left: number; top: number } | null>(null);
+    const [nativeDropReferenceId, setNativeDropReferenceId] = useState<string | null>(null);
+    const [previewReference, setPreviewReference] = useState<CanvasResourceReference | null>(null);
+    const canvasReferences = useResolvedCanvasResourceReferences(references);
+    const rawAssetReferences = useMemo(() => includeAssetLibrary ? buildAssetMentionReferences(assets) : [], [assets, includeAssetLibrary]);
+    const assetReferences = useResolvedCanvasResourceReferences(rawAssetReferences);
+    const activeCanvasReferences = useMemo(() => canvasReferences.filter((item) => item.active), [canvasReferences]);
+    // 工具标签只能经九宫格等面板入口插入，@ 引用菜单不再重复展示。
+    const mentionCanvasReferences = useMemo(() => canvasReferences.filter((item) => item.kind !== "tool"), [canvasReferences]);
+    const activeMentionCanvasReferences = useMemo(() => mentionCanvasReferences.filter((item) => item.active), [mentionCanvasReferences]);
+    const availableReferences = useMemo(() => [...(onSelectReference ? mentionCanvasReferences : activeMentionCanvasReferences), ...assetReferences], [onSelectReference, mentionCanvasReferences, activeMentionCanvasReferences, assetReferences]);
     const candidates = useMemo(() => {
         if (!mention) return [];
         const query = mention.query.trim().toLowerCase();
-        if (!query) return activeCanvasReferences;
+        if (!query) return onSelectReference ? mentionCanvasReferences : activeMentionCanvasReferences;
         return availableReferences.filter((item) => `${item.label} ${item.title} ${item.kind} ${item.category || ""} ${item.text || ""}`.toLowerCase().includes(query));
-    }, [activeCanvasReferences, availableReferences, mention]);
+    }, [onSelectReference, mentionCanvasReferences, activeMentionCanvasReferences, availableReferences, mention]);
     const activeReferences = useMemo(() => {
         if (!highlightLabels) return [];
         return [...activeCanvasReferences, ...assetReferences.filter((item) => value.includes(canvasResourceMentionToken(item)))];
     }, [activeCanvasReferences, assetReferences, highlightLabels, value]);
     const useRichEditor = Boolean(activeReferences.length);
+    const autoLinkMatch = useMemo<CanvasResourceAutoLinkMatch | null>(() => autoLinkEnabled && autoLinkCursor !== null ? findCanvasResourceAutoLinkMatch(value, autoLinkCursor, activeCanvasReferences) : null, [activeCanvasReferences, autoLinkCursor, autoLinkEnabled, value]);
     const reportContentSize = useCallback((element: HTMLElement | null) => {
         if (!element || !onContentSizeChange) return;
         const previous = { height: element.style.height, minHeight: element.style.minHeight, maxHeight: element.style.maxHeight, overflow: element.style.overflow };
@@ -89,22 +118,67 @@ export const CanvasResourceMentionTextarea = forwardRef<HTMLTextAreaElement, Pro
     }, [onContentSizeChange]);
 
     useLayoutEffect(() => {
+        if (!useRichEditor) pendingScrollTopRef.current = null;
+    }, [useRichEditor, value]);
+
+    useLayoutEffect(() => {
         if (!useRichEditor) return;
         const editor = editorRef.current;
         if (!editor || composingRef.current) return;
         const isFocused = document.activeElement === editor;
         const currentValue = serializeEditableValue(editor);
         if (currentValue === value && lastRenderedValueRef.current === value) {
+            syncInlineMentionPreviews(editor, activeReferences);
             pendingSelectionRef.current = null;
             return;
         }
         const selection = pendingSelectionRef.current ?? (isFocused ? getEditableSelection(editor)?.start ?? null : null);
+        const scrollTop = pendingScrollTopRef.current;
         renderEditableContent(editor, value, activeReferences);
         lastRenderedValueRef.current = value;
         if (isFocused && selection !== null) setEditableSelection(editor, selection);
         pendingSelectionRef.current = null;
         reportContentSize(editor);
+        if (scrollTop !== null) editor.scrollTop = scrollTop;
+        pendingScrollTopRef.current = null;
     }, [activeReferences, reportContentSize, useRichEditor, value]);
+
+    useLayoutEffect(() => {
+        const anchor = useRichEditor ? editorRef.current : textareaRef.current;
+        const suggestion = autoLinkSuggestionRef.current;
+        if (!autoLinkMatch || !anchor || !suggestion) {
+            setAutoLinkPosition(null);
+            return;
+        }
+        const updatePosition = () => {
+            const caret = mentionCaretRect(anchor, autoLinkMatch.end);
+            const bounds = suggestion.getBoundingClientRect();
+            setAutoLinkPosition({
+                left: clamp(caret.right + 8, 12, window.innerWidth - bounds.width - 12),
+                top: clamp(caret.bottom + 4, 12, window.innerHeight - bounds.height - 12),
+            });
+        };
+        updatePosition();
+        const observer = new ResizeObserver(updatePosition);
+        observer.observe(anchor);
+        observer.observe(suggestion);
+        window.addEventListener("resize", updatePosition);
+        window.addEventListener("scroll", updatePosition, true);
+        return () => {
+            observer.disconnect();
+            window.removeEventListener("resize", updatePosition);
+            window.removeEventListener("scroll", updatePosition, true);
+        };
+    }, [autoLinkMatch, useRichEditor, value]);
+
+    useLayoutEffect(() => {
+        const editor = editorRef.current;
+        if (!editor) return;
+        const dropReferenceId = nativeDropReferenceId || activeDropReferenceId || "";
+        editor.querySelectorAll<HTMLElement>("[data-mention-reference-id]").forEach((chip) => {
+            chip.classList.toggle("is-replace-target", Boolean(dropReferenceId) && chip.dataset.mentionReferenceId === dropReferenceId);
+        });
+    }, [activeDropReferenceId, nativeDropReferenceId, useRichEditor, value]);
 
     useLayoutEffect(() => {
         const element = useRichEditor ? editorRef.current : textareaRef.current;
@@ -120,24 +194,31 @@ export const CanvasResourceMentionTextarea = forwardRef<HTMLTextAreaElement, Pro
         });
         observer.observe(container);
         return () => observer.disconnect();
-    }, [onContentSizeChange, reportContentSize, useRichEditor]);
+    }, [onContentSizeChange, reportContentSize, useRichEditor, value]);
 
     const focusEditor = (selectionStart?: number) => {
         requestAnimationFrame(() => {
-            if (useRichEditor) {
-                const editor = editorRef.current;
-                if (!editor) return;
-                editor.focus();
+            const editor = editorRef.current;
+            if (editor) {
+                const scrollTop = editor.scrollTop;
+                editor.focus({ preventScroll: true });
                 if (typeof selectionStart === "number") setEditableSelection(editor, selectionStart);
+                editor.scrollTop = scrollTop;
                 return;
             }
-            textareaRef.current?.focus();
-            if (typeof selectionStart === "number") textareaRef.current?.setSelectionRange(selectionStart, selectionStart);
+            const textarea = textareaRef.current;
+            if (!textarea) return;
+            const scrollTop = textarea.scrollTop;
+            textarea.focus({ preventScroll: true });
+            if (typeof selectionStart === "number") textarea.setSelectionRange(selectionStart, selectionStart);
+            textarea.scrollTop = scrollTop;
         });
     };
 
     const updateValue = (next: string, selectionStart?: number) => {
         if (typeof selectionStart === "number") pendingSelectionRef.current = selectionStart;
+        const editor = editorRef.current ?? textareaRef.current;
+        pendingScrollTopRef.current = editor?.scrollTop ?? null;
         onChange(next);
         if (typeof selectionStart === "number") focusEditor(selectionStart);
     };
@@ -148,6 +229,7 @@ export const CanvasResourceMentionTextarea = forwardRef<HTMLTextAreaElement, Pro
     };
 
     const syncMention = (nextValue: string, cursor: number) => {
+        setAutoLinkCursor(cursor);
         const prefix = nextValue.slice(0, cursor);
         const match = /@([^\s@,.;:!?，。；：！？、)\]}】）]*)$/.exec(prefix);
         if (!match || !availableReferences.length) {
@@ -164,7 +246,9 @@ export const CanvasResourceMentionTextarea = forwardRef<HTMLTextAreaElement, Pro
 
     const insertReference = (reference: CanvasResourceReference) => {
         if (!mention) return;
-        const insertText = `${canvasResourceMentionToken(reference)} `;
+        const selected = onSelectReference ? onSelectReference(reference) : reference;
+        if (!selected) return;
+        const insertText = `${canvasResourceMentionToken(selected)} `;
         const next = `${value.slice(0, mention.start)}${insertText}${value.slice(mention.end)}`;
         closeMention();
         updateValue(next, mention.start + insertText.length);
@@ -172,12 +256,41 @@ export const CanvasResourceMentionTextarea = forwardRef<HTMLTextAreaElement, Pro
 
     const replaceEditableSelection = (insertText: string) => {
         const currentValue = editorRef.current ? serializeEditableValue(editorRef.current) : value;
-        const selection = getEditableSelection(editorRef.current) || { start: currentValue.length, end: currentValue.length };
+        const textarea = textareaRef.current;
+        const selection = getEditableSelection(editorRef.current)
+            || (textarea ? { start: textarea.selectionStart, end: textarea.selectionEnd } : null)
+            || { start: currentValue.length, end: currentValue.length };
         const next = `${currentValue.slice(0, selection.start)}${insertText}${currentValue.slice(selection.end)}`;
         const cursor = selection.start + insertText.length;
         updateValue(next, cursor);
         syncMention(next, cursor);
     };
+
+    const insertAutoLink = (match: CanvasResourceAutoLinkMatch) => {
+        const currentValue = editorRef.current ? serializeEditableValue(editorRef.current) : value;
+        const insertText = `${canvasResourceMentionToken(match.reference)} `;
+        const next = `${currentValue.slice(0, match.start)}${insertText}${currentValue.slice(match.end)}`;
+        updateValue(next, match.start + insertText.length);
+        setAutoLinkCursor(match.start + insertText.length);
+    };
+
+    const autoLinkSuggestion = autoLinkMatch ? createPortal(
+        <button
+            ref={autoLinkSuggestionRef}
+            type="button"
+            data-canvas-no-zoom
+            className="fixed z-[var(--z-tooltip)] inline-flex max-w-[min(360px,calc(100vw-24px))] items-center gap-1.5 rounded-md border border-current/15 px-2 py-1 text-[var(--fs-micro)] shadow-sm"
+            style={{ ...autoLinkPosition, visibility: autoLinkPosition ? "visible" : "hidden", background: theme.node.panel, color: theme.node.text }}
+            onPointerDown={(event) => event.stopPropagation()}
+            onMouseDown={(event) => { event.preventDefault(); event.stopPropagation(); }}
+            onClick={(event) => { event.stopPropagation(); insertAutoLink(autoLinkMatch); }}
+            aria-label={`引用${autoLinkMatch.reference.label}`}
+        >
+            <span className="truncate">引用「{autoLinkMatch.query}」→ @{autoLinkMatch.reference.label}</span>
+            <kbd className="shrink-0 rounded border border-current/20 px-1 font-mono text-[var(--fs-micro)]">Tab</kbd>
+        </button>,
+        document.body,
+    ) : null;
 
     const syncEditableValue = () => {
         if (composingRef.current) return;
@@ -195,9 +308,21 @@ export const CanvasResourceMentionTextarea = forwardRef<HTMLTextAreaElement, Pro
     const syncEditableMentionFromSelection = () => {
         const editor = editorRef.current;
         if (!editor) return;
-        const cursor = getEditableSelection(editor)?.start;
-        if (typeof cursor === "number") syncMention(serializeEditableValue(editor), cursor);
+        const selection = getEditableSelection(editor);
+        if (!selection || selection.start !== selection.end) {
+            setAutoLinkCursor(null);
+            return;
+        }
+        syncMention(serializeEditableValue(editor), selection.start);
     };
+
+    const referenceForDropTarget = (target: EventTarget | null) => {
+        const element = target instanceof Element ? target.closest<HTMLElement>("[data-mention-reference-id]") : null;
+        const referenceId = element?.dataset.mentionReferenceId;
+        return referenceId ? activeReferences.find((reference) => reference.id === referenceId) : undefined;
+    };
+
+    const imageFilesFromTransfer = (event: DragEvent<HTMLDivElement>) => Array.from(event.dataTransfer.files).filter((file) => file.type.startsWith("image/"));
 
     const mergedStyle = {
         ...(style || {}),
@@ -207,12 +332,12 @@ export const CanvasResourceMentionTextarea = forwardRef<HTMLTextAreaElement, Pro
     const menu = mention && availableReferences.length && menuAnchor ? (
         <MentionMenu
             anchor={menuAnchor}
-            connectedReferences={activeCanvasReferences}
+            connectedReferences={activeMentionCanvasReferences}
             assetReferences={assetReferences}
             filteredReferences={candidates}
             query={mention.query}
+            cursorOffset={mention.end}
             activeReferenceId={activeIndex >= 0 ? candidates[Math.min(activeIndex, candidates.length - 1)]?.id : undefined}
-            theme={theme}
             preferredWidth={mentionMenuWidth}
             onQueryChange={(query) => setMention((current) => current ? { ...current, query } : current)}
             onClose={closeMention}
@@ -239,7 +364,15 @@ export const CanvasResourceMentionTextarea = forwardRef<HTMLTextAreaElement, Pro
                     spellCheck={props.spellCheck}
                     tabIndex={props.tabIndex}
                     className={`${className || ""} relative z-10 cursor-text select-text whitespace-pre-wrap break-words`}
-                    style={{ ...mergedStyle, color: style?.color || theme.node.text }}
+                    style={{
+                        ...mergedStyle,
+                        color: style?.color || theme.node.text,
+                        height: "100%",
+                        minHeight: 0,
+                        maxHeight: "100%",
+                        overflowY: "auto",
+                        overflowX: "hidden",
+                    }}
                     onInput={syncEditableValue}
                     onCompositionStart={(event) => {
                         composingRef.current = true;
@@ -254,8 +387,42 @@ export const CanvasResourceMentionTextarea = forwardRef<HTMLTextAreaElement, Pro
                         event.preventDefault();
                         replaceEditableSelection(event.clipboardData.getData("text/plain"));
                     }}
+                    onDragOver={(event: DragEvent<HTMLDivElement>) => {
+                        const reference = referenceForDropTarget(event.target);
+                        const hasImageFile = Array.from(event.dataTransfer.items).some((item) => item.kind === "file" && (!item.type || item.type.startsWith("image/")))
+                            || Array.from(event.dataTransfer.files).some((file) => file.type.startsWith("image/"));
+                        if (!onReferenceFilesDrop || reference?.kind !== "image" || !hasImageFile) {
+                            setNativeDropReferenceId(null);
+                            props.onDragOver?.(event as unknown as React.DragEvent<HTMLTextAreaElement>);
+                            return;
+                        }
+                        event.preventDefault();
+                        event.dataTransfer.dropEffect = "copy";
+                        setNativeDropReferenceId(reference.id);
+                        props.onDragOver?.(event as unknown as React.DragEvent<HTMLTextAreaElement>);
+                    }}
+                    onDragLeave={(event: DragEvent<HTMLDivElement>) => {
+                        const bounds = event.currentTarget.getBoundingClientRect();
+                        if (event.clientX <= bounds.left || event.clientX >= bounds.right || event.clientY <= bounds.top || event.clientY >= bounds.bottom) setNativeDropReferenceId(null);
+                        props.onDragLeave?.(event as unknown as React.DragEvent<HTMLTextAreaElement>);
+                    }}
+                    onDrop={(event: DragEvent<HTMLDivElement>) => {
+                        const reference = referenceForDropTarget(event.target);
+                        const files = imageFilesFromTransfer(event);
+                        setNativeDropReferenceId(null);
+                        if (onReferenceFilesDrop && reference?.kind === "image" && files.length) {
+                            event.preventDefault();
+                            onReferenceFilesDrop(reference, files);
+                        }
+                        props.onDrop?.(event as unknown as React.DragEvent<HTMLTextAreaElement>);
+                    }}
                     onKeyDown={(event: KeyboardEvent<HTMLDivElement>) => {
-                        if (event.key === "Enter" && (event.nativeEvent.isComposing || composingRef.current)) return;
+if (event.key === "Enter" && (event.nativeEvent.isComposing || composingRef.current || event.keyCode === 229)) return;
+                        if (autoLinkMatch && event.key === "Tab" && !event.shiftKey && !event.nativeEvent.isComposing && !composingRef.current) {
+                            event.preventDefault();
+                            insertAutoLink(autoLinkMatch);
+                            return;
+                        }
                         if (mention && candidates.length) {
                             if (event.key === "ArrowDown") {
                                 event.preventDefault();
@@ -280,7 +447,7 @@ export const CanvasResourceMentionTextarea = forwardRef<HTMLTextAreaElement, Pro
                         }
                         if (event.key === "Enter") {
                             event.preventDefault();
-                            const shouldSubmit = sendOnEnter ? !event.ctrlKey && !event.metaKey && !event.shiftKey : (event.ctrlKey || event.metaKey) && !event.shiftKey;
+                            const shouldSubmit = shouldSubmitOnEnter(event, sendOnEnter);
                             if (onSubmit && shouldSubmit) {
                                 onSubmit();
                                 return;
@@ -296,6 +463,14 @@ export const CanvasResourceMentionTextarea = forwardRef<HTMLTextAreaElement, Pro
                     }}
                     onMouseDown={(event) => props.onMouseDown?.(event as unknown as React.MouseEvent<HTMLTextAreaElement>)}
                     onPointerDown={(event) => props.onPointerDown?.(event as unknown as React.PointerEvent<HTMLTextAreaElement>)}
+                    onDoubleClick={(event) => {
+                        const chip = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-mention-reference-id]") : null;
+                        const reference = chip ? availableReferences.find((item) => item.id === chip.dataset.mentionReferenceId) : undefined;
+                        if (!reference || !referencePreviewUrl(reference)) return;
+                        event.preventDefault();
+                        event.stopPropagation();
+                        setPreviewReference(reference);
+                    }}
                     onPointerUp={(event) => {
                         syncEditableMentionFromSelection();
                         props.onPointerUp?.(event as unknown as React.PointerEvent<HTMLTextAreaElement>);
@@ -308,6 +483,7 @@ export const CanvasResourceMentionTextarea = forwardRef<HTMLTextAreaElement, Pro
                     onScroll={(event) => props.onScroll?.(event as unknown as React.UIEvent<HTMLTextAreaElement>)}
                     onFocus={(event) => props.onFocus?.(event as unknown as React.FocusEvent<HTMLTextAreaElement>)}
                     onBlur={(event) => {
+                        setAutoLinkCursor(null);
                         if (event.relatedTarget instanceof Element && event.relatedTarget.closest("[data-canvas-resource-mention-menu]")) return;
                         window.setTimeout(() => {
                             if (document.activeElement?.closest("[data-canvas-resource-mention-menu]")) return;
@@ -317,7 +493,9 @@ export const CanvasResourceMentionTextarea = forwardRef<HTMLTextAreaElement, Pro
                     }}
                 >
                 </div>
+                {autoLinkSuggestion}
                 {menu}
+                {previewReference ? <InlineReferencePreview reference={previewReference} onClose={() => setPreviewReference(null)} /> : null}
             </div>
         );
     }
@@ -333,7 +511,7 @@ export const CanvasResourceMentionTextarea = forwardRef<HTMLTextAreaElement, Pro
                 }}
                 value={value}
                 className={`${className || ""} relative z-10`}
-                style={mergedStyle}
+                style={{ ...mergedStyle, height: "100%", minHeight: 0, maxHeight: "100%", overflowY: "auto", overflowX: "hidden" }}
                 onChange={(event) => {
                     const next = event.target.value;
                     onChange(next);
@@ -346,10 +524,21 @@ export const CanvasResourceMentionTextarea = forwardRef<HTMLTextAreaElement, Pro
                 }}
                 onCompositionEnd={(event) => {
                     composingRef.current = false;
+                    syncMention(event.currentTarget.value, event.currentTarget.selectionStart);
                     props.onCompositionEnd?.(event);
                 }}
+                onSelect={(event) => {
+                    const textarea = event.currentTarget;
+                    setAutoLinkCursor(textarea.selectionStart === textarea.selectionEnd ? textarea.selectionStart : null);
+                    props.onSelect?.(event);
+                }}
                 onKeyDown={(event) => {
-                    if (event.key === "Enter" && (event.nativeEvent.isComposing || composingRef.current)) return;
+if (event.key === "Enter" && (event.nativeEvent.isComposing || composingRef.current || event.keyCode === 229)) return;
+                        if (autoLinkMatch && event.key === "Tab" && !event.shiftKey && !event.nativeEvent.isComposing && !composingRef.current) {
+                            event.preventDefault();
+                            insertAutoLink(autoLinkMatch);
+                            return;
+                        }
                     if (mention && candidates.length) {
                         if (event.key === "ArrowDown") {
                             event.preventDefault();
@@ -372,7 +561,7 @@ export const CanvasResourceMentionTextarea = forwardRef<HTMLTextAreaElement, Pro
                             return;
                         }
                     }
-                    const shouldSubmit = event.key === "Enter" && (sendOnEnter ? !event.ctrlKey && !event.metaKey && !event.shiftKey : (event.ctrlKey || event.metaKey) && !event.shiftKey);
+                    const shouldSubmit = shouldSubmitOnEnter(event, sendOnEnter);
                     if (shouldSubmit && onSubmit) {
                         event.preventDefault();
                         onSubmit();
@@ -392,6 +581,7 @@ export const CanvasResourceMentionTextarea = forwardRef<HTMLTextAreaElement, Pro
                     props.onWheel?.(event);
                 }}
                 onBlur={(event) => {
+                    setAutoLinkCursor(null);
                     if (event.relatedTarget instanceof Element && event.relatedTarget.closest("[data-canvas-resource-mention-menu]")) return;
                     window.setTimeout(() => {
                         if (document.activeElement?.closest("[data-canvas-resource-mention-menu]")) return;
@@ -400,376 +590,8 @@ export const CanvasResourceMentionTextarea = forwardRef<HTMLTextAreaElement, Pro
                     props.onBlur?.(event);
                 }}
             />
+            {autoLinkSuggestion}
             {menu}
         </div>
     );
 });
-
-function createInlineMentionChip(reference: CanvasResourceReference, token: string) {
-    const chip = document.createElement("span");
-    chip.contentEditable = "false";
-    chip.dataset.mentionToken = token;
-    chip.className = "mx-[0.06em] inline-flex h-[1.68em] translate-y-[0.08em] select-none items-center gap-[0.18em] rounded-[0.38em] bg-black/[0.06] px-[0.22em] text-[0.92em] font-medium leading-none text-current align-baseline dark:bg-white/[0.1]";
-
-    const at = document.createElement("span");
-    at.className = "shrink-0 opacity-90";
-    at.textContent = "@";
-    chip.appendChild(at);
-
-    chip.appendChild(createInlinePreview(reference));
-
-    const label = document.createElement("span");
-    label.className = "shrink-0";
-    label.textContent = reference.label;
-    chip.appendChild(label);
-
-    return chip;
-}
-
-function createInlinePreview(reference: CanvasResourceReference) {
-    if ((reference.kind === "image" || reference.kind === "video" || reference.kind === "character") && reference.previewUrl) {
-        const media = document.createElement(reference.kind === "video" ? "video" : "img");
-        media.className = `size-[1.18em] shrink-0 rounded-[0.24em] ${reference.kind === "video" ? "bg-black object-cover" : reference.kind === "character" ? "bg-black/5 object-contain" : "object-cover"}`;
-        media.setAttribute("src", reference.previewUrl);
-        media.setAttribute("alt", "");
-        if (media instanceof HTMLVideoElement) {
-            media.muted = true;
-            media.preload = "metadata";
-        }
-        return media;
-    }
-    const fallback = document.createElement("span");
-    fallback.className = "grid size-[1.18em] shrink-0 place-items-center rounded-[0.24em] bg-current/10";
-    fallback.textContent = reference.sourceType === CanvasNodeType.Drawing ? "✎" : reference.kind === "audio" ? "♪" : reference.kind === "video" ? "▶" : reference.kind === "image" ? "□" : reference.kind === "skill" ? "✦" : "";
-    return fallback;
-}
-
-const ASSET_CATEGORY_LABELS: Record<AssetCategory, string> = {
-    character: "角色",
-    environment: "场景",
-    wardrobe: "服饰",
-    prop: "道具",
-    weapon: "武器",
-    style: "画风",
-    other: "其他",
-};
-
-function MentionMenu({ anchor, connectedReferences, assetReferences, filteredReferences, query, activeReferenceId, theme, preferredWidth, onQueryChange, onClose, onSelect }: {
-    anchor: HTMLElement;
-    connectedReferences: CanvasResourceReference[];
-    assetReferences: CanvasResourceReference[];
-    filteredReferences: CanvasResourceReference[];
-    query: string;
-    activeReferenceId?: string;
-    theme: (typeof canvasThemes)[keyof typeof canvasThemes];
-    preferredWidth: number;
-    onQueryChange: (query: string) => void;
-    onClose: () => void;
-    onSelect: (reference: CanvasResourceReference) => void;
-}) {
-    const menuRef = useRef<HTMLDivElement | null>(null);
-    const selectedRef = useRef(false);
-    const [category, setCategory] = useState<AssetCategory | null>(null);
-    const rect = anchor.getBoundingClientRect();
-    const boundary = anchor.closest(".ant-modal-container")?.getBoundingClientRect() || { left: 8, top: 8, right: window.innerWidth - 8, bottom: window.innerHeight - 8 };
-    const menuWidth = Math.min(preferredWidth, Math.max(0, boundary.right - boundary.left - 16));
-    const maxMenuHeight = Math.min(320, Math.max(0, boundary.bottom - boundary.top - 16));
-    const gap = 6;
-    const left = clamp(rect.left, boundary.left + 8, boundary.right - menuWidth - 8);
-    const showAbove = rect.bottom + gap + maxMenuHeight > boundary.bottom && rect.top - gap - maxMenuHeight >= boundary.top;
-    const top = clamp(showAbove ? rect.top - gap - maxMenuHeight : rect.bottom + gap, boundary.top + 8, boundary.bottom - maxMenuHeight - 8);
-
-    const stopCanvasInteraction = (event: PointerEvent | MouseEvent) => {
-        event.stopPropagation();
-    };
-    const selectReference = (reference: CanvasResourceReference) => {
-        if (selectedRef.current) return;
-        selectedRef.current = true;
-        onSelect(reference);
-    };
-    const categoryItems = Object.entries(ASSET_CATEGORY_LABELS)
-        .map(([value, label]) => ({ value: value as AssetCategory, label, count: assetReferences.filter((item) => item.category === value).length }))
-        .filter((item) => item.count > 0);
-    const connectedNodes = connectedReferences.filter((item) => item.kind !== "skill");
-    const skillReferences = connectedReferences.filter((item) => item.kind === "skill");
-    const visibleReferences = query
-        ? filteredReferences
-        : category
-          ? assetReferences.filter((item) => item.category === category)
-          : [];
-
-    useLayoutEffect(() => {
-        const closeOnOutsidePointer = (event: globalThis.PointerEvent) => {
-            const target = event.target;
-            if (!(target instanceof Node) || menuRef.current?.contains(target) || anchor.contains(target)) return;
-            onClose();
-        };
-        window.addEventListener("pointerdown", closeOnOutsidePointer, true);
-        return () => window.removeEventListener("pointerdown", closeOnOutsidePointer, true);
-    }, [anchor, onClose]);
-
-    return createPortal(
-        <div
-            ref={menuRef}
-            data-canvas-resource-mention-menu="true"
-            className="canvas-resource-mention-menu fixed z-[var(--z-tooltip)]"
-            style={{ left, top, width: menuWidth, maxHeight: maxMenuHeight, background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text }}
-            onPointerDown={stopCanvasInteraction}
-            onMouseDown={stopCanvasInteraction}
-            onClick={(event) => event.stopPropagation()}
-        >
-            <div className="canvas-resource-mention-search">
-                <Search aria-hidden />
-                <input
-                    value={query}
-                    placeholder="搜索素材..."
-                    aria-label="搜索引用素材"
-                    onChange={(event) => onQueryChange(event.target.value)}
-                    onPointerDown={(event) => event.stopPropagation()}
-                    onKeyDown={(event) => {
-                        if (event.key === "Escape") {
-                            event.preventDefault();
-                            onClose();
-                            anchor.focus();
-                            return;
-                        }
-                        if (event.key === "Enter" && filteredReferences.length) {
-                            event.preventDefault();
-                            selectReference(filteredReferences[0]);
-                        }
-                    }}
-                />
-            </div>
-            <div className="canvas-resource-mention-scroll thin-scrollbar">
-                {query ? (
-                    <MentionReferenceList references={visibleReferences} activeReferenceId={activeReferenceId} theme={theme} onSelect={selectReference} />
-                ) : category ? (
-                    <>
-                        <button type="button" className="canvas-resource-mention-back" onClick={() => setCategory(null)}>
-                            <ArrowLeft aria-hidden />
-                            <span>{ASSET_CATEGORY_LABELS[category]}</span>
-                            <small>{visibleReferences.length}</small>
-                        </button>
-                        <MentionReferenceList references={visibleReferences} activeReferenceId={activeReferenceId} theme={theme} onSelect={selectReference} />
-                    </>
-                ) : (
-                    <>
-                        {connectedNodes.length ? (
-                            <section className="canvas-resource-mention-section">
-                                <h4>已连接节点</h4>
-                                <MentionReferenceList references={connectedNodes} activeReferenceId={activeReferenceId} theme={theme} onSelect={selectReference} />
-                            </section>
-                        ) : null}
-                        {skillReferences.length ? (
-                            <section className="canvas-resource-mention-section">
-                                <h4>技能库</h4>
-                                <MentionReferenceList references={skillReferences} activeReferenceId={activeReferenceId} theme={theme} onSelect={selectReference} />
-                            </section>
-                        ) : null}
-                        {categoryItems.length ? (
-                            <section className="canvas-resource-mention-section">
-                                <h4>素材库</h4>
-                                {categoryItems.map((item) => (
-                                    <button key={item.value} type="button" className="canvas-resource-mention-folder" onClick={() => setCategory(item.value)}>
-                                        <Folder aria-hidden />
-                                        <span>{item.label}</span>
-                                        <small>{item.count}</small>
-                                        <ChevronRight aria-hidden />
-                                    </button>
-                                ))}
-                            </section>
-                        ) : null}
-                    </>
-                )}
-            </div>
-        </div>,
-        document.body,
-    );
-}
-
-function MentionReferenceList({ references, activeReferenceId, theme, onSelect }: { references: CanvasResourceReference[]; activeReferenceId?: string; theme: (typeof canvasThemes)[keyof typeof canvasThemes]; onSelect: (reference: CanvasResourceReference) => void }) {
-    if (!references.length) return <div className="canvas-resource-mention-empty">没有匹配的素材</div>;
-    return references.map((reference) => (
-        <button
-            key={reference.id}
-            type="button"
-            className="canvas-resource-mention-item"
-            style={{ background: reference.id === activeReferenceId ? theme.toolbar.activeBg : "transparent", color: reference.id === activeReferenceId ? theme.toolbar.activeText : theme.node.text }}
-            onPointerDown={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                onSelect(reference);
-            }}
-            onClick={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                onSelect(reference);
-            }}
-        >
-            <ReferencePreview reference={reference} />
-            <span className="min-w-0 flex-1">
-                <span className="block truncate font-medium" title={reference.label}>{reference.label}</span>
-                {reference.kind !== "skill" && reference.text && reference.text !== reference.title ? <span className="block truncate opacity-55">{reference.text}</span> : null}
-            </span>
-        </button>
-    ));
-}
-
-function ReferencePreview({ reference }: { reference: CanvasResourceReference }) {
-    if (reference.kind === "image" && reference.previewUrl) return <img src={reference.previewUrl} alt="" className="size-7 rounded-sm object-cover" />;
-    if (reference.kind === "video" && reference.previewUrl) return <video src={reference.previewUrl} className="size-7 rounded-sm bg-black object-cover" muted preload="metadata" />;
-    if (reference.kind === "character" && reference.previewUrl) return <img src={reference.previewUrl} alt="" className="size-7 rounded-sm bg-black/5 object-contain" />;
-    if (reference.kind === "skill") {
-        return (
-            <span className="grid size-7 shrink-0 place-items-center rounded-sm bg-cyan-500/10 text-cyan-600 dark:text-cyan-200">
-                <Sparkles className="size-3.5" />
-            </span>
-        );
-    }
-    const Icon = reference.sourceType === CanvasNodeType.Drawing ? Pencil : reference.kind === "character" ? UserRound : reference.kind === "audio" ? Music2 : reference.kind === "video" ? Video : reference.kind === "image" ? ImageIcon : FileText;
-    return (
-        <span className="grid size-7 shrink-0 place-items-center rounded-sm bg-black/10">
-            <Icon className="size-3.5" />
-        </span>
-    );
-}
-
-function splitMentionText(value: string, references: CanvasResourceReference[]) {
-    if (!references.length || !value) return value ? [{ type: "text", text: value } as MentionTextPart] : [];
-    const referenceByToken = new Map<string, { reference: CanvasResourceReference; serializedToken: string }>();
-    references.forEach((reference) => {
-        const serializedToken = canvasResourceMentionToken(reference);
-        referenceByToken.set(serializedToken, { reference, serializedToken });
-        referenceByToken.set(`@${reference.label}`, { reference, serializedToken });
-    });
-    const tokens = [...referenceByToken.keys()].sort((a, b) => b.length - a.length);
-    const parts: MentionTextPart[] = [];
-    let index = 0;
-    while (index < value.length) {
-        const token = tokens.find((item) => value.startsWith(item, index) && hasMentionBoundary(value, index + item.length));
-        if (!token) {
-            const nextTokenIndex = findNextMentionIndex(value, tokens, index + 1);
-            const end = nextTokenIndex < 0 ? value.length : nextTokenIndex;
-            parts.push({ type: "text", text: value.slice(index, end) });
-            index = end;
-            continue;
-        }
-        const matched = referenceByToken.get(token)!;
-        parts.push({ type: "mention", token: matched.serializedToken, reference: matched.reference });
-        index += token.length;
-    }
-    return parts;
-}
-
-function renderEditableContent(editor: HTMLElement, value: string, references: CanvasResourceReference[]) {
-    const parts = splitMentionText(value, references);
-    const nodes = parts.map((part) => (part.type === "mention" ? createInlineMentionChip(part.reference, part.token) : document.createTextNode(part.text)));
-    editor.replaceChildren(...nodes);
-}
-
-function findNextMentionIndex(value: string, tokens: string[], fromIndex: number) {
-    let next = -1;
-    tokens.forEach((token) => {
-        const index = value.indexOf(token, fromIndex);
-        if (index >= 0 && hasMentionBoundary(value, index + token.length) && (next < 0 || index < next)) next = index;
-    });
-    return next;
-}
-
-function hasMentionBoundary(value: string, index: number) {
-    const char = value[index];
-    return !char || /\s|[,.!?;:，。！？；：、)\]}】）]/.test(char);
-}
-
-function serializeEditableValue(root: HTMLElement) {
-    return serializeNodeList(root.childNodes).replace(/\u00a0/g, " ");
-}
-
-function serializeNodeList(nodes: NodeListOf<ChildNode> | ChildNode[]) {
-    let text = "";
-    nodes.forEach((node) => {
-        text += serializeNode(node);
-    });
-    return text;
-}
-
-function serializeNode(node: ChildNode): string {
-    if (node.nodeType === Node.TEXT_NODE) return node.textContent || "";
-    if (!(node instanceof HTMLElement)) return "";
-    const token = node.dataset.mentionToken;
-    if (token) return token;
-    if (node.tagName === "BR") return "\n";
-    return serializeNodeList(node.childNodes);
-}
-
-function getEditableSelection(root: HTMLElement | null): EditableSelection | null {
-    if (!root) return null;
-    const selection = window.getSelection();
-    if (!selection || !selection.rangeCount) return null;
-    const range = selection.getRangeAt(0);
-    if (!root.contains(range.startContainer) || !root.contains(range.endContainer)) return null;
-    const start = offsetForPoint(root, range.startContainer, range.startOffset);
-    const end = offsetForPoint(root, range.endContainer, range.endOffset);
-    return start <= end ? { start, end } : { start: end, end: start };
-}
-
-function offsetForPoint(root: Node, target: Node, targetOffset: number): number {
-    if (root === target) {
-        if (root.nodeType === Node.TEXT_NODE) return targetOffset;
-        return Array.from(root.childNodes)
-            .slice(0, targetOffset)
-            .reduce((offset, node) => offset + plainTextLength(node), 0);
-    }
-    let offset = 0;
-    for (const child of Array.from(root.childNodes)) {
-        if (child === target || child.contains(target)) return offset + offsetForPoint(child, target, targetOffset);
-        offset += plainTextLength(child);
-    }
-    return offset;
-}
-
-function setEditableSelection(root: HTMLElement, offset: number) {
-    const range = document.createRange();
-    const point = pointForOffset(root, Math.max(0, offset));
-    range.setStart(point.node, point.offset);
-    range.collapse(true);
-    const selection = window.getSelection();
-    selection?.removeAllRanges();
-    selection?.addRange(range);
-}
-
-function pointForOffset(root: Node, offset: number): { node: Node; offset: number } {
-    if (root.nodeType === Node.TEXT_NODE) return { node: root, offset: Math.min(offset, root.textContent?.length || 0) };
-    let remaining = offset;
-    const children = Array.from(root.childNodes);
-    for (let index = 0; index < children.length; index += 1) {
-        const child = children[index];
-        const length = plainTextLength(child);
-        if (remaining > length) {
-            remaining -= length;
-            continue;
-        }
-        if (isMentionElement(child)) return { node: root, offset: remaining <= length / 2 ? index : index + 1 };
-        return pointForOffset(child, remaining);
-    }
-    return { node: root, offset: children.length };
-}
-
-function plainTextLength(node: Node): number {
-    if (node.nodeType === Node.TEXT_NODE) return node.textContent?.length || 0;
-    if (node instanceof HTMLElement) {
-        const token = node.dataset.mentionToken;
-        if (token) return token.length;
-        if (node.tagName === "BR") return 1;
-    }
-    return Array.from(node.childNodes).reduce((total, child) => total + plainTextLength(child), 0);
-}
-
-function isMentionElement(node: Node): node is HTMLElement {
-    return node instanceof HTMLElement && Boolean(node.dataset.mentionToken);
-}
-
-function clamp(value: number, min: number, max: number) {
-    if (max < min) return min;
-    return Math.min(Math.max(value, min), max);
-}

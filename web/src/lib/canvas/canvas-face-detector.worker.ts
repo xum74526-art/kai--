@@ -1,7 +1,6 @@
 /// <reference lib="webworker" />
 
 import { FaceDetector } from "@mediapipe/tasks-vision";
-import { publicAssetPath } from "@/lib/app-base-path";
 
 import type { CanvasFaceBox } from "./canvas-emotion";
 
@@ -43,11 +42,11 @@ function getDetector() {
     if (!detectorPromise) {
         detectorPromise = FaceDetector.createFromOptions(
             {
-                wasmLoaderPath: publicAssetPath("mediapipe/wasm/vision_wasm_module_internal.js"),
-                wasmBinaryPath: publicAssetPath("mediapipe/wasm/vision_wasm_module_internal.wasm"),
+                wasmLoaderPath: "/mediapipe/wasm/vision_wasm_module_internal.js",
+                wasmBinaryPath: "/mediapipe/wasm/vision_wasm_module_internal.wasm",
             },
             {
-                baseOptions: { modelAssetPath: publicAssetPath("canvas/models/blaze-face-full-range-sparse.tflite") },
+                baseOptions: { modelAssetPath: "/canvas/models/blaze-face-full-range-sparse.tflite" },
                 runningMode: "IMAGE",
                 minDetectionConfidence: 0.25,
                 minSuppressionThreshold: 0.3,

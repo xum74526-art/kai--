@@ -2,7 +2,6 @@ import { useMemo, useState } from "react";
 import { ChevronLeft, FolderOpen, ImagePlus, Moon, MousePointer2, Sun } from "lucide-react";
 
 import { CanvasFolderPreview } from "@/components/canvas/canvas-folder-preview";
-import { publicAssetPath } from "@/lib/app-base-path";
 import { CANVAS_FOLDER_THEME_OPTIONS } from "@/lib/canvas/canvas-folder-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
 import type { CanvasFolderStyle, CanvasFolderTheme, CanvasNodeData } from "@/types/canvas";
@@ -36,7 +35,7 @@ const PRESET_GROUPS = [
 
 const THEME_SEQUENCE: CanvasFolderTheme[] = ["aurora", "pearl", "ember", "obsidian", "aurora", "pearl"];
 
-const SAMPLE_MEDIA = ["fantasy-3d.jpg", "suspense-noir.jpg", "cyberpunk-neon.jpg", "ink-narrative.jpg", "space-opera.jpg"].map((name) => publicAssetPath(`short-drama-styles/${name}`));
+const SAMPLE_MEDIA = ["/short-drama-styles/fantasy-3d.jpg", "/short-drama-styles/suspense-noir.jpg", "/short-drama-styles/cyberpunk-neon.jpg", "/short-drama-styles/ink-narrative.jpg", "/short-drama-styles/space-opera.jpg"];
 
 function makeMediaNode(id: string, title: string, content: string, index: number): CanvasNodeData {
     return {

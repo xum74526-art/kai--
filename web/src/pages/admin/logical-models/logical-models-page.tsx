@@ -1,18 +1,18 @@
-import { Alert, App, Button, Drawer, Form, Input, InputNumber, Modal, Segmented, Select, Switch, Table, Tag } from "antd";
+import { Alert, App, Button, Form, Input, InputNumber, Modal, Segmented, Switch, Table, Tag } from "antd";
 import type { FormInstance } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { Archive, FlaskConical, GitBranch, Layers3, Pencil, Plus, Search } from "lucide-react";
-import { useDeferredValue, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
-import { PaginationBar } from "@/components/layout/workspace-page";
+import { PaginationBar } from "@/pages/admin/components/admin-ui";
 import { ModelIconPicker, ModelLogo } from "@/components/model-logo";
-import { CapabilityCardPicker } from "@/components/model-protocol-picker";
-import { formatCredits } from "@/constant/credits";
-import { modelProtocolSupportsTokenBilling } from "@/lib/model-protocols";
+import { ChoiceBrowser } from "@/components/choice-browser";
+import { ModelEditorModal } from "@/components/model-editor-modal";
 import { AdminPageFrame } from "@/pages/admin/components/admin-shell";
 import { AdminDataTable, AdminFilterChip, AdminRowActions, AdminStatusBadge, AdminTableEmpty } from "@/pages/admin/components/admin-ui";
 import { listAdminChannels } from "@/services/api/auth";
 import { listAdminChannelModels, type ChannelModel } from "@/services/api/wallet";
+import { Select } from "@/components/ui/base/select";
 import {
     createAdminLogicalModel,
     deleteAdminLogicalModel,
@@ -61,7 +61,14 @@ type LogicalModelFormValues = {
     routes: RouteRuleRow[];
 };
 export default function LogicalModelsPage() {
-    const { message } = App.useApp();
+    const { message, modal } = App.useApp();
+    const [editorTab, setEditorTab] = useState("identity");
+    const dirtyRef = useRef(false);
+    const closeEditor = () => {
+        if (saving) return;
+        if (dirtyRef.current) modal.confirm({ title: "放弃未保存的修改？", okText: "放弃修改", cancelText: "继续编辑", onOk: () => setEditingModel(undefined) });
+        else setEditingModel(undefined);
+    };
     const [keyword, setKeyword] = useState("");
     const [page, setPage] = useState(1);
     const [pageSize, setPageSize] = useState(20);
@@ -79,6 +86,7 @@ export default function LogicalModelsPage() {
     const [simulationResult, setSimulationResult] = useState<RouteSimulationResult>();
     const [simulating, setSimulating] = useState(false);
     const [modelForm] = Form.useForm<LogicalModelFormValues>();
+    const modelEnabled = Form.useWatch("enabled", modelForm) !== false;
     const modelCapability = Form.useWatch("capability", modelForm) || "image";
     const modelRoutes = Form.useWatch("routes", modelForm) || [];
     const modelCapabilitySpec = Form.useWatch("capabilitySpec", modelForm);
@@ -86,8 +94,8 @@ export default function LogicalModelsPage() {
     const reload = async () => {
         setLoading(true);
         try {
-            const [modelResult, firstChannelPage] = await Promise.all([listAdminLogicalModels(), listAdminChannels({ page: 1, limit: 100 })]);
-            const remainingChannelPages = await Promise.all(Array.from({ length: Math.max(0, Math.ceil(firstChannelPage.total / firstChannelPage.limit) - 1) }, (_, index) => listAdminChannels({ page: index + 2, limit: firstChannelPage.limit })));
+            const [modelResult, firstChannelPage] = await Promise.all([listAdminLogicalModels(), listAdminChannels({ page: 1, pageSize: 100 })]);
+            const remainingChannelPages = await Promise.all(Array.from({ length: Math.max(0, Math.ceil(firstChannelPage.total / firstChannelPage.pageSize) - 1) }, (_, index) => listAdminChannels({ page: index + 2, pageSize: firstChannelPage.pageSize })));
             const channels = [firstChannelPage, ...remainingChannelPages].flatMap((result) => result.channels);
             const channelModelResults = await Promise.all(channels.map((channel) => listAdminChannelModels(channel.id)));
             setModels(modelResult.models);
@@ -120,6 +128,8 @@ export default function LogicalModelsPage() {
 
     const openModel = (item?: AdminLogicalModel) => {
         const capability = item?.capability || "image";
+        dirtyRef.current = false;
+        setEditorTab("identity");
         modelForm.resetFields();
         modelForm.setFieldsValue(
             item
@@ -132,7 +142,7 @@ export default function LogicalModelsPage() {
                       capability,
                       enabled: true,
                       sortOrder: models.length,
-                      pricePolicy: "unified",
+                      pricePolicy: "channel",
                       billingMode: "fixed_request",
                       unitPriceMicrocredits: 0,
                       inputPriceMicrocredits: 0,
@@ -147,13 +157,26 @@ export default function LogicalModelsPage() {
     };
 
     const saveModel = async () => {
-        const values = await modelForm.validateFields();
+        let values: LogicalModelFormValues;
+        try {
+            values = await modelForm.validateFields();
+        } catch (error) {
+            const fields = (error as { errorFields?: { name: (string | number)[] }[] }).errorFields;
+            if (fields?.length) {
+                const name = fields[0].name;
+                setEditorTab(name[0] === "routes" ? "routes" : ["capabilitySpec", "defaultOptions"].includes(String(name[0])) ? "capabilities" : "identity");
+                requestAnimationFrame(() => modelForm.scrollToField(name, { block: "center", focus: true }));
+            }
+            return;
+        }
         if (values.enabled && !values.routes.length) {
+            setEditorTab("routes");
             message.error("请至少添加一条供应线路");
             return;
         }
         const sourceError = capabilitySourceError(values.capability, modelSourceSpecs, values.capabilitySpec);
         if (values.enabled && sourceError) {
+            setEditorTab("capabilities");
             message.error(sourceError);
             return;
         }
@@ -240,8 +263,8 @@ export default function LogicalModelsPage() {
             width: 110,
             render: (_, item) => (
                 <div className="text-xs">
-                    <div>{item.routes.filter((route) => route.enabled && route.available).length} 条可用</div>
-                    <div className="text-foreground/45">共 {item.routes.length} 条</div>
+                    <div>{(item.routes || []).filter((route) => route.enabled && route.available).length} 条可用</div>
+                    <div className="text-foreground/45">共 {(item.routes || []).length} 条</div>
                 </div>
             ),
         },
@@ -279,7 +302,7 @@ export default function LogicalModelsPage() {
 
     return (
         <AdminPageFrame
-            title="模型目录"
+            title="前台模型目录"
             actions={
                 <Button type="primary" icon={<Plus className="size-4" />} onClick={() => openModel()}>
                     新增模型
@@ -332,95 +355,140 @@ export default function LogicalModelsPage() {
                 }
             />
 
-            <Drawer
-                title={editingModel ? "编辑前台模型" : "新增前台模型"}
+            <ModelEditorModal
+                admin
                 open={editingModel !== undefined}
-                size="min(1120px, 100vw)"
-                destroyOnHidden
-                mask={{ closable: !saving }}
-                onClose={() => !saving && setEditingModel(undefined)}
-                rootClassName="admin-drawer"
+                busy={saving}
+                title={editingModel ? "编辑前台模型" : "新增前台模型"}
+                subtitle={editingModel?.name || "配置前台展示、供应线路与能力范围"}
+                onClose={closeEditor}
+                activeKey={editorTab}
+                onTabChange={setEditorTab}
                 footer={
-                    <div className="flex justify-end gap-2">
-                        <Button disabled={saving} onClick={() => setEditingModel(undefined)}>
-                            取消
-                        </Button>
-                        <Button type="primary" loading={saving} onClick={() => void saveModel()}>
-                            保存
-                        </Button>
+                    <div className="model-editor-footer">
+                        <label className="flex items-center gap-2">
+                            <Switch
+                                aria-label="启用前台模型"
+                                checked={modelEnabled}
+                                disabled={saving}
+                                onChange={(enabled) => {
+                                    dirtyRef.current = true;
+                                    modelForm.setFieldValue("enabled", enabled);
+                                }}
+                            />
+                            模型启用 <span className="text-xs text-foreground/50">保存后生效</span>
+                        </label>
+                        <div className="model-editor-footer-actions">
+                            <Button disabled={saving} onClick={closeEditor}>
+                                取消
+                            </Button>
+                            <Button type="primary" loading={saving} onClick={() => void saveModel()}>
+                                {editingModel ? "保存修改" : "添加模型"}
+                            </Button>
+                        </div>
                     </div>
                 }
+                items={[
+                    {
+                        key: "identity",
+                        label: "基本信息",
+                        children: (
+                            <>
+                                {editingModel?.configurationError || editingModel?.availabilityError ? (
+                                    <Alert
+                                        className="mb-4"
+                                        type="warning"
+                                        showIcon
+                                        message={editingModel.configurationError ? "当前供应线路无法覆盖全部创作端能力" : "当前供应线路暂不可结算"}
+                                        description={editingModel.configurationError || editingModel.availabilityError}
+                                    />
+                                ) : null}
+                                <EditorSection icon={<Layers3 className="size-4" />} title="前台展示">
+                                    <div className="grid gap-3 sm:grid-cols-2">
+                                        <Form.Item name="name" label="显示名称" rules={[{ required: true, message: "请填写显示名称" }]}>
+                                            <Input placeholder="例如：Seedance 视频" />
+                                        </Form.Item>
+                                        <Form.Item name="code" label="模型代码" rules={[{ required: true, message: "请填写模型代码" }]}>
+                                            <Input placeholder="例如：seedance-video" />
+                                        </Form.Item>
+                                        <Form.Item name="icon" label="模型 Logo">
+                                            <ModelIconPicker />
+                                        </Form.Item>
+                                    </div>
+                                    <Form.Item name="description" label="简短说明">
+                                        <Input.TextArea autoSize={{ minRows: 2, maxRows: 4 }} placeholder="说明适合的创作场景，不描述供应渠道。" />
+                                    </Form.Item>
+                                    <Form.Item name="capability" label="类型">
+                                        <Segmented
+                                            block
+                                            options={[
+                                                { label: "文本", value: "text" },
+                                                { label: "图片", value: "image" },
+                                                { label: "视频", value: "video" },
+                                                { label: "音频", value: "audio" },
+                                            ]}
+                                        />
+                                    </Form.Item>
+                                    <Form.Item name="sortOrder" label="前台排序">
+                                        <InputNumber className="w-full" precision={0} />
+                                    </Form.Item>
+                                </EditorSection>
+                            </>
+                        ),
+                    },
+                    {
+                        key: "routes",
+                        label: "供应线路",
+                        children: (
+                            <>
+                                <EditorSection icon={<GitBranch className="size-4" />} title="供应线路">
+                                    <RouteFields channelModels={modelChannelModels} channelNames={channelNames} channelEnabled={channelEnabled} form={modelForm} capability={modelCapability} />
+                                </EditorSection>
+                                <EditorSection title="系统规格价格">
+                                    <PricingFields />
+                                </EditorSection>
+                            </>
+                        ),
+                    },
+                    {
+                        key: "capabilities",
+                        label: "能力与参数",
+                        children: (
+                            <>
+                                <EditorSection title="创作端可选能力">
+                                    <Form.Item name="capabilitySpec" noStyle>
+                                        <CapabilityScopeEditor capability={modelCapability} sourceSpecs={modelSourceSpecs} mode="front" />
+                                    </Form.Item>
+                                </EditorSection>
+                                <EditorSection title="默认参数">
+                                    <Form.Item name="defaultOptions" noStyle>
+                                        <DefaultOptionsEditor spec={modelCapabilitySpec} />
+                                    </Form.Item>
+                                </EditorSection>
+                            </>
+                        ),
+                    },
+                ]}
             >
-                <Form
-                    form={modelForm}
-                    layout="vertical"
-                    requiredMark={false}
-                    className="space-y-3"
-                    onValuesChange={(changedValues: Partial<LogicalModelFormValues>) => {
-                        const capability = changedValues.capability;
-                        if (!capability) return;
-                        modelForm.setFieldsValue({
-                            routes: [],
-                            capabilitySpec: emptyCapabilitySpec(capability),
-                            defaultOptions: {},
-                            billingMode: capability === "text" ? "token" : capability === "video" ? "per_second" : "fixed_request",
-                        });
-                    }}
-                >
-                    {editingModel?.configurationError || editingModel?.availabilityError ? (
-                        <Alert
-                            className="mb-4"
-                            type="warning"
-                            showIcon
-                            message={editingModel.configurationError ? "当前供应线路无法覆盖全部创作端能力" : "当前供应线路暂不可结算"}
-                            description={editingModel.configurationError || editingModel.availabilityError}
-                        />
-                    ) : null}
-                    <DrawerSection icon={<Layers3 className="size-4" />} title="前台展示">
-                        <div className="grid gap-3 sm:grid-cols-3">
-                            <Form.Item name="name" label="显示名称" rules={[{ required: true, message: "请填写显示名称" }]}>
-                                <Input placeholder="例如：Seedance 视频" />
-                            </Form.Item>
-                            <Form.Item name="code" label="模型代码" rules={[{ required: true, message: "请填写模型代码" }]}>
-                                <Input placeholder="例如：seedance-video" />
-                            </Form.Item>
-                            <Form.Item name="icon" label="模型 Logo">
-                                <ModelIconPicker />
-                            </Form.Item>
-                        </div>
-                        <Form.Item name="description" label="简短说明">
-                            <Input.TextArea autoSize={{ minRows: 2, maxRows: 4 }} placeholder="说明适合的创作场景，不描述供应渠道。" />
+                {(tabs) => (
+                    <Form
+                        form={modelForm}
+                        layout="vertical"
+                        disabled={saving}
+                        inert={saving}
+                        onValuesChange={(changedValues: Partial<LogicalModelFormValues>) => {
+                            dirtyRef.current = true;
+                            if (!changedValues.capability) return;
+                            modelForm.setFieldsValue({ routes: [], capabilitySpec: emptyCapabilitySpec(changedValues.capability), defaultOptions: {}, pricePolicy: "channel", billingMode: "fixed_request" });
+                        }}
+                    >
+                        <Form.Item name="enabled" hidden>
+                            <Switch />
                         </Form.Item>
-                        <Form.Item name="capability" label="类型">
-                            <CapabilityCardPicker density="compact" />
-                        </Form.Item>
-                        <div className="grid gap-3 sm:grid-cols-2">
-                            <Form.Item name="sortOrder" label="前台排序">
-                                <InputNumber className="w-full" precision={0} />
-                            </Form.Item>
-                            <Form.Item name="enabled" label="启用" valuePropName="checked">
-                                <Switch />
-                            </Form.Item>
-                        </div>
-                    </DrawerSection>
-                    <DrawerSection icon={<GitBranch className="size-4" />} title="供应线路">
-                        <RouteFields channelModels={modelChannelModels} channelNames={channelNames} channelEnabled={channelEnabled} form={modelForm} capability={modelCapability} />
-                    </DrawerSection>
-                    <DrawerSection title="创作端可选能力">
-                        <Form.Item name="capabilitySpec" noStyle>
-                            <CapabilityScopeEditor capability={modelCapability} sourceSpecs={modelSourceSpecs} mode="front" />
-                        </Form.Item>
-                    </DrawerSection>
-                    <DrawerSection title="默认参数">
-                        <Form.Item name="defaultOptions" noStyle>
-                            <DefaultOptionsEditor spec={modelCapabilitySpec} />
-                        </Form.Item>
-                    </DrawerSection>
-                    <DrawerSection title="用户价格">
-                        <PricingFields channelModels={channelModels} />
-                    </DrawerSection>
-                </Form>
-            </Drawer>
+                        {tabs}
+                    </Form>
+                )}
+            </ModelEditorModal>
 
             <Modal
                 title={simulatingModel ? `供应线路匹配模拟 - ${simulatingModel.name}` : "供应线路匹配模拟"}
@@ -479,9 +547,9 @@ export default function LogicalModelsPage() {
     );
 }
 
-function DrawerSection({ icon, title, description, children }: { icon?: ReactNode; title: string; description?: string; children: ReactNode }) {
+function EditorSection({ icon, title, description, children }: { icon?: ReactNode; title: string; description?: string; children: ReactNode }) {
     return (
-        <section className="rounded-lg bg-muted/20 p-4">
+        <section className="model-editor-section">
             <div className="mb-4 flex items-center gap-2.5">
                 {icon ? <span className="grid size-7 shrink-0 place-items-center rounded-md bg-muted/50 text-foreground/55">{icon}</span> : null}
                 <div>
@@ -513,6 +581,14 @@ function RouteFields({
             value: item.id,
             label: `${channelNames[item.channelId]} / ${item.displayName || item.modelKey}${unavailableReason ? `（${unavailableReason}）` : ""}`,
             disabled: Boolean(unavailableReason),
+            subtitle: item.providerModelKey || item.modelKey,
+            details: [
+                { label: "渠道", value: channelNames[item.channelId] },
+                { label: "模型", value: item.displayName || item.modelKey },
+                { label: "上游 ID", value: item.providerModelKey || item.modelKey },
+                { label: "协议", value: item.protocol || "未配置" },
+                { label: "状态", value: unavailableReason || "可用" },
+            ],
         };
     });
     const availableChannelModelCount = selectOptions.filter((item) => !item.disabled).length;
@@ -531,7 +607,7 @@ function RouteFields({
                             </Button>
                         </div>
                         {fields.length ? (
-                            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                            <div className="grid gap-3">
                                 {fields.map((field) => {
                                     const routes = (form.getFieldValue("routes") || []) as RouteRuleRow[];
                                     const selectedByOthers = new Set(routes.map((route, index) => (index === field.name ? "" : route?.channelModelId)).filter(Boolean));
@@ -549,11 +625,10 @@ function RouteFields({
                                                 </Button>
                                             </div>
                                             <Form.Item name={[field.name, "channelModelId"]} rules={[{ required: true, message: "请选择渠道模型" }]} className="mb-3">
-                                                <Select
-                                                    aria-label={`供应线路 ${fields.indexOf(field) + 1}`}
-                                                    showSearch
-                                                    optionFilterProp="label"
-                                                    placeholder="选择渠道模型"
+                                                <ChoiceBrowser
+                                                    label={`供应线路 ${fields.indexOf(field) + 1}`}
+                                                    placeholder="搜索渠道或模型"
+                                                    key={capability}
                                                     options={options}
                                                     onChange={(channelModelId) => {
                                                         const nextRoutes = [...(form.getFieldValue("routes") || [])];
@@ -600,114 +675,25 @@ function logicalModelStatusTag(item: AdminLogicalModel) {
     return <AdminStatusBadge label="可用" tone="success" />;
 }
 
-function PricingFields({ channelModels }: { channelModels: ChannelModel[] }) {
+function PricingFields() {
     const form = Form.useFormInstance<LogicalModelFormValues>();
-    const pricePolicy = Form.useWatch("pricePolicy") as LogicalModelMutation["pricePolicy"] | undefined;
-    const billingMode = Form.useWatch("billingMode") as LogicalModelMutation["billingMode"] | undefined;
-    const capability = Form.useWatch("capability") as CapabilityKind | undefined;
-    const routes = (Form.useWatch("routes") || []) as RouteRuleRow[];
-    const enabledRoutes = routes.filter((route) => route.enabled);
-    const tokenBillingSupported =
-        capability === "text" ||
-        (capability === "video" &&
-            enabledRoutes.length > 0 &&
-            enabledRoutes.every((route) => {
-                const channelModel = channelModels.find((item) => item.id === route.channelModelId);
-                return modelProtocolSupportsTokenBilling(channelModel?.capability, channelModel?.protocol);
-            }));
-    const modes: Array<{ label: string; value: LogicalModelMutation["billingMode"]; disabled?: boolean }> = [{ label: "按次", value: "fixed_request" }];
-    if (capability === "video") {
-        modes.push({ label: "按秒", value: "per_second" });
-        modes.push({ label: "Token", value: "token", disabled: !tokenBillingSupported });
-    }
-    if (capability === "text") modes.push({ label: "Token", value: "token" });
-
     useEffect(() => {
-        if (pricePolicy === "unified" && billingMode === "token" && !tokenBillingSupported) {
-            form.setFieldValue("billingMode", capability === "video" ? "per_second" : "fixed_request");
-        }
-    }, [billingMode, capability, form, pricePolicy, tokenBillingSupported]);
-
-    const changePolicy = (value: string | number) => {
-        const nextPolicy = value as LogicalModelMutation["pricePolicy"];
-        if (nextPolicy !== "unified") return;
-        const supportedModes = modes.filter((item) => !item.disabled).map((item) => item.value);
-        if (!billingMode || !supportedModes.includes(billingMode)) {
-            form.setFieldValue("billingMode", capability === "text" ? "token" : capability === "video" ? "per_second" : "fixed_request");
-        }
-    };
-    return (
-        <>
-            <Form.Item name="pricePolicy" label="定价策略">
-                <Segmented
-                    block
-                    options={[
-                        { label: "跟随供应价格", value: "channel" },
-                        { label: "统一定价", value: "unified" },
-                    ]}
-                    onChange={changePolicy}
-                />
-            </Form.Item>
-            {pricePolicy === "unified" ? (
-                <>
-                    <div className="grid gap-3 sm:grid-cols-2">
-                        <Form.Item name="billingMode" label="计费方式">
-                            <Segmented block options={modes} />
-                        </Form.Item>
-                        {billingMode !== "token" ? (
-                            <Form.Item name="unitPriceMicrocredits" label={billingMode === "per_second" ? "每秒消耗积分" : "每次消耗积分"}>
-                                <CreditsInput />
-                            </Form.Item>
-                        ) : null}
-                    </div>
-                    {capability === "video" && !tokenBillingSupported ? <div className="mb-3 text-xs leading-5 text-foreground/50">Token 计费仅在所有启用供应线路都使用火山方舟视频协议时可用。</div> : null}
-                    {billingMode === "token" ? (
-                        capability === "video" ? (
-                            <Form.Item name="outputPriceMicrocredits" label="视频 / 百万 Token" rules={[{ type: "number", min: 1, message: "请输入视频 Token 价格" }]}>
-                                <CreditsInput />
-                            </Form.Item>
-                        ) : (
-                            <div className="grid gap-3 sm:grid-cols-3">
-                                <Form.Item name="inputPriceMicrocredits" label="输入 / 百万 Token">
-                                    <CreditsInput />
-                                </Form.Item>
-                                <Form.Item name="outputPriceMicrocredits" label="输出 / 百万 Token">
-                                    <CreditsInput />
-                                </Form.Item>
-                                <Form.Item name="cachedPriceMicrocredits" label="缓存 / 百万 Token">
-                                    <CreditsInput />
-                                </Form.Item>
-                            </div>
-                        )
-                    ) : null}
-                </>
-            ) : (
-                <div className="rounded-md bg-muted/20 px-3 py-3 text-xs leading-5 text-foreground/55">用户费用按实际命中的供应线路价格计算。故障切换到更高价格线路时会重新校验余额。</div>
-            )}
-        </>
-    );
-}
-
-function CreditsInput({ value = 0, onChange }: { value?: number; onChange?: (value: number) => void }) {
-    return <InputNumber className="w-full" min={0} max={1_000_000} precision={6} step={0.1} value={value / 1_000_000} onChange={(next) => onChange?.(Math.round((next || 0) * 1_000_000))} />;
+        form.setFieldsValue({
+            pricePolicy: "channel",
+            billingMode: "fixed_request",
+            unitPriceMicrocredits: 0,
+            inputPriceMicrocredits: 0,
+            outputPriceMicrocredits: 0,
+            cachedPriceMicrocredits: 0,
+        });
+    }, [form]);
+    return <div className="rounded-md bg-muted/20 px-3 py-3 text-xs leading-5 text-foreground/55">价格、上游 SKU 和可用规格只在“系统渠道 / 模型管理”配置。前台模型只负责展示、能力范围和故障切换，不再保存第二份价格。</div>;
 }
 
 function logicalPriceLabel(item: AdminLogicalModel) {
-    if (item.pricePolicy === "channel") return <span className="text-xs">跟随供应价格</span>;
-    if (item.billingMode === "token" && item.capability === "video") return <span className="text-xs">视频 {formatCredits(item.outputPriceMicrocredits)} / 百万 Token</span>;
-    if (item.billingMode === "token")
-        return (
-            <div className="text-xs">
-                <div>输入 {formatCredits(item.inputPriceMicrocredits)} / 百万</div>
-                <div>输出 {formatCredits(item.outputPriceMicrocredits)} / 百万</div>
-                <div className="text-foreground/45">缓存 {formatCredits(item.cachedPriceMicrocredits)} / 百万</div>
-            </div>
-        );
-    return (
-        <span className="text-xs">
-            {formatCredits(item.unitPriceMicrocredits)} / {item.billingMode === "per_second" ? "秒" : "次"}
-        </span>
-    );
+    const priceTiers = item.priceTiers || [];
+    if (!priceTiers.length) return <span className="text-xs text-foreground/45">待配置系统规格价格</span>;
+    return <span className="text-xs">{priceTiers.length} 个系统规格档</span>;
 }
 
 function logicalModelToForm(item: AdminLogicalModel): LogicalModelFormValues {
@@ -719,15 +705,15 @@ function logicalModelToForm(item: AdminLogicalModel): LogicalModelFormValues {
         capability: item.capability,
         enabled: item.enabled,
         sortOrder: item.sortOrder,
-        pricePolicy: item.pricePolicy,
-        billingMode: item.billingMode,
-        unitPriceMicrocredits: item.unitPriceMicrocredits,
-        inputPriceMicrocredits: item.inputPriceMicrocredits,
-        outputPriceMicrocredits: item.outputPriceMicrocredits,
-        cachedPriceMicrocredits: item.cachedPriceMicrocredits,
+        pricePolicy: "channel",
+        billingMode: "fixed_request",
+        unitPriceMicrocredits: 0,
+        inputPriceMicrocredits: 0,
+        outputPriceMicrocredits: 0,
+        cachedPriceMicrocredits: 0,
         capabilitySpec: item.capabilitySpec,
         defaultOptions: item.defaultOptions,
-        routes: item.routes.map((route) => ({ channelModelId: route.channelModelId, enabled: route.enabled, priority: route.priority, weight: route.weight })),
+        routes: (item.routes || []).map((route) => ({ channelModelId: route.channelModelId, enabled: route.enabled, priority: route.priority, weight: route.weight })),
     };
 }
 
@@ -741,12 +727,12 @@ function logicalModelPayload(values: LogicalModelFormValues, sourceSpecs: Capabi
         capability: values.capability,
         enabled: values.enabled,
         sortOrder: values.sortOrder || 0,
-        pricePolicy: values.pricePolicy,
-        billingMode: values.billingMode,
-        unitPriceMicrocredits: values.unitPriceMicrocredits || 0,
-        inputPriceMicrocredits: values.inputPriceMicrocredits || 0,
-        outputPriceMicrocredits: values.outputPriceMicrocredits || 0,
-        cachedPriceMicrocredits: values.cachedPriceMicrocredits || 0,
+        pricePolicy: "channel",
+        billingMode: "fixed_request",
+        unitPriceMicrocredits: 0,
+        inputPriceMicrocredits: 0,
+        outputPriceMicrocredits: 0,
+        cachedPriceMicrocredits: 0,
         capabilitySpec,
         defaultOptions: sanitizeDefaults(capabilitySpec, values.defaultOptions),
         routes: values.routes.map((route) => ({ ...route, priority: route.priority || 0, weight: route.weight || 0 })),

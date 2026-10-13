@@ -2,11 +2,10 @@ package handler
 
 import (
 	"errors"
-	"io"
 	"net/http"
 	"time"
 
-	"infinite-canvas/backend/internal/service"
+	"yingce/backend/internal/service"
 
 	"github.com/gin-gonic/gin"
 )
@@ -78,48 +77,14 @@ func RegisterCanvasShareRoutes(r *gin.RouterGroup, svc *service.Service) {
 		if !enforceRateLimit(c, "public-canvas-resource:"+c.ClientIP(), 300, time.Minute) {
 			return
 		}
-		delivery, err := svc.PrepareSharedCanvasResourceDelivery(c.Param("token"), c.Param("resourceId"), c.GetHeader("Range"))
+		opts := resourceAccessOptions(c)
+		delivery, err := svc.PrepareSharedCanvasResourceDelivery(c.Param("token"), c.Param("resourceId"), opts, c.GetHeader("Range"))
 		if err != nil {
 			fail(c, http.StatusNotFound, errors.New("分享资源不存在"))
 			return
 		}
-		if delivery.RedirectURL != "" {
-			c.Header("Cache-Control", "no-store")
-			c.Header("Content-Security-Policy", "sandbox")
-			c.Header("Referrer-Policy", "no-referrer")
-			c.Header("X-Content-Type-Options", "nosniff")
-			c.Header("X-Robots-Tag", "noindex, nofollow")
-			c.Redirect(http.StatusTemporaryRedirect, delivery.RedirectURL)
-			return
-		}
-		stream := delivery.Stream
-		defer stream.Body.Close()
-		resource := stream.Resource
-		applyResourceResponseSecurity(c, resource)
-		mimeType := resource.MimeType
-		if mimeType == "" {
-			mimeType = "application/octet-stream"
-		}
-		headers := map[string]string{
-			"Cache-Control":           "no-store",
-			"Content-Security-Policy": resourceSandboxPolicy,
-			"Referrer-Policy":         "no-referrer",
-			"X-Robots-Tag":            "noindex, nofollow",
-			"Accept-Ranges":           "bytes",
-		}
-		for key, value := range headers {
-			c.Header(key, value)
-		}
-		if resource.Provider == "local" {
-			if seeker, ok := stream.Body.(io.ReadSeeker); ok {
-				c.Header("Content-Type", mimeType)
-				http.ServeContent(c.Writer, c.Request, resource.ID, resource.UpdatedAt, seeker)
-				return
-			}
-		}
-		if stream.ContentRange != "" {
-			c.Header("Content-Range", stream.ContentRange)
-		}
-		c.DataFromReader(stream.StatusCode, stream.ContentLength, mimeType, stream.Body, nil)
+		c.Header("Content-Security-Policy", "sandbox")
+		c.Header("X-Robots-Tag", "noindex, nofollow")
+		serveResourceDelivery(c, delivery, "no-store", "")
 	})
 }

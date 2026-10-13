@@ -9,7 +9,6 @@ import { MeshoptDecoder } from "three/examples/jsm/libs/meshopt_decoder.module.j
 
 import { SpotlightSurface } from "@/components/ui/aceternity/spotlight-surface";
 import { aceternityMotion } from "@/lib/aceternity-motion";
-import { publicAssetPath } from "@/lib/app-base-path";
 import { canvasThemes } from "@/lib/canvas-theme";
 import {
     canvasEmotionPresets,
@@ -19,7 +18,7 @@ import {
     type CanvasEmotionEditRegion,
     type CanvasFaceBox,
 } from "@/lib/canvas/canvas-emotion";
-import { useThemeStore } from "@/stores/use-theme-store";
+import { useActiveTheme } from "@/stores/canvas/use-canvas-theme-store";
 
 export type CanvasImageEmotionPayload = CanvasEmotionParams & {
     label: string;
@@ -55,7 +54,7 @@ type CanvasNodeEmotionPanelProps = {
 };
 
 export function CanvasNodeEmotionPanel({ dataUrl, imageWidth, imageHeight, characters, activeCharacterId, preset, generating, error, onSelectCharacter, onManualSelect, onPresetChange, onClose, onConfirm }: CanvasNodeEmotionPanelProps) {
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useActiveTheme()];
     const reducedMotion = useReducedMotion();
     return (
         <SpotlightSurface
@@ -130,7 +129,7 @@ function FaceThumbnail({ dataUrl, imageWidth, imageHeight, box }: { dataUrl: str
 }
 
 function EmotionPad({ preset, onChange }: { preset: CanvasEmotionPreset; onChange: (preset: CanvasEmotionPreset) => void }) {
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useActiveTheme()];
     const reducedMotion = useReducedMotion();
     const [pointer, setPointer] = useState<{ x: number; y: number } | null>(null);
     const [dragging, setDragging] = useState(false);
@@ -174,7 +173,7 @@ function EmotionPad({ preset, onChange }: { preset: CanvasEmotionPreset; onChang
                     const distance = pointer ? Math.hypot(pointer.x - column, pointer.y - row) : 4;
                     const proximity = dragging ? Math.max(0, 1 - distance / 1.7) : 0;
                     return (
-                        <button key={item.id} type="button" aria-label={item.label} title={item.label} className="relative m-auto grid size-7 place-items-center rounded-full outline-none" onClick={() => onChange(item)}>
+                        <button key={item.id} type="button" data-icon-only aria-label={item.label} title={item.label} className="relative m-auto grid size-7 place-items-center rounded-full outline-none" onClick={() => onChange(item)}>
                             <motion.span
                                 animate={{ scale: active ? 1.65 : 1 + proximity * 0.42, opacity: active ? 1 : onPath ? 0.88 : 0.42 + proximity * 0.45 }}
                                 transition={reducedMotion ? { duration: 0 } : aceternityMotion.spring.dock}
@@ -191,7 +190,7 @@ function EmotionPad({ preset, onChange }: { preset: CanvasEmotionPreset; onChang
 }
 
 function EmotionHeadPreview({ preset }: { preset: CanvasEmotionPreset }) {
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useActiveTheme()];
     return (
         <div className="relative overflow-hidden rounded-[var(--r-lg)] border" style={{ background: "#26272a", borderColor: theme.toolbar.border }}>
             <Canvas frameloop="demand" dpr={[1, 1.5]} camera={{ fov: 38, near: 0.1, far: 20, position: [0, 0, 4.15] }} gl={{ antialias: true, alpha: false, powerPreference: "high-performance" }}>
@@ -211,8 +210,8 @@ function EmotionHeadPreview({ preset }: { preset: CanvasEmotionPreset }) {
 
 function EmotionFaceModel({ preset }: { preset: CanvasEmotionPreset }) {
     const renderer = useThree((state) => state.gl);
-    const gltf = useLoader(GLTFLoader, publicAssetPath("canvas/models/facecap.glb"), (loader) => {
-        loader.setKTX2Loader(new KTX2Loader().setTranscoderPath(publicAssetPath("three/basis/")).detectSupport(renderer));
+    const gltf = useLoader(GLTFLoader, "/canvas/models/facecap.glb", (loader) => {
+        loader.setKTX2Loader(new KTX2Loader().setTranscoderPath("/three/basis/").detectSupport(renderer));
         loader.setMeshoptDecoder(MeshoptDecoder);
     });
     const invalidate = useThree((state) => state.invalidate);

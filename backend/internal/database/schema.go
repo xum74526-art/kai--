@@ -1,49 +1,86 @@
 package database
 
 import (
+	"crypto/sha256"
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 
-	"infinite-canvas/backend/internal/model"
+	"yingce/backend/internal/model"
 
 	"gorm.io/gorm"
 )
 
-const singleAdminIndexStatement = `CREATE UNIQUE INDEX IF NOT EXISTS idx_users_single_admin ON users(role) WHERE role = 'admin'`
-
 // Models 是应用持久化表的唯一清单，服务启动和跨数据库迁移必须共用它。
 func Models() []any {
 	return []any{
+		&model.CloudAgentExecution{},
+		&model.UploadReservation{},
+		&model.CloudAgentPiSession{},
+		&model.CloudAgentEventRecord{},
+		&model.CloudAgentMessageRecord{},
+		&model.CloudAgentCanvasMutation{},
+		&model.CloudAgentResourceLease{},
+		&model.CloudAgentGeminiCache{},
+		&model.AgentProfile{},
+		&model.AgentLesson{},
+		&model.AgentMemorySetting{},
 		&model.User{},
+		&model.UserAvatar{},
 		&model.AuthSession{},
+		&model.LoginLog{},
 		&model.UserIdentity{},
 		&model.OAuthState{},
 		&model.EmailVerificationCode{},
+		&model.AuthVerification{},
+		&model.NotificationQuota{},
+		&model.SMSChannel{},
+		&model.SMSRecord{},
 		&model.ModelChannel{},
 		&model.ChannelModel{},
+		&model.ChannelModelPriceTier{},
 		&model.IDSequence{},
 		&model.LogicalModel{},
 		&model.LogicalModelRevision{},
 		&model.LogicalModelRoute{},
 		&model.RouteAttempt{},
 		&model.ApiCallLog{},
-		&model.ProviderRequestOwnership{},
 		&model.ModelPricing{},
 		&model.CreditAccount{},
 		&model.CreditLedgerEntry{},
 		&model.BillingOrder{},
+		&model.TopupProduct{},
+		&model.PaymentProviderConfig{},
+		&model.PaymentOrder{},
+		&model.PaymentNotification{},
+		&model.PaymentReconciliationRun{},
+		&model.PaymentReconciliationItem{},
 		&model.RedeemBatch{},
 		&model.RedeemCode{},
 		&model.AdminAuditEvent{},
 		&model.UserDailyActivity{},
 		&model.SystemSetting{},
+		&model.PluginPlatformState{},
+		&model.UserPluginState{},
+		&model.ArkPrivateAssetBinding{},
 		&model.UserOSSSetting{},
+		&model.StorageLocation{},
 		&model.UserDailyUploadUsage{},
 		&model.Skill{},
+		&model.SkillLibraryCategory{},
+		&model.SkillVersion{},
+		&model.SkillFile{},
 		&model.UserSkillState{},
+		&model.BuiltinSkillTombstone{},
+		&model.Tool{},
+		&model.ToolFavorite{},
 		&model.Resource{},
+		&model.ResourceDeletionJob{},
+		&model.AnnouncementImageDraft{},
 		&model.Asset{},
+		&model.AssetFolder{},
 		&model.ProjectAssetLink{},
 		&model.ProjectAssetFolder{},
 		&model.ProjectAssetCandidate{},
@@ -56,28 +93,34 @@ func Models() []any {
 		&model.ProjectUnit{},
 		&model.CanvasUnitLink{},
 		&model.Shot{},
+		&model.ShotRevision{},
+		&model.ShotArtifact{},
 		&model.ShotAssetReference{},
 		&model.WorkflowTemplateVersion{},
 		&model.WorkflowInstance{},
 		&model.WorkflowStepInstance{},
 		&model.WorkflowStepTask{},
+		&model.ProductionTaskLink{},
 		&model.CanvasProject{},
+		&model.CanvasSnapshot{},
+		&model.CanvasSnapshotResource{},
+		&model.CanvasMutationReceipt{},
 		&model.CanvasShare{},
 		&model.PromptTemplate{},
 		&model.UserPromptCustomization{},
 		&model.Announcement{},
 		&model.UserAnnouncementRead{},
+		&model.BannerAnnouncement{},
 		&model.Task{},
+		&model.CreationRun{},
+		&model.CreationSubmission{},
 		&model.TaskTextDelta{},
-		&model.Session{},
-		&model.Message{},
 		&model.TaskLog{},
-		&model.SessionFile{},
 		&model.Result{},
 	}
 }
 
-func MigrateSchema(db *gorm.DB) error {
+func migrateSchemaV1(db *gorm.DB) error {
 	// 旧表只保存 Updream 目录状态，与本地技能主键没有可迁移关系；首次升级时按产品要求清空重建。
 	if db.Migrator().HasColumn(&model.UserSkillState{}, "skill_dir") && !db.Migrator().HasColumn(&model.UserSkillState{}, "skill_id") {
 		if err := db.Migrator().DropTable(&model.UserSkillState{}); err != nil {
@@ -93,7 +136,16 @@ func MigrateSchema(db *gorm.DB) error {
 	if err := db.AutoMigrate(Models()...); err != nil {
 		return err
 	}
-	if err := ensureSingleAdminConstraint(db); err != nil {
+	if err := backfillProjectUnitWordCounts(db); err != nil {
+		return err
+	}
+	if err := migrateChannelModelPriceTierSelectors(db); err != nil {
+		return err
+	}
+	if err := backfillChannelModelPriceTiers(db); err != nil {
+		return err
+	}
+	if err := migrateChannelModelPriceTierSelectors(db); err != nil {
 		return err
 	}
 	if err := dropLegacyPhysicalVariants(db); err != nil {
@@ -113,20 +165,145 @@ func MigrateSchema(db *gorm.DB) error {
 	if err := db.Exec("DROP INDEX IF EXISTS idx_route_attempt_task_number").Error; err != nil {
 		return err
 	}
+	if err := db.Exec("DROP INDEX IF EXISTS idx_logical_model_source_active").Error; err != nil {
+		return err
+	}
+	if err := db.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_logical_model_source_active ON logical_models(source_channel_model_id) WHERE source_channel_model_id <> '' AND archived_at IS NULL").Error; err != nil {
+		return err
+	}
+	if err := db.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_phone_nonempty ON users(phone) WHERE phone <> ''").Error; err != nil {
+		return err
+	}
 	return db.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_nonempty ON users(lower(email)) WHERE email <> ''").Error
 }
 
-// SQLite 与 PostgreSQL 都支持部分唯一索引；数据库约束负责封住并发写入绕过服务层检查的窗口。
-func ensureSingleAdminConstraint(db *gorm.DB) error {
-	var count int64
-	if err := db.Model(&model.User{}).Where("role = ?", model.UserRoleAdmin).Count(&count).Error; err != nil {
-		return fmt.Errorf("检查管理员数量：%w", err)
+// migrateSchemaV35 installs the authentication notification tables and fields
+// added after the v34 deployment line. They cannot be added to the baseline
+// model registry alone because existing databases never rerun migration v1.
+func migrateSchemaV35(db *gorm.DB) error {
+	if err := db.AutoMigrate(
+		&model.User{},
+		&model.EmailVerificationCode{},
+		&model.AuthVerification{},
+		&model.NotificationQuota{},
+		&model.SMSChannel{},
+		&model.SMSRecord{},
+	); err != nil {
+		return err
 	}
-	if count > 1 {
-		return fmt.Errorf("历史数据中存在 %d 个管理员，请先保留唯一管理员后再迁移", count)
+	return db.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_phone_nonempty ON users(phone) WHERE phone <> ''").Error
+}
+
+func backfillProjectUnitWordCounts(db *gorm.DB) error {
+	var units []model.ProjectUnit
+	if err := db.Select("id", "source_text").Where("word_count = 0 AND source_text <> ''").Find(&units).Error; err != nil {
+		return fmt.Errorf("读取待回填章节字数：%w", err)
 	}
-	if err := db.Exec(singleAdminIndexStatement).Error; err != nil {
-		return fmt.Errorf("创建唯一管理员约束：%w", err)
+	return db.Transaction(func(tx *gorm.DB) error {
+		for _, unit := range units {
+			wordCount := model.ProjectUnitWordCount(unit.SourceText)
+			if err := tx.Model(&model.ProjectUnit{}).Where("id = ?", unit.ID).Update("word_count", wordCount).Error; err != nil {
+				return fmt.Errorf("回填章节 %s 字数：%w", unit.ID, err)
+			}
+		}
+		return nil
+	})
+}
+
+// migrateChannelModelPriceTierSelectors upgrades the old video-only unique key to
+// a canonical SKU selector key. It never changes task, route-attempt, or billing
+// foreign keys, so completed work remains auditable after a product SKU merge.
+func migrateChannelModelPriceTierSelectors(db *gorm.DB) error {
+	if !db.Migrator().HasTable(&model.ChannelModelPriceTier{}) {
+		return nil
+	}
+	var tiers []model.ChannelModelPriceTier
+	if err := db.Unscoped().Find(&tiers).Error; err != nil {
+		return fmt.Errorf("读取规格价格档：%w", err)
+	}
+	for _, tier := range tiers {
+		selector := model.DecodeSKUSelector(tier.SelectorJSON)
+		if len(selector) == 0 {
+			selector = map[string]string{}
+			if resolution := strings.TrimSpace(tier.Resolution); resolution != "" && resolution != "*" {
+				selector["vquality"] = strings.ToLower(resolution)
+			}
+			if tier.VideoSeconds > 0 {
+				selector["videoSeconds"] = strconv.Itoa(tier.VideoSeconds)
+			}
+		}
+		_, key, err := model.CanonicalSKUSelector(selector)
+		if err != nil {
+			return fmt.Errorf("规范化规格价格档 %s：%w", tier.ID, err)
+		}
+		if tier.SelectorKey == key && tier.SelectorJSON == key {
+			continue
+		}
+		if err := db.Unscoped().Model(&model.ChannelModelPriceTier{}).Where("id = ?", tier.ID).Updates(map[string]any{"selector_key": key, "selector_json": key}).Error; err != nil {
+			return fmt.Errorf("更新规格价格档 %s：%w", tier.ID, err)
+		}
+	}
+	var duplicate struct {
+		ChannelModelID string
+		SelectorKey    string
+		Count          int64
+	}
+	err := db.Table("channel_model_price_tiers").
+		Select("channel_model_id, selector_key, COUNT(*) AS count").
+		Where("deleted_at IS NULL").
+		Group("channel_model_id, selector_key").
+		Having("COUNT(*) > 1").
+		First(&duplicate).Error
+	if err == nil {
+		return fmt.Errorf("渠道模型 %s 存在重复 SKU 选择器 %s，拒绝建立唯一索引", duplicate.ChannelModelID, duplicate.SelectorKey)
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return fmt.Errorf("检查重复 SKU 选择器：%w", err)
+	}
+	if err := db.Exec("DROP INDEX IF EXISTS idx_channel_model_price_tier_active").Error; err != nil {
+		return err
+	}
+	return db.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_model_price_tier_active ON channel_model_price_tiers(channel_model_id, selector_key) WHERE deleted_at IS NULL").Error
+}
+
+// backfillChannelModelPriceTiers 将旧的单价模型无损映射为默认价格档。历史订单保存的是
+// 金额快照，不能也不需要回写；这里仅保证升级后现有渠道模型仍能按原价格继续结算。
+func backfillChannelModelPriceTiers(db *gorm.DB) error {
+	var channelModels []model.ChannelModel
+	if err := db.Find(&channelModels).Error; err != nil {
+		return fmt.Errorf("读取渠道模型价格档回填数据：%w", err)
+	}
+	for _, channelModel := range channelModels {
+		var count int64
+		if err := db.Model(&model.ChannelModelPriceTier{}).Where("channel_model_id = ?", channelModel.ID).Count(&count).Error; err != nil {
+			return fmt.Errorf("检查渠道模型 %s 价格档：%w", channelModel.ID, err)
+		}
+		if count > 0 {
+			continue
+		}
+		priceVersion := channelModel.PriceVersion
+		if priceVersion < 1 {
+			priceVersion = 1
+		}
+		digest := sha256.Sum256([]byte(channelModel.ID))
+		tier := model.ChannelModelPriceTier{
+			ID:                           fmt.Sprintf("PTIER-%x", digest[:15]),
+			ChannelModelID:               channelModel.ID,
+			Resolution:                   "*",
+			VideoSeconds:                 0,
+			ProviderModelKey:             channelModel.ProviderModelKey,
+			BillingMode:                  channelModel.BillingMode,
+			UnitPriceMicrocredits:        channelModel.UnitPriceMicrocredits,
+			InputTokenPriceMicrocredits:  channelModel.InputTokenPriceMicrocredits,
+			OutputTokenPriceMicrocredits: channelModel.OutputTokenPriceMicrocredits,
+			CachedTokenPriceMicrocredits: channelModel.CachedTokenPriceMicrocredits,
+			PriceConfigured:              channelModel.PriceConfigured,
+			Enabled:                      channelModel.Enabled,
+			PriceVersion:                 priceVersion,
+		}
+		if err := db.Create(&tier).Error; err != nil {
+			return fmt.Errorf("回填渠道模型 %s 默认价格档：%w", channelModel.ID, err)
+		}
 	}
 	return nil
 }

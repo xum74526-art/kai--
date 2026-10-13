@@ -1,12 +1,14 @@
+import { Button, Spin } from "antd";
+import { Tooltip } from "@/components/ui/base/tooltip";
 import { useEffect, useRef, useState } from "react";
-import { Button, Spin, Tooltip } from "antd";
+
 import { Check, Mic, Square, X } from "lucide-react";
 
 import { AudioWaveform } from "./audio-waveform";
 import { useSpeechRecognition } from "@/hooks/use-speech-recognition";
 import { useVoiceRecording } from "@/hooks/use-voice-recording";
 import { canvasThemes } from "@/lib/canvas-theme";
-import { useThemeStore } from "@/stores/use-theme-store";
+import { useActiveTheme } from "@/stores/canvas/use-canvas-theme-store";
 
 type VoiceRecordingInlineProps = {
     /** 转写完成回调，返回转写文本 */
@@ -22,7 +24,7 @@ type TranscribeState = "idle" | "transcribing" | "done" | "error";
  * 挂载后自动开始录音，显示波形动画；点击停止后自动转写为文字（浏览器 Web Speech API，无需后端与 API Key）
  */
 export function VoiceRecordingInline({ onTranscribed, onCancel }: VoiceRecordingInlineProps) {
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const theme = canvasThemes[useActiveTheme()];
     const {
         state,
         waveform,
@@ -108,7 +110,7 @@ export function VoiceRecordingInline({ onTranscribed, onCancel }: VoiceRecording
 
     return (
         <div
-            className="flex min-w-0 flex-1 items-center gap-2 rounded-lg border px-2 py-1.5"
+            className="voice-recording-inline flex min-w-0 flex-1 items-center gap-2 rounded-lg border px-2 py-1.5"
             style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border }}
         >
             {displayError ? (

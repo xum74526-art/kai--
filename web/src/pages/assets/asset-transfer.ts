@@ -1,106 +1,69 @@
 import { saveAs } from "file-saver";
-
-import { createZip, readZip } from "@/lib/zip";
-import { deleteStoredMedia, getMediaBlob, setMediaBlob } from "@/services/file-storage";
-import { deleteStoredImages, getImageBlob, setImageBlob } from "@/services/image-storage";
+import { readZip } from "@/lib/zip";
+import { MediaPackage } from "@/lib/media-package";
+import { setMediaBlob } from "@/services/file-storage";
+import { setImageBlob } from "@/services/image-storage";
 import type { Asset } from "@/stores/use-asset-store";
-import { createImportedStorageKey, isImageStorageReference, remapImportedStorageReferences, type ImportedStorageReference } from "@/lib/imported-storage";
+import type { CanvasExportAsset } from "@/types/canvas-export";
 
-type AssetExportFile = {
-    app: "infinite-canvas";
-    version: 1;
-    exportedAt: string;
-    assets: Asset[];
-    files: AssetExportItem[];
-};
+type AssetExportFile = { app: "yingce"; version: 1; exportedAt: string; assets: Asset[]; files: CanvasExportAsset[] };
 
-type AssetExportItem = {
-    storageKey: string;
-    path: string;
-    mimeType: string;
-    bytes: number;
-};
-
-export async function exportAssets(assets: Asset[]) {
-    const files: AssetExportItem[] = [];
-    const zipFiles: { name: string; data: BlobPart }[] = [];
-
-    await Promise.all(
-        assets.map(async (asset) => {
-            if (asset.kind !== "image" && asset.kind !== "video" && asset.kind !== "audio" && asset.kind !== "model") return;
-            const storageKey = asset.data.storageKey;
-            if (!storageKey) return;
-            const blob = isImageStorageReference(storageKey, asset.data.mimeType) ? await getImageBlob(storageKey) : await getMediaBlob(storageKey);
-            if (!blob) throw new Error(`素材“${asset.title}”引用的本地文件已丢失：${storageKey}`);
-            const path = `files/${safeFileName(storageKey)}.${fileExtension(blob.type, asset.kind)}`;
-            files.push({ storageKey, path, mimeType: blob.type || asset.data.mimeType, bytes: blob.size });
-            zipFiles.push({ name: path, data: blob });
-        }),
-    );
-
-    const data: AssetExportFile = { app: "infinite-canvas", version: 1, exportedAt: new Date().toISOString(), assets, files };
-    const zip = await createZip([{ name: "assets.json", data: JSON.stringify(data, null, 2) }, ...zipFiles]);
-    saveAs(zip, "我的素材.zip");
+export async function exportAssets(assets: Asset[]): Promise<void> {
+    const media = assets.filter((asset) => ["image", "video", "audio", "model"].includes(asset.kind));
+    const images = new Set<string>();
+    const keys: string[] = [];
+    for (const asset of media) {
+        if (!("storageKey" in asset.data) || typeof asset.data.storageKey !== "string" || !asset.data.storageKey) continue;
+        keys.push(asset.data.storageKey);
+        if (asset.kind === "image") images.add(asset.data.storageKey);
+    }
+    const archive = new MediaPackage();
+    const manifest: AssetExportFile = { app: "yingce", version: 1, assets, exportedAt: new Date().toISOString(), files: await archive.collect(keys, "files", images) };
+    saveAs(await archive.finish("assets.json", manifest), "我的素材.zip");
 }
 
-export async function readAssetPackage(file: File) {
-    const zip = await readZip(file);
-    const assetFile = zip.get("assets.json");
-    if (!assetFile) throw new Error("missing assets.json");
-    const data = JSON.parse(await assetFile.text()) as AssetExportFile;
-    if (!Array.isArray(data.assets) || !Array.isArray(data.files)) throw new Error("素材压缩包结构无效");
-    for (const item of data.files) {
-        if (!zip.get(item.path)) throw new Error(`素材压缩包缺少文件：${item.path}`);
+export async function readAssetPackage(file: File): Promise<Asset[]> {
+    const archive = await readZip(file);
+    const manifestBlob = archive.get("assets.json");
+    if (!manifestBlob) throw new Error("素材包缺少 assets.json");
+    const manifest: unknown = JSON.parse(await manifestBlob.text());
+    if (
+        !manifest ||
+        typeof manifest !== "object" ||
+        !("app" in manifest) ||
+        manifest.app !== "yingce" ||
+        !("version" in manifest) ||
+        manifest.version !== 1 ||
+        !("assets" in manifest) ||
+        !Array.isArray(manifest.assets) ||
+        !("files" in manifest) ||
+        !Array.isArray(manifest.files)
+    )
+        throw new Error("素材包格式或版本不受支持");
+    const images = new Set<string>();
+    for (const asset of manifest.assets) {
+        if (!asset || typeof asset !== "object" || typeof asset.id !== "string" || !asset.data || typeof asset.data !== "object" || typeof asset.kind !== "string") throw new Error("素材包包含无效素材");
+        if (asset.kind === "image" && typeof asset.data.storageKey === "string") images.add(asset.data.storageKey);
     }
-    const references = new Map<string, ImportedStorageReference>();
-    try {
-        for (const item of data.files) {
-            if (references.has(item.storageKey)) continue;
-            const blob = zip.get(item.path)!;
-            const typedBlob = blob.type ? blob : blob.slice(0, blob.size, item.mimeType);
-            const storageKey = createImportedStorageKey(item.storageKey, item.mimeType);
-            const url = isImageStorageReference(item.storageKey, item.mimeType) ? await setImageBlob(storageKey, typedBlob) : await setMediaBlob(storageKey, typedBlob);
-            references.set(item.storageKey, { storageKey, url });
-        }
-        return remapImportedStorageReferences(data.assets, references);
-    } catch (error) {
-        await cleanupImportedAssetFilesFromReferences(references.values());
-        throw error;
-    }
-}
-
-export async function cleanupImportedAssetFiles(assets: Asset[]) {
-    const references = assets.flatMap((asset) => {
-        if (asset.kind !== "image" && asset.kind !== "video" && asset.kind !== "audio" && asset.kind !== "model") return [];
-        const storageKey = asset.data.storageKey;
-        return storageKey ? [{ storageKey, mimeType: asset.data.mimeType }] : [];
+    // Validate the whole manifest before making the first persistent write.
+    const writes = manifest.files.map((entry: unknown) => {
+        if (
+            !entry ||
+            typeof entry !== "object" ||
+            !("storageKey" in entry) ||
+            typeof entry.storageKey !== "string" ||
+            !entry.storageKey ||
+            !("path" in entry) ||
+            typeof entry.path !== "string" ||
+            !("mimeType" in entry) ||
+            typeof entry.mimeType !== "string"
+        )
+            throw new Error("素材包文件索引无效");
+        const blob = archive.get(entry.path);
+        if (!blob) throw new Error(`素材包缺少文件：${entry.path}`);
+        if ("bytes" in entry && entry.bytes !== blob.size) throw new Error(`素材包文件大小不匹配：${entry.path}`);
+        return { key: entry.storageKey, blob: blob.slice(0, blob.size, entry.mimeType) };
     });
-    await cleanupImportedAssetFilesFromReferences(references);
-}
-
-async function cleanupImportedAssetFilesFromReferences(references: Iterable<{ storageKey: string; mimeType?: string }>) {
-    const imageKeys: string[] = [];
-    const mediaKeys: string[] = [];
-    for (const reference of references) {
-        (isImageStorageReference(reference.storageKey, reference.mimeType) ? imageKeys : mediaKeys).push(reference.storageKey);
-    }
-    await Promise.all([deleteStoredImages(imageKeys), deleteStoredMedia(mediaKeys)]);
-}
-
-function safeFileName(value: string) {
-    return value.replace(/[\\/:*?"<>|]/g, "_");
-}
-
-function fileExtension(mimeType: string, kind: Asset["kind"]) {
-    if (mimeType.includes("png")) return "png";
-    if (mimeType.includes("jpeg")) return "jpg";
-    if (mimeType.includes("webp")) return "webp";
-    if (mimeType.includes("gif")) return "gif";
-    if (mimeType.includes("mp4")) return "mp4";
-    if (mimeType.includes("webm")) return "webm";
-    if (mimeType.includes("mpeg")) return "mp3";
-    if (mimeType.includes("wav")) return "wav";
-    if (mimeType.includes("gltf-binary")) return "glb";
-    if (mimeType.includes("gltf+json") || mimeType.includes("json")) return "gltf";
-    return kind === "image" ? "png" : "bin";
+    for (const { key, blob } of writes) await (images.has(key) || key.startsWith("image:") ? setImageBlob(key, blob) : setMediaBlob(key, blob));
+    return manifest.assets as Asset[];
 }

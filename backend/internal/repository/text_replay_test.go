@@ -1,11 +1,10 @@
 package repository
 
 import (
-	"errors"
 	"testing"
 	"time"
 
-	"infinite-canvas/backend/internal/model"
+	"yingce/backend/internal/model"
 
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -81,9 +80,6 @@ func TestTextReplayLifecycle(t *testing.T) {
 	other := model.Task{ID: "queued-1", UserID: "user-1", Type: "text", Status: model.TaskStatusQueued}
 	if err := db.Create(&other).Error; err != nil {
 		t.Fatal(err)
-	}
-	if _, err := repo.AppendTaskTextDelta("user-1", other.ID, "不能写入普通任务", now.Add(time.Hour), limits); !errors.Is(err, ErrTextReplayClosed) {
-		t.Fatalf("queued text task append error = %v, want ErrTextReplayClosed", err)
 	}
 	done, err := repo.CompleteTextReplayTask("user-1", "queued-1", resultJSON, now)
 	if err != nil {

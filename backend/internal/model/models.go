@@ -6,13 +6,13 @@ import (
 
 type TaskStatus string
 type ProviderCancelStatus string
-type SessionStatus string
 type UserRole string
 type UserStatus string
 type ChannelScope string
 type ChannelInterfaceType string
 type ApiCallStatus string
 type ResourceStatus string
+type ResourceDeletionStatus string
 type BillingStatus string
 type CreditLedgerType string
 type RedeemCodeStatus string
@@ -49,10 +49,6 @@ const (
 	// 完成后调用 /tasks/:id/text-replay-complete 归并为最终正文。
 	TaskStatusTextReplay TaskStatus = "text_replay"
 
-	SessionStatusActive    SessionStatus = "active"
-	SessionStatusCompleted SessionStatus = "completed"
-	SessionStatusFailed    SessionStatus = "failed"
-
 	UserRoleAdmin UserRole = "admin"
 	UserRoleUser  UserRole = "user"
 
@@ -62,26 +58,34 @@ const (
 	ChannelScopeSystem ChannelScope = "system"
 	ChannelScopeUser   ChannelScope = "user"
 
-	ChannelInterfaceChatCompletion        ChannelInterfaceType = "chat-completion"
-	ChannelInterfaceOpenAIResponse        ChannelInterfaceType = "openai-response"
-	ChannelInterfaceOpenAIImage           ChannelInterfaceType = "openai-image"
-	ChannelInterfaceBailianImage          ChannelInterfaceType = "bailian-image"
-	ChannelInterfaceGrokImage             ChannelInterfaceType = "grok-image"
-	ChannelInterfaceVolcengineArkImage    ChannelInterfaceType = "volcengine-ark-image"
-	ChannelInterfaceVolcengineJiMengImage ChannelInterfaceType = "volcengine-jimeng-image"
-	ChannelInterfaceGeminiImage           ChannelInterfaceType = "gemini-image"
-	ChannelInterfaceOpenAIAudio           ChannelInterfaceType = "openai-audio"
-	ChannelInterfaceAsyncAudio            ChannelInterfaceType = "async-audio"
-	ChannelInterfaceNewAPIVideo           ChannelInterfaceType = "newapi"
-	ChannelInterfaceNewAPIChannel1        ChannelInterfaceType = "newapi-channel-1"
-	ChannelInterfaceNewAPIChannel2        ChannelInterfaceType = "newapi-channel-2"
-	ChannelInterfaceAIAPIWayVideo         ChannelInterfaceType = "aiapiway-video"
-	ChannelInterfaceXAIVideo              ChannelInterfaceType = "xai-video"
-	ChannelInterfaceVolcengineArkVideo    ChannelInterfaceType = "volcengine-ark-video"
-	ChannelInterfaceVolcengineJiMengVideo ChannelInterfaceType = "volcengine-jimeng-video"
-	ChannelInterfaceGeminiVeo             ChannelInterfaceType = "gemini-veo"
-	ChannelInterfaceNovitaVideo           ChannelInterfaceType = "novita-video"
-	ChannelInterfaceMiniMaxVideo          ChannelInterfaceType = "minimax-video"
+	ChannelInterfaceChatCompletion              ChannelInterfaceType = "chat-completion"
+	ChannelInterfaceOpenAIResponse              ChannelInterfaceType = "openai-response"
+	ChannelInterfaceClaudeAPI                   ChannelInterfaceType = "claude-api"
+	ChannelInterfaceOpenAIImage                 ChannelInterfaceType = "openai-image"
+	ChannelInterfaceBailianImage                ChannelInterfaceType = "bailian-image"
+	ChannelInterfaceGrokImage                   ChannelInterfaceType = "grok-image"
+	ChannelInterfaceVolcengineArkImage          ChannelInterfaceType = "volcengine-ark-image"
+	ChannelInterfaceVolcengineArkAgentPlanImage ChannelInterfaceType = "volcengine-ark-agent-plan-image"
+	ChannelInterfaceVolcengineJiMengImage       ChannelInterfaceType = "volcengine-jimeng-image"
+	ChannelInterfaceGeminiImage                 ChannelInterfaceType = "gemini-image"
+	ChannelInterfaceOpenAIAudio                 ChannelInterfaceType = "openai-audio"
+	ChannelInterfaceDoubaoStreamingTTS          ChannelInterfaceType = "doubao-streaming-tts"
+	ChannelInterfaceAsyncAudio                  ChannelInterfaceType = "async-audio"
+	ChannelInterfaceNewAPIVideo                 ChannelInterfaceType = "newapi"
+	ChannelInterfaceNewAPIChannel1              ChannelInterfaceType = "newapi-channel-1"
+	ChannelInterfaceNewAPIChannel2              ChannelInterfaceType = "newapi-channel-2"
+	ChannelInterfaceAIAPIWayVideo               ChannelInterfaceType = "aiapiway-video"
+	ChannelInterfaceXAIVideo                    ChannelInterfaceType = "xai-video"
+	ChannelInterfaceVolcengineArkVideo          ChannelInterfaceType = "volcengine-ark-video"
+	ChannelInterfaceVolcengineArkAgentPlanVideo ChannelInterfaceType = "volcengine-ark-agent-plan-video"
+	ChannelInterfaceVolcengineJiMengVideo       ChannelInterfaceType = "volcengine-jimeng-video"
+	ChannelInterfaceGeminiVeo                   ChannelInterfaceType = "gemini-veo"
+	ChannelInterfaceNovitaVideo                 ChannelInterfaceType = "novita-video"
+	ChannelInterfaceMiniMaxVideo                ChannelInterfaceType = "minimax-video"
+	ChannelInterfaceAgnesVideo                  ChannelInterfaceType = "agnes-video"
+	ChannelInterfaceRunningHubImage             ChannelInterfaceType = "runninghub-workflow-image"
+	ChannelInterfaceRunningHubVideo             ChannelInterfaceType = "runninghub-workflow-video"
+	ChannelInterfaceRunningHubAudio             ChannelInterfaceType = "runninghub-workflow-audio"
 
 	ApiCallStatusSucceeded ApiCallStatus = "succeeded"
 	ApiCallStatusFailed    ApiCallStatus = "failed"
@@ -90,6 +94,15 @@ const (
 	ResourceStatusReady   ResourceStatus = "ready"
 	ResourceStatusFailed  ResourceStatus = "failed"
 	ResourceStatusDeleted ResourceStatus = "deleted"
+
+	// 播放副本转码状态：空串/"none" = 无需转码（H.264 等可直接播放）。
+	PlaybackStatusNone       = "none"
+	PlaybackStatusProcessing = "processing"
+	PlaybackStatusReady      = "ready"
+	PlaybackStatusFailed     = "failed"
+
+	ResourceDeletionStatusPending    ResourceDeletionStatus = "pending"
+	ResourceDeletionStatusProcessing ResourceDeletionStatus = "processing"
 
 	BillingStatusReserved  BillingStatus = "reserved"
 	BillingStatusRunning   BillingStatus = "running"
@@ -109,6 +122,7 @@ const (
 	CreditLedgerAdminAdjust  CreditLedgerType = "admin_adjustment"
 	CreditLedgerSignupBonus  CreditLedgerType = "signup_bonus"
 	CreditLedgerCheckinBonus CreditLedgerType = "checkin_bonus"
+	CreditLedgerPaymentTopup CreditLedgerType = "payment_topup"
 
 	RedeemCodeUnused   RedeemCodeStatus = "unused"
 	RedeemCodeRedeemed RedeemCodeStatus = "redeemed"
@@ -134,10 +148,8 @@ const (
 
 	AssetCategoryCharacter   AssetCategory = "character"
 	AssetCategoryEnvironment AssetCategory = "environment"
-	AssetCategoryWardrobe    AssetCategory = "wardrobe"
 	AssetCategoryProp        AssetCategory = "prop"
-	AssetCategoryWeapon      AssetCategory = "weapon"
-	AssetCategoryStyle       AssetCategory = "style"
+	AssetCategoryMaterial    AssetCategory = "material"
 	AssetCategoryOther       AssetCategory = "other"
 
 	AssetVersionStatusDraft     AssetVersionStatus = "draft"

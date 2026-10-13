@@ -6,10 +6,8 @@ import (
 	"sync"
 	"testing"
 
-	"infinite-canvas/backend/internal/model"
+	"yingce/backend/internal/model"
 
-	"gorm.io/driver/sqlite"
-	"gorm.io/gorm"
 	"gorm.io/gorm/schema"
 )
 
@@ -63,49 +61,11 @@ func TestPostgresAssetIDMigrationsCoverEveryAssetIDColumn(t *testing.T) {
 	}
 }
 
-func TestSingleAdminConstraintPreservesExistingAdminAndRejectsSecond(t *testing.T) {
-	db, err := gorm.Open(sqlite.Open("file:single-admin?mode=memory&cache=shared"), &gorm.Config{})
-	if err != nil {
-		t.Fatal(err)
+func TestModelsIncludeCloudAgentCanvasMutation(t *testing.T) {
+	for _, item := range Models() {
+		if _, ok := item.(*model.CloudAgentCanvasMutation); ok {
+			return
+		}
 	}
-	if err := db.AutoMigrate(&model.User{}); err != nil {
-		t.Fatal(err)
-	}
-	first := model.User{ID: "admin-1", Username: "admin-one", Role: model.UserRoleAdmin, Status: model.UserStatusActive}
-	if err := db.Create(&first).Error; err != nil {
-		t.Fatalf("create existing admin: %v", err)
-	}
-	if err := MigrateSchema(db); err != nil {
-		t.Fatalf("migrate schema with existing admin: %v", err)
-	}
-	if err := db.Create(&model.User{ID: "admin-2", Username: "admin-two", Role: model.UserRoleAdmin, Status: model.UserStatusActive}).Error; err == nil {
-		t.Fatal("create second admin error = nil")
-	}
-	var stored model.User
-	if err := db.First(&stored, "id = ?", first.ID).Error; err != nil {
-		t.Fatalf("read preserved admin: %v", err)
-	}
-	if stored.Role != model.UserRoleAdmin {
-		t.Fatalf("existing admin role = %q, want %q", stored.Role, model.UserRoleAdmin)
-	}
-}
-
-func TestSingleAdminConstraintRejectsAmbiguousLegacyData(t *testing.T) {
-	db, err := gorm.Open(sqlite.Open("file:duplicate-admins?mode=memory&cache=shared"), &gorm.Config{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := db.AutoMigrate(&model.User{}); err != nil {
-		t.Fatal(err)
-	}
-	users := []model.User{
-		{ID: "admin-1", Username: "admin-one", Role: model.UserRoleAdmin, Status: model.UserStatusActive},
-		{ID: "admin-2", Username: "admin-two", Role: model.UserRoleAdmin, Status: model.UserStatusDisabled},
-	}
-	if err := db.Create(&users).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := ensureSingleAdminConstraint(db); err == nil || !strings.Contains(err.Error(), "2 个管理员") {
-		t.Fatalf("ensureSingleAdminConstraint() error = %v", err)
-	}
+	t.Fatal("Models must include CloudAgentCanvasMutation")
 }

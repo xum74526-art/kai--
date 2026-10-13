@@ -2,18 +2,12 @@
 
 set -Eeuo pipefail
 
-REPOSITORY_URL="${REPOSITORY_URL:-https://github.com/xum74526-art/kai--.git}"
+REPOSITORY_URL="${REPOSITORY_URL:-https://github.com/ddcat-ai/open-ai-canvas.git}"
 REPOSITORY_REF="${REPOSITORY_REF:-main}"
-INSTALL_DIR="${INSTALL_DIR:-/opt/beidou-kai}"
+INSTALL_DIR="${INSTALL_DIR:-/opt/open-ai-canvas}"
 CANVAS_HTTP_PORT="${CANVAS_HTTP_PORT:-3000}"
-CANVAS_PUBLIC_ORIGIN="${CANVAS_PUBLIC_ORIGIN:-}"
 COMPOSE_FILE="docker-compose.deploy.yml"
 BUILD_COMPOSE_FILE="docker-compose.build.yml"
-CANVAS_RELEASE_REVISION=""
-CANVAS_SOURCE_IMAGE_TAG=""
-CANVAS_IMAGE_TAG=""
-CANVAS_WEB_IMAGE=""
-CANVAS_BACKEND_IMAGE=""
 
 step() {
     printf '\n==> %s\n' "$1"
@@ -70,7 +64,7 @@ install_docker() {
 }
 
 sync_source() {
-    step "下载 KAI影源码"
+    step "下载影策源码"
     if [[ -d "$INSTALL_DIR/.git" ]]; then
         cd "$INSTALL_DIR"
         [[ -z "$(git status --porcelain --untracked-files=no)" ]] || fail "$INSTALL_DIR 存在本地代码改动，请先处理后再更新"
@@ -86,26 +80,6 @@ sync_source() {
     cd "$INSTALL_DIR"
 }
 
-resolve_release_identity() {
-    CANVAS_RELEASE_REVISION="$(git rev-parse HEAD)"
-    [[ "$CANVAS_RELEASE_REVISION" =~ ^[0-9a-f]{40}$ ]] || fail "无法从当前检出代码解析完整提交哈希"
-    CANVAS_SOURCE_IMAGE_TAG="source-${CANVAS_RELEASE_REVISION}"
-    CANVAS_IMAGE_TAG="$CANVAS_SOURCE_IMAGE_TAG"
-    CANVAS_WEB_IMAGE="beidou-kai-web:${CANVAS_SOURCE_IMAGE_TAG}"
-    CANVAS_BACKEND_IMAGE="beidou-kai-backend:${CANVAS_SOURCE_IMAGE_TAG}"
-    export CANVAS_RELEASE_REVISION CANVAS_SOURCE_IMAGE_TAG CANVAS_IMAGE_TAG CANVAS_WEB_IMAGE CANVAS_BACKEND_IMAGE
-}
-
-persist_release_identity() {
-    local temporary_file
-    temporary_file="$(mktemp "${INSTALL_DIR}/.env.release.XXXXXX")"
-    grep -Ev '^(CANVAS_IMAGE_TAG|CANVAS_RELEASE_REVISION|CANVAS_SOURCE_IMAGE_TAG|CANVAS_WEB_IMAGE|CANVAS_BACKEND_IMAGE)=' .env > "$temporary_file" || true
-    printf 'CANVAS_IMAGE_TAG=%s\nCANVAS_RELEASE_REVISION=%s\nCANVAS_SOURCE_IMAGE_TAG=%s\nCANVAS_WEB_IMAGE=%s\nCANVAS_BACKEND_IMAGE=%s\n' \
-        "$CANVAS_IMAGE_TAG" "$CANVAS_RELEASE_REVISION" "$CANVAS_SOURCE_IMAGE_TAG" "$CANVAS_WEB_IMAGE" "$CANVAS_BACKEND_IMAGE" >> "$temporary_file"
-    chmod 600 "$temporary_file"
-    mv "$temporary_file" .env
-}
-
 prepare_environment() {
     if [[ -f .env ]]; then
         grep -Eq '^POSTGRES_PASSWORD=.+$' .env || fail "现有 .env 缺少 POSTGRES_PASSWORD"
@@ -117,19 +91,12 @@ prepare_environment() {
             ((configured_http_port >= 1 && configured_http_port <= 65535)) || fail ".env 中的 CANVAS_HTTP_PORT 无效"
             CANVAS_HTTP_PORT="$configured_http_port"
         fi
-        local configured_cors_origins
-        configured_cors_origins="$(sed -n 's/^CANVAS_CORS_ORIGINS=//p' .env | tail -n 1)"
-        [[ -n "$configured_cors_origins" ]] || fail ".env 中的 CANVAS_CORS_ORIGINS 为空，请填写浏览器实际访问 Origin（例如 http://服务器IP:${CANVAS_HTTP_PORT}）"
         return
     fi
 
     step "生成 PostgreSQL 随机密码和部署配置"
     local database_password
-    local local_ip
     database_password="$(openssl rand -hex 32)"
-    local_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
-    [[ -n "$CANVAS_PUBLIC_ORIGIN" ]] || CANVAS_PUBLIC_ORIGIN="http://${local_ip:-127.0.0.1}:${CANVAS_HTTP_PORT}"
-    [[ "$CANVAS_PUBLIC_ORIGIN" =~ ^https?://[^/]+$ ]] || fail "CANVAS_PUBLIC_ORIGIN 必须是完整 Origin，且不能包含路径"
     umask 077
     cat >.env <<EOF
 POSTGRES_DB=open_ai_canvas
@@ -140,9 +107,7 @@ CANVAS_HTTP_PORT=${CANVAS_HTTP_PORT}
 CANVAS_REGISTRATION_ENABLED=false
 CANVAS_ALLOW_PRIVATE_UPSTREAMS=false
 CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS=
-CANVAS_CORS_ORIGINS=${CANVAS_PUBLIC_ORIGIN}
-CANVAS_PUBLIC_BASE_URL=${CANVAS_PUBLIC_ORIGIN}
-CANVAS_TRUSTED_PROXIES=172.16.0.0/12
+CANVAS_CORS_ORIGINS=
 EOF
 }
 
@@ -150,20 +115,9 @@ start_services() {
     step "从源码构建网页与后端镜像"
     # 标准一键部署已下载完整仓库，直接本地构建可避免公开项目被 GHCR 包可见性阻断。
     docker compose --env-file .env -f "$COMPOSE_FILE" -f "$BUILD_COMPOSE_FILE" build backend web
-    verify_source_image_bundle
 
     step "启动 PostgreSQL、Redis、后端和网页服务"
     docker compose --env-file .env -f "$COMPOSE_FILE" -f "$BUILD_COMPOSE_FILE" up -d --remove-orphans --wait --wait-timeout 600
-}
-
-verify_source_image_bundle() {
-    local web_revision
-    local backend_revision
-    web_revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$CANVAS_WEB_IMAGE")"
-    backend_revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$CANVAS_BACKEND_IMAGE")"
-    [[ "$web_revision" == "$CANVAS_RELEASE_REVISION" ]] || fail "本地 Web 镜像 revision 与检出代码不一致"
-    [[ "$backend_revision" == "$CANVAS_RELEASE_REVISION" ]] || fail "本地 Backend 镜像 revision 与检出代码不一致"
-    [[ "$web_revision" == "$backend_revision" ]] || fail "前后端镜像不是同一条提交，拒绝启动"
 }
 
 print_result() {
@@ -172,12 +126,10 @@ print_result() {
     [[ -n "$local_ip" ]] || local_ip="服务器IP"
 
     printf '\n部署完成。\n'
-    local configured_origin
-    configured_origin="$(sed -n 's/^CANVAS_CORS_ORIGINS=//p' .env | tail -n 1)"
-    printf '访问地址：%s\n' "${configured_origin:-http://${local_ip}:${CANVAS_HTTP_PORT}}"
+    printf '访问地址：http://%s:%s\n' "$local_ip" "$CANVAS_HTTP_PORT"
     printf '安装目录：%s\n' "$INSTALL_DIR"
     printf '查看状态：cd %q && docker compose --env-file .env -f %s -f %s ps\n' "$INSTALL_DIR" "$COMPOSE_FILE" "$BUILD_COMPOSE_FILE"
-    printf '\n新注册账号默认为普通用户；请通过受控流程初始化管理员。公网长期使用前请配置 HTTPS。\n'
+    printf '\n首次打开后注册的第一个账号会自动成为管理员。公网长期使用前请配置 HTTPS。\n'
 }
 
 main() {
@@ -186,9 +138,7 @@ main() {
     install_packages
     install_docker
     sync_source
-    resolve_release_identity
     prepare_environment
-    persist_release_identity
     start_services
     print_result
 }

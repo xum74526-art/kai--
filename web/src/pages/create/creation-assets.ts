@@ -1,5 +1,7 @@
 import type { UploadedFile } from "@/services/file-storage";
 import type { UploadedImage } from "@/services/image-storage";
+import { canvasVideoAssetPreviewUrl } from "@/lib/canvas/canvas-media-preview";
+import { resolveResourceUrl } from "@/services/api/resources";
 import type { ExternalAssetPickerReference } from "@/lib/plugins/plugin-types";
 import type { Asset, AudioAsset, ImageAsset, NewAsset } from "@/stores/use-asset-store";
 import type { ReferenceImage } from "@/types/image";
@@ -15,7 +17,9 @@ export type CreationDocumentAttachment = {
     previewUrl: string;
 };
 export type CreationAttachment = ((ReferenceImage | ReferenceVideo | ReferenceAudio) & { previewUrl: string }) | CreationDocumentAttachment;
-export type CreationMode = "text" | "image" | "video";
+import type { CreationMode } from "@/lib/creation-mode";
+
+export type { CreationMode };
 export type CreationAttachmentKind = "image" | "video" | "audio" | "file";
 
 const textDocumentExtensions = [".pdf", ".txt", ".md", ".csv", ".json", ".html", ".xml", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx"];
@@ -150,7 +154,7 @@ export function creationAttachmentFromDocument(file: File, uploaded: UploadedFil
 }
 
 export function creationAttachmentFromAsset(asset: ImageAsset): CreationAttachment {
-    const url = asset.data.dataUrl || asset.coverUrl;
+    const url = resolveResourceUrl(asset.data.storageKey, asset.data.dataUrl || asset.coverUrl);
     return {
         id: `asset:${asset.id}`,
         name: asset.title || "素材图片",
@@ -279,7 +283,7 @@ export function creationVideoAsset({ title, uploaded, metadata }: { title: strin
     return {
         kind: "video",
         title: title.trim() || "创作视频",
-        coverUrl: uploaded.url,
+        coverUrl: canvasVideoAssetPreviewUrl(uploaded.url, uploaded.preview?.url),
         tags: ["创作"],
         status: "confirmed",
         source: "创作页",

@@ -1,97 +1,45 @@
 package main
 
 import (
-	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
 
-func TestTrustedProxiesDefaultIgnoresForwardedClientIP(t *testing.T) {
-	engine := gin.New()
-	if err := configureTrustedProxies(engine, ""); err != nil {
-		t.Fatal(err)
-	}
-	engine.GET("/client-ip", func(c *gin.Context) { c.String(http.StatusOK, c.ClientIP()) })
-
-	request := httptest.NewRequest(http.MethodGet, "http://backend/client-ip", nil)
-	request.RemoteAddr = "198.51.100.10:4321"
-	request.Header.Set("X-Forwarded-For", "203.0.113.20")
-	response := httptest.NewRecorder()
-	engine.ServeHTTP(response, request)
-	if got := strings.TrimSpace(response.Body.String()); got != "198.51.100.10" {
-		t.Fatalf("ClientIP() = %q, want direct peer", got)
-	}
-}
-
-func TestTrustedProxiesUsesForwardedClientIPFromConfiguredProxy(t *testing.T) {
-	engine := gin.New()
-	if err := configureTrustedProxies(engine, "198.51.100.0/24"); err != nil {
-		t.Fatal(err)
-	}
-	engine.GET("/client-ip", func(c *gin.Context) { c.String(http.StatusOK, c.ClientIP()) })
-
-	request := httptest.NewRequest(http.MethodGet, "http://backend/client-ip", nil)
-	request.RemoteAddr = "198.51.100.10:4321"
-	request.Header.Set("X-Forwarded-For", "203.0.113.20")
-	response := httptest.NewRecorder()
-	engine.ServeHTTP(response, request)
-	if got := strings.TrimSpace(response.Body.String()); got != "203.0.113.20" {
-		t.Fatalf("ClientIP() = %q, want forwarded client", got)
-	}
-}
-
-func TestTrustedProxiesRejectsUniversalCIDR(t *testing.T) {
-	if err := configureTrustedProxies(gin.New(), "0.0.0.0/0"); err == nil {
-		t.Fatal("universal trusted proxy CIDR should be rejected")
-	}
-}
-
-func TestParseCORSPolicyRejectsWildcardWithCredentials(t *testing.T) {
-	if _, err := parseCORSPolicy("*"); err == nil {
-		t.Fatal("credentialed CORS must reject a wildcard origin")
-	}
-}
-
-func TestAllowedOriginUsesRequestHost(t *testing.T) {
-	t.Setenv("CANVAS_CORS_ORIGINS", "")
-	t.Setenv("CANVAS_PUBLIC_BASE_URL", "")
+func TestAllowedOriginWildcard(t *testing.T) {
+	t.Setenv("CANVAS_CORS_ORIGINS", "*")
 	context, _ := gin.CreateTestContext(httptest.NewRecorder())
-	context.Request = httptest.NewRequest("GET", "https://canvas.example.com/api/health", nil)
-	if !allowedOrigin(context, "https://canvas.example.com") {
-		t.Fatal("request host should be treated as same-origin")
+	context.Request = httptest.NewRequest("GET", "http://backend/api/health", nil)
+	if !allowedOrigin(context, "https://example.com") {
+		t.Fatal("wildcard CORS should allow a valid HTTPS origin")
+	}
+	if allowedOrigin(context, "ftp://example.com") {
+		t.Fatal("wildcard CORS should reject non-HTTP origins")
 	}
 }
 
-func TestAllowedOriginRejectsSameHostWithDifferentScheme(t *testing.T) {
-	t.Setenv("CANVAS_CORS_ORIGINS", "")
-	t.Setenv("CANVAS_PUBLIC_BASE_URL", "")
-	context, _ := gin.CreateTestContext(httptest.NewRecorder())
-	context.Request = httptest.NewRequest("GET", "https://canvas.example.com/api/health", nil)
-	if allowedOrigin(context, "http://canvas.example.com") {
-		t.Fatal("same host with a different scheme must not be treated as same-origin")
+func TestEnvironmentParsers(t *testing.T) {
+	t.Setenv("CANVAS_AUTO_MIGRATE", "false")
+	value, err := envBool("CANVAS_AUTO_MIGRATE", true)
+	if err != nil || value {
+		t.Fatalf("envBool = %v, %v", value, err)
+	}
+	t.Setenv("CANVAS_SHUTDOWN_TIMEOUT", "45s")
+	duration, err := envDuration("CANVAS_SHUTDOWN_TIMEOUT", time.Minute)
+	if err != nil || duration != 45*time.Second {
+		t.Fatalf("envDuration = %v, %v", duration, err)
 	}
 }
 
-func TestAllowedOriginUsesConfiguredPublicSchemeBehindProxy(t *testing.T) {
-	t.Setenv("CANVAS_CORS_ORIGINS", "")
-	t.Setenv("CANVAS_PUBLIC_BASE_URL", "https://canvas.example.com/kai")
-	context, _ := gin.CreateTestContext(httptest.NewRecorder())
-	context.Request = httptest.NewRequest("GET", "http://canvas.example.com/api/health", nil)
-	if !allowedOrigin(context, "https://canvas.example.com") {
-		t.Fatal("configured public HTTPS origin should be used behind the reverse proxy")
-	}
-}
-
-func TestAllowedOriginRejectsForgedForwardedHost(t *testing.T) {
+func TestAllowedOriginUsesForwardedHost(t *testing.T) {
 	t.Setenv("CANVAS_CORS_ORIGINS", "")
 	context, _ := gin.CreateTestContext(httptest.NewRecorder())
 	context.Request = httptest.NewRequest("GET", "http://backend/api/health", nil)
-	context.Request.Header.Set("X-Forwarded-Host", "canvas.example.com")
-	if allowedOrigin(context, "https://canvas.example.com") {
-		t.Fatal("untrusted X-Forwarded-Host must not bypass the CORS policy")
+	context.Request.Header.Set("X-Forwarded-Host", " canvas.example.com, proxy.internal")
+	if !allowedOrigin(context, "https://canvas.example.com") {
+		t.Fatal("forwarded public host should be treated as same-origin")
 	}
 }
 
@@ -123,33 +71,6 @@ func TestAllowedOriginConfiguredListDoesNotFallbackToArbitraryLocalhost(t *testi
 	context.Request = httptest.NewRequest("GET", "http://backend/api/health", nil)
 	if allowedOrigin(context, "http://localhost:3000") {
 		t.Fatal("configured CORS list should disable the implicit localhost fallback")
-	}
-}
-
-func TestAllowedOriginLocalhostFallbackRequiresLocalRequestHost(t *testing.T) {
-	t.Setenv("CANVAS_CORS_ORIGINS", "")
-	t.Setenv("CANVAS_PUBLIC_BASE_URL", "")
-	context, _ := gin.CreateTestContext(httptest.NewRecorder())
-	context.Request = httptest.NewRequest("GET", "https://api.example.com/api/health", nil)
-	if allowedOrigin(context, "http://localhost:3000") {
-		t.Fatal("public API host must not trust the implicit localhost fallback")
-	}
-	context.Request = httptest.NewRequest("GET", "http://127.0.0.1:8080/api/health", nil)
-	if !allowedOrigin(context, "http://localhost:3000") {
-		t.Fatal("local frontend and local API should retain the development fallback")
-	}
-}
-
-func TestCredentialedUnsafeRequestRequiresOrigin(t *testing.T) {
-	context, _ := gin.CreateTestContext(httptest.NewRecorder())
-	context.Request = httptest.NewRequest(http.MethodPost, "http://backend/api/tasks", nil)
-	context.Request.AddCookie(&http.Cookie{Name: "open_ai_canvas_session", Value: "session.token"})
-	if !credentialedUnsafeRequest(context) {
-		t.Fatal("credentialed POST should require a validated Origin")
-	}
-	context.Request.Method = http.MethodGet
-	if credentialedUnsafeRequest(context) {
-		t.Fatal("credentialed GET should not be treated as an unsafe write")
 	}
 }
 

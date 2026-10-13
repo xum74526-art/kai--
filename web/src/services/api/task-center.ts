@@ -1,22 +1,13 @@
-import { normalizeBackendMediaJson, normalizeBackendMediaUrl, normalizeBackendMediaUrls } from "@/lib/app-base-path";
-import { DREAMINA_SUBMIT_ERROR_MESSAGES, generationErrorMessage } from "@/lib/generation-error";
-import { ApiError, apiClient, compactApiParams, request, type BackendEnvelope } from "@/services/api/request";
-import {
-    deleteLocalDreaminaGenerationTask,
-    listLocalDreaminaGenerationTaskPage,
-    queryLocalDreaminaGenerationTask,
-    refreshLocalDreaminaGenerationTask,
-    waitForLocalDreaminaGenerationTask,
-    type LocalDreaminaGenerationTask,
-} from "@/services/local-dreamina-generation";
-import { isLocalDreaminaTaskId, projectLocalDreaminaDiagnosticLog, projectLocalDreaminaTask, stripLocalDreaminaTaskPrefix } from "@/services/local-dreamina-task-projection";
+import { generationErrorMessage } from "@/lib/generation-error";
+import { http, apiBaseURL, type BackendEnvelope } from "@/services/api/request";
+import { consumeTaskTextStream, createTaskTextStreamParser, type TaskTextStreamEvent } from "@/services/api/task-text-stream";
+import { recordDiagnosticEvent } from "@/services/diagnostics/client-diagnostics";
 
 export type { BackendEnvelope } from "@/services/api/request";
 
 export type TaskStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
 export type TaskBillingStatus = "reserved" | "running" | "settled" | "refunded" | "uncertain";
 export type ProviderCancelStatus = "requested" | "confirmed" | "uncertain";
-export type AgentSessionStatus = "active" | "completed" | "failed";
 export type GenerationTaskResultState = "NOT_AVAILABLE" | "PENDING_MATERIALIZATION" | "MATERIALIZING" | "READY" | "FAILED_RETRYABLE" | "FAILED_PERMANENT";
 export type GenerationTaskOutput = {
     outputIndex: number;
@@ -31,12 +22,13 @@ export type GenerationTask = {
     clientOperationId?: string;
     retryOf?: string;
     attemptGroupId?: string;
-    sessionId?: string;
     projectId?: string;
     type: string;
     status: TaskStatus;
     progress?: number;
     stage?: string;
+    mediaStage?: "download" | "upload" | "local_save" | "register" | "completed" | "checkpoint";
+    canRecoverMedia?: boolean;
     prompt: string;
     operation?: string;
     provider?: string;
@@ -52,6 +44,7 @@ export type GenerationTask = {
     receiptRecorded?: boolean;
     previewUrl?: string;
     previewKind?: "image" | "video";
+    previewPosterUrl?: string;
     inputJson?: string;
     resultJson?: string;
     resultState?: GenerationTaskResultState;
@@ -73,7 +66,13 @@ export type GenerationTask = {
         nodeId?: string;
         batchIndex?: number;
         batchCount?: number;
-    };
+        domainProjectId?: string;
+        chapterId?: string;
+		chapterOperation?: "characters" | "storyboard";
+		shotId?: string;
+		workflowStepId?: string;
+		artifactType?: string;
+	};
     created_at?: string;
     updated_at?: string;
 };
@@ -100,45 +99,10 @@ export type TaskTextReplay = {
     textDraft?: string;
     finalText?: string;
     complete: boolean;
-};
-
-export type AgentSession = {
-    id: string;
-    projectId?: string;
-    status: AgentSessionStatus;
-    prompt: string;
-    canvasSnapshotJson?: string;
-    canvasOpsJson?: string;
-    createdAt: string;
-    updatedAt: string;
-};
-
-export type AgentMessage = {
-    id: string;
-    sessionId: string;
-    role: "user" | "assistant" | "system" | "tool" | string;
-    content: string;
-    payload?: string;
-    createdAt: string;
-};
-
-export type TaskResult = {
-    id: string;
-    taskId: string;
-    sessionId?: string;
-    kind: string;
-    url?: string;
-    payload?: string;
-    createdAt: string;
-};
-
-export type SessionFile = {
-    id: string;
-    sessionId: string;
-    fileName: string;
-    mimeType: string;
-    size: number;
-    createdAt: string;
+    status: TaskStatus;
+    stage?: string;
+    progress: number;
+    error?: string;
 };
 
 export type TaskLog = {
@@ -152,26 +116,7 @@ export type TaskLog = {
     createdAt: string;
 };
 
-export type AgentSessionDetail = {
-    session: AgentSession;
-    messages: AgentMessage[];
-    tasks: GenerationTask[];
-    results: TaskResult[];
-};
-
-export type CreateSessionInput = {
-    projectId?: string;
-    prompt: string;
-    canvasSnapshot?: Record<string, unknown>;
-    references?: string[];
-    projectStyle?: { presetId: string; title: string; prompt: string };
-    characters?: Array<{ assetId: string; versionId: string; name: string; definition: Record<string, unknown> }>;
-    config?: Record<string, unknown>;
-	logicalModelId?: string;
-};
-
 export type CreateTaskInput = {
-    sessionId?: string;
     projectId?: string;
     type?: string;
     operation?: string;
@@ -181,65 +126,9 @@ export type CreateTaskInput = {
 	logicalModelId?: string;
     input?: Record<string, unknown>;
 };
-
-const api = apiClient;
-
-function normalizeGenerationTaskMedia(task: GenerationTask) {
-    const previewUrl = task.previewUrl ? normalizeBackendMediaUrl(task.previewUrl) : task.previewUrl;
-    const resultJson = task.resultJson ? normalizeBackendMediaJson(task.resultJson) : task.resultJson;
-    const outputs = task.outputs ? normalizeBackendMediaUrls(task.outputs) : task.outputs;
-    if (previewUrl === task.previewUrl && resultJson === task.resultJson && outputs === task.outputs) return task;
-    return { ...task, previewUrl, resultJson, outputs };
-}
-
-function normalizeTaskResultMedia(result: TaskResult) {
-    const url = result.url ? normalizeBackendMediaUrl(result.url) : result.url;
-    const payload = result.payload ? normalizeBackendMediaJson(result.payload) : result.payload;
-    return url === result.url && payload === result.payload ? result : { ...result, url, payload };
-}
-
-function normalizeAgentSessionDetailMedia(detail: AgentSessionDetail) {
-    const tasks = detail.tasks.map(normalizeGenerationTaskMedia);
-    const results = detail.results.map(normalizeTaskResultMedia);
-    return tasks.every((task, index) => task === detail.tasks[index]) && results.every((result, index) => result === detail.results[index]) ? detail : { ...detail, tasks, results };
-}
-
-export function createAgentSession(input: CreateSessionInput) {
-    return request<AgentSessionDetail>(api.post("/sessions", input)).then(normalizeAgentSessionDetailMedia).then((detail) => {
-        detail.tasks.forEach((task) => notifyCanvasTaskCreated(task));
-        return detail;
-    });
-}
-
-export function queryAgentSession(id: string) {
-    return request<AgentSessionDetail>(api.get(`/sessions/${encodeURIComponent(id)}`)).then(normalizeAgentSessionDetailMedia);
-}
-
-export function agentSessionFailureMessage(detail: AgentSessionDetail, fallback = "后端影视 Agent 会话失败") {
-    for (let index = detail.tasks.length - 1; index >= 0; index -= 1) {
-        const task = detail.tasks[index];
-        if ((task.status === "failed" || task.status === "cancelled") && task.error?.trim()) return generationErrorMessage(task.error.trim());
-    }
-    for (let index = detail.messages.length - 1; index >= 0; index -= 1) {
-        const message = detail.messages[index];
-        if (message.role === "assistant" && message.content.trim()) return generationErrorMessage(message.content.trim());
-    }
-    return fallback;
-}
-
-export function downloadSessionResults(id: string) {
-    return request<TaskResult[]>(api.get(`/sessions/${encodeURIComponent(id)}/results`)).then((results) => results.map(normalizeTaskResultMedia));
-}
-
-export function uploadAgentFile(sessionId: string, file: File) {
-    const formData = new FormData();
-    formData.append("sessionId", sessionId);
-    formData.append("file", file);
-    return request<SessionFile>(api.post("/files", formData));
-}
-
 export function createGenerationTask(input: CreateTaskInput) {
-    return request<GenerationTask>(api.post("/tasks", input)).then(normalizeGenerationTaskMedia).then((task) => {
+    return http.post<GenerationTask>("/tasks", input).then((task) => {
+        recordDiagnosticEvent({ level: "info", category: "task", message: "任务已创建", taskId: task.id, projectId: task.projectId });
         notifyCanvasTaskCreated(task);
         // 创建任务时积分已被预占，不能等任务结束后才刷新可用余额。
         window.dispatchEvent(new CustomEvent("wallet:updated"));
@@ -254,47 +143,21 @@ export type GenerationTaskPageRequest = {
     cursor?: string;
 };
 
-export type CreateMessageGenerationTaskQuery = {
-    conversationId: string;
-    messageId: string;
-    signal?: AbortSignal;
-};
-
 type GenerationTaskPage<T> = { tasks: T[]; nextCursor?: string };
 type GenerationTaskListOptions = { projectId?: string; activeOnly?: boolean };
 type GenerationTaskListDependencies = {
     listBackend?(limit: number, options?: GenerationTaskListOptions, signal?: AbortSignal): Promise<GenerationTask[]>;
-    listLocal?(options?: GenerationTaskListOptions, signal?: AbortSignal): Promise<LocalDreaminaGenerationTask[]>;
     listBackendPage?(request: GenerationTaskPageRequest, signal?: AbortSignal): Promise<GenerationTaskPage<GenerationTask>>;
-    listLocalPage?(request: GenerationTaskPageRequest, signal?: AbortSignal): Promise<GenerationTaskPage<LocalDreaminaGenerationTask>>;
 };
 
 const defaultGenerationTaskListDependencies: GenerationTaskListDependencies = {
     listBackendPage: async (page, signal) => ({
-        tasks: await request<GenerationTask[]>(
-            api.get("/tasks", {
-                params: { limit: Math.min(page.limit, 100), projectId: page.projectId, activeOnly: page.activeOnly || undefined },
+        tasks: await http.get<GenerationTask[]>("/tasks", {
+                params: { pageSize: Math.min(page.limit, 100), projectId: page.projectId, activeOnly: page.activeOnly || undefined },
                 signal,
             }),
-        ),
     }),
-    listLocalPage: (page, signal) => listLocalDreaminaGenerationTaskPage(page, {}, signal),
 };
-
-export function listGenerationTasksByCreateMessage(query: CreateMessageGenerationTaskQuery) {
-    const conversationId = typeof query?.conversationId === "string" ? query.conversationId.trim() : "";
-    const messageId = typeof query?.messageId === "string" ? query.messageId.trim() : "";
-    if (!conversationId) throw new Error("创作消息任务查询缺少 conversationId");
-    if (!messageId) throw new Error("创作消息任务查询缺少 messageId");
-
-    // 后端以登录 Cookie 约束当前用户；此处不能混入浏览器本地任务缓存或其他消息的任务。
-    return request<GenerationTask[]>(
-        api.get("/tasks", {
-            params: compactApiParams({ conversationId, messageId, limit: 100 }),
-            signal: query.signal,
-        }),
-    ).then((tasks) => tasks.map(normalizeGenerationTaskMedia));
-}
 
 export async function listGenerationTasks(limit = 30, options?: { projectId?: string; activeOnly?: boolean }, dependencies: GenerationTaskListDependencies = defaultGenerationTaskListDependencies, signal?: AbortSignal) {
     if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
@@ -317,21 +180,9 @@ export async function listGenerationTasks(limit = 30, options?: { projectId?: st
                     pageSignal,
                 )) ?? [],
         }));
-    const localPageReader =
-        dependencies.listLocalPage ??
-        (async (page: GenerationTaskPageRequest, pageSignal?: AbortSignal) => ({
-            tasks:
-                (await dependencies.listLocal?.(
-                    {
-                        ...(page.projectId ? { projectId: page.projectId } : {}),
-                        activeOnly: page.activeOnly,
-                    },
-                    pageSignal,
-                )) ?? [],
-        }));
-    const [backendTasks, localTasks] = await Promise.all([collectGenerationTaskPages(backendPageReader, baseRequest, boundedLimit, signal), collectGenerationTaskPages(localPageReader, baseRequest, boundedLimit, signal).catch(() => [])]);
+    const backendTasks = await collectGenerationTaskPages(backendPageReader, baseRequest, boundedLimit, signal);
     if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
-    return [...backendTasks.map(normalizeGenerationTaskMedia), ...localTasks.map((task) => projectLocalDreaminaTask(task))]
+    return backendTasks
         .filter((task) => !options?.projectId || task.projectId === options.projectId)
         .filter((task) => !options?.activeOnly || task.status === "queued" || task.status === "running")
         .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt) || right.id.localeCompare(left.id))
@@ -355,256 +206,115 @@ async function collectGenerationTaskPages<T>(readPage: (request: GenerationTaskP
 }
 
 export function queryGenerationTask(id: string, options?: { signal?: AbortSignal }) {
-    if (isLocalDreaminaTaskId(id)) {
-        return queryLocalDreaminaGenerationTask(stripLocalDreaminaTaskPrefix(id), undefined, {}, options?.signal).then((task) => projectLocalDreaminaTask(task));
-    }
-    return request<GenerationTask>(api.get(`/tasks/${encodeURIComponent(id)}`, { signal: options?.signal })).then(normalizeGenerationTaskMedia);
-}
-
-export function waitForLocalGenerationTask(id: string, options?: { signal?: AbortSignal }) {
-    if (!isLocalDreaminaTaskId(id)) return Promise.reject(new Error("当前任务不是本机即梦任务"));
-    return waitForLocalDreaminaGenerationTask(stripLocalDreaminaTaskPrefix(id), undefined, {}, options?.signal).then((task) => projectLocalDreaminaTask(task));
-}
-
-export function splitGenerationTaskObservationIds(ids: readonly string[]) {
-    return {
-        localWaitIds: ids.filter(isLocalDreaminaTaskId),
-        remotePollIds: ids.filter((id) => !isLocalDreaminaTaskId(id)),
-    };
+    return http.get<GenerationTask>(`/tasks/${encodeURIComponent(id)}`, { signal: options?.signal });
 }
 
 type GenerationTaskSubscriptionDependencies = {
-    queryTask(id: string, options?: { signal?: AbortSignal }): Promise<GenerationTask>;
-    waitTask(id: string, options?: { signal?: AbortSignal; initialTask?: GenerationTask; onTaskUpdate?: (task: GenerationTask) => void }): Promise<GenerationTask>;
-    maxRetries?: number;
-    retryDelayMs?: (retryCount: number) => number;
+    queryTask(id: string): Promise<GenerationTask>;
+    waitTask(id: string, options?: { initialTask?: GenerationTask; onTaskUpdate?: (task: GenerationTask) => void }): Promise<GenerationTask>;
 };
-
-export type GenerationTaskSubscriptionError = {
-    taskId: string;
-    error: unknown;
-    retryable: boolean;
-    retryCount: number;
-    willRetry: boolean;
-};
-
-export type GenerationTaskSubscriptionOptions = {
-    onError?: (event: GenerationTaskSubscriptionError) => void;
-};
-
-const MAX_TASK_OBSERVATION_RETRIES = 3;
-
-function isRetryableTaskObservationError(error: unknown) {
-    if (isAbortError(error)) return false;
-    const status = errorStatus(error);
-    // 未认证、无权限和任务已删除等 4xx 结果不会自行恢复，不能继续轮询。
-    if (status !== undefined && status >= 400 && status < 500 && status !== 408 && status !== 425 && status !== 429) return false;
-    if (error instanceof ApiError) return error.retryable || isTemporaryNetworkError(error.cause) || (status === undefined && isTemporaryNetworkError(error));
-    return isTemporaryNetworkError(error);
-}
-
-function errorStatus(error: unknown) {
-    if (!error || typeof error !== "object") return undefined;
-    const status = (error as { status?: unknown }).status;
-    return typeof status === "number" && Number.isFinite(status) ? status : undefined;
-}
-
-function isAbortError(error: unknown) {
-    return error instanceof DOMException && error.name === "AbortError";
-}
-
-function isTemporaryNetworkError(error: unknown): boolean {
-    if (!error || typeof error !== "object") return false;
-    const candidate = error as { name?: unknown; message?: unknown; code?: unknown };
-    if (candidate.name === "AbortError") return false;
-    const code = typeof candidate.code === "string" ? candidate.code.toUpperCase() : "";
-    if (["ECONNABORTED", "ECONNRESET", "ECONNREFUSED", "ENETUNREACH", "ETIMEDOUT", "EAI_AGAIN", "ERR_NETWORK", "ERR_CONNECTION_RESET"].includes(code)) return true;
-    const message = typeof candidate.message === "string" ? candidate.message : "";
-    return /(?:network(?:\s+error)?|failed to fetch|load failed|timeout|timed out|temporar(?:y|ily)|connection (?:reset|refused|lost)|offline)/i.test(message);
-}
 
 export function createGenerationTaskSubscriptionService(dependencies: GenerationTaskSubscriptionDependencies) {
-    const maxRetries = Number.isSafeInteger(dependencies.maxRetries) ? Math.max(0, dependencies.maxRetries!) : MAX_TASK_OBSERVATION_RETRIES;
-    const retryDelayMs = dependencies.retryDelayMs ?? ((retryCount: number) => Math.min(1_000 * 2 ** retryCount, 30_000));
     type Entry = {
-        listeners: Map<(task: GenerationTask) => void, GenerationTaskSubscriptionOptions["onError"]>;
+        listeners: Set<(task: GenerationTask) => void>;
         latest?: GenerationTask;
         observation?: Promise<void>;
-        controller?: AbortController;
-        retryTimer?: ReturnType<typeof setTimeout>;
-        retryCount: number;
-        observationFailed?: GenerationTaskSubscriptionError;
     };
     const entries = new Map<string, Entry>();
-    const isTerminal = (task?: GenerationTask) => task?.status === "succeeded" || task?.status === "failed" || task?.status === "cancelled";
-    const notifyTaskListener = (listener: (task: GenerationTask) => void, task: GenerationTask) => {
-        try {
-            listener(task);
-        } catch (error) {
-            // 单个页面订阅者的渲染/状态异常不能让同一任务的其他订阅者停止观察。
-            console.error("生成任务订阅回调失败", error);
-        }
-    };
-    const notifyErrorListener = (onError: GenerationTaskSubscriptionOptions["onError"], event: GenerationTaskSubscriptionError) => {
-        try {
-            onError?.(event);
-        } catch (error) {
-            console.error("生成任务订阅错误回调失败", error);
-        }
-    };
     const publish = (entry: Entry, task: GenerationTask) => {
         entry.latest = task;
-        for (const listener of entry.listeners.keys()) notifyTaskListener(listener, task);
+        for (const listener of entry.listeners) listener(task);
     };
-    const publishError = (entry: Entry, event: GenerationTaskSubscriptionError) => {
-        for (const onError of entry.listeners.values()) notifyErrorListener(onError, event);
-    };
-    const disposeIdleEntry = (id: string, entry: Entry) => {
-        if (entries.get(id) === entry && entry.listeners.size === 0 && !entry.observation && !entry.retryTimer) entries.delete(id);
-    };
-    let observe: (id: string, entry: Entry) => void;
-    const scheduleRetry = (id: string, entry: Entry) => {
-        if (entry.listeners.size === 0 || entry.retryTimer || isTerminal(entry.latest) || entry.observationFailed || entry.retryCount >= maxRetries) return false;
-        const requestedDelay = retryDelayMs(entry.retryCount);
-        const delay = Number.isFinite(requestedDelay) ? Math.max(0, requestedDelay) : 0;
-        entry.retryCount += 1;
-        entry.retryTimer = setTimeout(() => {
-            entry.retryTimer = undefined;
-            observe(id, entry);
-        }, delay);
-        return true;
-    };
-    observe = (id: string, entry: Entry) => {
-        if (entry.observation || entry.retryTimer || entry.listeners.size === 0 || isTerminal(entry.latest) || entry.observationFailed) return;
-        const controller = new AbortController();
-        entry.controller = controller;
-        const observation = (async () => {
-            const initial = await dependencies.queryTask(id, { signal: controller.signal });
-            // 重试预算属于整个订阅生命周期；等待阶段失败时不能因这次查询成功而反复清零。
+    const observe = (id: string, entry: Entry) => {
+        if (entry.observation) return;
+        entry.observation = (async () => {
+            const initial = await dependencies.queryTask(id);
             publish(entry, initial);
-            if (isTerminal(initial)) return;
+            if (initial.status === "succeeded" || initial.status === "failed" || initial.status === "cancelled") return;
             const terminal = await dependencies.waitTask(id, {
-                signal: controller.signal,
                 initialTask: initial,
                 onTaskUpdate: (task) => publish(entry, task),
             });
             publish(entry, terminal);
-        })();
-        entry.observation = observation;
-        void observation.catch((error) => {
-            // waitForGenerationTask 会先发布失败/取消终态，再以异常结束等待；
-            // 该终态已由 listener 消费，不能再误报为“状态同步失败”。
-            if (controller.signal.aborted || isTerminal(entry.latest)) return;
-            const retryable = isRetryableTaskObservationError(error);
-            const willRetry = retryable && scheduleRetry(id, entry);
-            const event: GenerationTaskSubscriptionError = { taskId: id, error, retryable, retryCount: entry.retryCount, willRetry };
-            if (!willRetry) entry.observationFailed = event;
-            publishError(entry, event);
-        }).finally(() => {
-            if (entry.observation === observation) {
-                entry.observation = undefined;
-                entry.controller = undefined;
-            }
-            if (entry.listeners.size > 0 && !entry.retryTimer && !isTerminal(entry.latest) && !entry.observationFailed) observe(id, entry);
-            disposeIdleEntry(id, entry);
+        })().catch((error) => {
+            // 观察失败不能永久占住 entry，否则页面重新订阅时也不会再查询任务。
+            entry.observation = undefined;
+            console.warn("生成任务观察中断，后续订阅将重新建立连接", { taskId: id, error });
         });
     };
     return {
-        subscribe(ids: readonly string[], listener: (task: GenerationTask) => void, options: GenerationTaskSubscriptionOptions = {}) {
+        subscribe(ids: readonly string[], listener: (task: GenerationTask) => void) {
             const uniqueIds = [...new Set(ids)];
             for (const id of uniqueIds) {
-                const entry = entries.get(id) ?? { listeners: new Map<(task: GenerationTask) => void, GenerationTaskSubscriptionOptions["onError"]>(), retryCount: 0 };
+                const entry = entries.get(id) ?? { listeners: new Set<(task: GenerationTask) => void>() };
                 entries.set(id, entry);
-                entry.listeners.set(listener, options.onError);
-                if (entry.latest) notifyTaskListener(listener, entry.latest);
-                if (entry.observationFailed) notifyErrorListener(options.onError, entry.observationFailed);
+                entry.listeners.add(listener);
+                if (entry.latest) listener(entry.latest);
                 observe(id, entry);
             }
             return () => {
-                for (const id of uniqueIds) {
-                    const entry = entries.get(id);
-                    if (!entry) continue;
-                    entry.listeners.delete(listener);
-                    if (entry.listeners.size === 0) {
-                        entry.controller?.abort();
-                        if (entry.retryTimer) {
-                            clearTimeout(entry.retryTimer);
-                            entry.retryTimer = undefined;
-                        }
-                    }
-                    disposeIdleEntry(id, entry);
-                }
+                for (const id of uniqueIds) entries.get(id)?.listeners.delete(listener);
             };
         },
     };
 }
 
 const generationTaskSubscriptionService = createGenerationTaskSubscriptionService({
-    queryTask: (id, options) => queryGenerationTask(id, options),
+    queryTask: (id) => queryGenerationTask(id),
     waitTask: (id, options) => waitForGenerationTask(id, options),
 });
 
-export function subscribeGenerationTasks(ids: readonly string[], listener: (task: GenerationTask) => void, options?: GenerationTaskSubscriptionOptions) {
-    return generationTaskSubscriptionService.subscribe(ids, listener, options);
+export function subscribeGenerationTasks(ids: readonly string[], listener: (task: GenerationTask) => void) {
+    return generationTaskSubscriptionService.subscribe(ids, listener);
 }
 
 export function appendTaskTextDelta(id: string, content: string) {
-    return request<TaskTextDelta>(api.post(`/tasks/${encodeURIComponent(id)}/text-deltas`, { content }));
+    return http.post<TaskTextDelta>(`/tasks/${encodeURIComponent(id)}/text-deltas`, { content });
 }
 
 export function completeTextReplayTask(id: string, text: string) {
-    return request<GenerationTask>(api.post(`/tasks/${encodeURIComponent(id)}/text-replay-complete`, { text })).then(normalizeGenerationTaskMedia);
+    return http.post<GenerationTask>(`/tasks/${encodeURIComponent(id)}/text-replay-complete`, { text });
 }
 
 export function queryTaskTextReplay(id: string, after = 0) {
-    return request<TaskTextReplay>(api.get(`/tasks/${encodeURIComponent(id)}/text-deltas`, { params: { after } }));
+    return http.get<TaskTextReplay>(`/tasks/${encodeURIComponent(id)}/text-deltas`, { params: { after } });
 }
 
 export function retryGenerationTask(id: string) {
-    return request<GenerationTask>(api.post(`/tasks/${encodeURIComponent(id)}/retry`)).then(normalizeGenerationTaskMedia);
+    return http.post<GenerationTask>(`/tasks/${encodeURIComponent(id)}/retry`);
+}
+
+export function recoverGenerationTaskMedia(id: string) {
+    return http.post<GenerationTask>(`/tasks/${encodeURIComponent(id)}/recover-media`);
+}
+
+export function cancelGenerationTask(id: string) {
+    return http.post<GenerationTask>(`/tasks/${encodeURIComponent(id)}/cancel`).then((task) => {
+        window.dispatchEvent(new CustomEvent("canvas:task-cancelled", { detail: { task } }));
+        window.dispatchEvent(new CustomEvent("wallet:updated"));
+        return task;
+    });
 }
 
 export function queryFailedVideoProviderTask(id: string) {
-    return request<ProviderTaskQueryResult>(api.post(`/tasks/${encodeURIComponent(id)}/query-provider`)).then((result) => ({ ...result, task: normalizeGenerationTaskMedia(result.task) }));
+    return http.post<ProviderTaskQueryResult>(`/tasks/${encodeURIComponent(id)}/query-provider`);
 }
 
 export function refreshGenerationTaskStatus(id: string, options?: { signal?: AbortSignal }) {
-    if (!isLocalDreaminaTaskId(id)) return Promise.reject(new Error("当前任务不支持手动更新官方状态"));
-    return refreshLocalDreaminaGenerationTask(stripLocalDreaminaTaskPrefix(id), {}, options?.signal).then((task) => projectLocalDreaminaTask(task));
+    return http.get<GenerationTask>(`/tasks/${encodeURIComponent(id)}`, { signal: options?.signal });
 }
 
 export function deleteGenerationTask(id: string) {
-    if (!isLocalDreaminaTaskId(id)) return Promise.reject(new Error("当前任务不支持删除"));
-    return deleteLocalDreaminaGenerationTask(stripLocalDreaminaTaskPrefix(id));
+    return http.delete<void>(`/tasks/${encodeURIComponent(id)}`);
 }
 
 export async function listTaskLogs(id: string) {
-    if (isLocalDreaminaTaskId(id)) {
-        const task = await queryGenerationTask(id);
-        return [projectGenerationTaskSafeLog(task)];
-    }
-    const raw = await request<Array<{ level?: unknown; message?: unknown; payload?: unknown; createdAt?: unknown }>>(api.get(`/tasks/${encodeURIComponent(id)}/logs`));
+    const raw = await http.get<Array<{ level?: unknown; message?: unknown; payload?: unknown; createdAt?: unknown }>>(`/tasks/${encodeURIComponent(id)}/logs`);
     return raw.map((log, index) => projectBackendSafeTaskLog(id, log, index));
 }
 
 export function formatTaskLog(log: TaskLog) {
     return [`stage=${log.stage}`, ...(log.errorCode ? [`error=${log.errorCode}`] : []), `provenance=${log.provenance}`, ...(log.observedAt ? [`observedAt=${log.observedAt}`] : [])].join(" ");
-}
-
-function projectGenerationTaskSafeLog(task: GenerationTask): TaskLog {
-    const diagnostic = projectLocalDreaminaDiagnosticLog({
-        level: task.errorCode || task.status === "failed" || task.status === "cancelled" ? "error" : "info",
-        stage: task.stage || task.status,
-        errorCode: task.errorCode,
-        provenance: task.officialStatus ? "provider_observation" : "task_state",
-        observedAt: task.updatedAt,
-    });
-    return {
-        id: `safe:${task.id}:${task.updatedAt}`,
-        taskId: task.id,
-        ...diagnostic,
-        createdAt: diagnostic.observedAt,
-    };
 }
 
 export function projectBackendSafeTaskLog(taskId: string, raw: { level?: unknown; message?: unknown; payload?: unknown; createdAt?: unknown }, index: number): TaskLog {
@@ -629,37 +339,35 @@ function safeTaskLogStage(value: unknown) {
     return match?.[1]?.toLowerCase();
 }
 
-const SAFE_TASK_LOG_ERROR_CODES = new Set([...Object.keys(DREAMINA_SUBMIT_ERROR_MESSAGES), "dreamina_query_failed", "dreamina_submission_unknown", "dreamina_reference_invalid"]);
+const SAFE_TASK_LOG_ERROR_CODES = new Set(["provider_query_failed", "provider_submission_unknown", "provider_reference_invalid"]);
 
 function safeTaskLogErrorCode(value: unknown) {
     if (typeof value !== "string") return undefined;
-    for (const match of value.matchAll(/(?:dreamina|local_generation|model|provider)_[a-z0-9_]{2,80}/gi)) {
+    for (const match of value.matchAll(/(?:model|provider)_[a-z0-9_]{2,80}/gi)) {
         const errorCode = match[0].toLowerCase();
         if (SAFE_TASK_LOG_ERROR_CODES.has(errorCode)) return errorCode;
     }
     return undefined;
 }
 
-export async function waitForGenerationTask(id: string, options?: { signal?: AbortSignal; intervalMs?: number; timeoutMs?: number; initialTask?: GenerationTask; onTaskUpdate?: (task: GenerationTask) => void }) {
-    if (isLocalDreaminaTaskId(id)) {
-        try {
-            const task = await waitForLocalGenerationTask(id, { signal: options?.signal });
-            options?.onTaskUpdate?.(task);
-            if (task.status === "succeeded") return task;
-            if (task.status === "failed" || task.status === "cancelled") {
-                throw new Error(task.error ? generationErrorMessage(task.error) : `任务${task.status === "cancelled" ? "已取消" : "失败"}`);
-            }
-            throw new Error("本机即梦任务等待提前结束");
-        } catch (error) {
-            if (options?.signal?.aborted) throw new DOMException("Aborted", "AbortError");
-            throw error;
-        }
-    }
+export type WaitForGenerationTaskOptions = {
+	textEventsSource?: "task" | "agent";
+    signal?: AbortSignal;
+    intervalMs?: number;
+    timeoutMs?: number;
+    initialTask?: GenerationTask;
+    onTaskUpdate?: (task: GenerationTask) => void;
+    onTextDelta?: (text: string) => void;
+    useTextEvents?: boolean;
+};
+
+export async function waitForGenerationTask(id: string, options?: WaitForGenerationTaskOptions) {
+    if (options?.onTextDelta || options?.useTextEvents) return waitForGenerationTaskTextEvents(id, options);
     const startedAt = Date.now();
     const intervalMs = options?.intervalMs || 2000;
     let lastTask = options?.initialTask;
     let lastQueryError: unknown;
-    let consecutiveRetryableQueryFailures = 0;
+    let consecutiveFailures = 0;
     try {
         while (Date.now() - startedAt < (options?.timeoutMs || taskWaitTimeoutMs(lastTask))) {
             if (options?.signal?.aborted) throw new DOMException("Aborted", "AbortError");
@@ -668,14 +376,16 @@ export async function waitForGenerationTask(id: string, options?: { signal?: Abo
                 task = await queryGenerationTask(id, { signal: options?.signal });
                 lastTask = task;
                 lastQueryError = undefined;
-                // 只有拿到可用任务状态才恢复内部容错额度，避免断网时持续轮询到任务超时。
-                consecutiveRetryableQueryFailures = 0;
+                consecutiveFailures = 0;
                 options?.onTaskUpdate?.(task);
             } catch (error) {
-                if (!isRetryableTaskObservationError(error)) throw error;
                 lastQueryError = error;
-                consecutiveRetryableQueryFailures += 1;
-                if (consecutiveRetryableQueryFailures > MAX_TASK_OBSERVATION_RETRIES) throw error;
+                consecutiveFailures += 1;
+                // 连续失败说明查询通道已不可用，继续轮询只会空转到整体超时；
+                // 保留少量容忍度（约 10 秒）以跳过瞬时抖动后直接报错，便于用户尽早处理。
+                if (consecutiveFailures >= 5) {
+                    throw error instanceof Error ? error : new Error(String(error));
+                }
                 await delay(intervalMs, options?.signal);
                 continue;
             }
@@ -699,10 +409,138 @@ export async function waitForGenerationTask(id: string, options?: { signal?: Abo
     throw new Error(lastQueryError instanceof Error ? `任务状态同步失败：${lastQueryError.message}` : "任务执行超时，请稍后重试");
 }
 
+async function waitForGenerationTaskTextEvents(id: string, options: WaitForGenerationTaskOptions) {
+    const startedAt = Date.now();
+    const intervalMs = options.intervalMs || 1000;
+    let lastTask = options.initialTask;
+    let lastEventId = 0;
+    // Agent subscriptions replay from cursor 0; an existing draft must not be
+    // prepended to the same persisted deltas when reopening a conversation.
+    let fullText = options.textEventsSource === "agent" ? "" : lastTask?.textDraft || "";
+    let lastStreamError: unknown;
+    if (!lastTask) {
+        lastTask = await queryGenerationTask(id, { signal: options.signal });
+        options.onTaskUpdate?.(lastTask);
+    }
+    const timeoutMs = options.timeoutMs || taskWaitTimeoutMs(lastTask);
+    while (Date.now() - startedAt < timeoutMs) {
+        if (options.signal?.aborted) throw new DOMException("Aborted", "AbortError");
+        let terminalReceived = false;
+        try {
+            const base = String(apiBaseURL).replace(/\/+$/, "");
+            const cursor = lastEventId > 0 ? `?after=${encodeURIComponent(String(lastEventId))}` : "";
+            const path = options.textEventsSource === "agent" ? `/agent/runs/${encodeURIComponent(id)}/events` : `/tasks/${encodeURIComponent(id)}/text-events`;
+            const response = await fetch(`${base}${path}${cursor}`, {
+                headers: { Accept: "text/event-stream" },
+                credentials: "include",
+                signal: options.signal,
+            });
+            if (!response.ok) throw new TaskTextStreamFatalError(await taskTextStreamHTTPError(response));
+            if (!(response.headers.get("content-type") || "").toLowerCase().includes("text/event-stream")) {
+                throw new TaskTextStreamFatalError("任务文本流接口未返回事件流，请检查后端地址和反向代理配置");
+            }
+            if (!response.body) throw new Error("任务文本流不可用");
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            const parser = createTaskTextStreamParser();
+            const onEvent = (event: TaskTextStreamEvent) => {
+                const payload = asTaskTextStreamRecord(event.data);
+                if (event.event === "delta") {
+                    const sequence = numberValue(payload.sequence) || event.id || 0;
+                    if (sequence <= lastEventId) return;
+                    const content = typeof payload.content === "string" ? payload.content : "";
+                    lastEventId = sequence;
+                    if (!content) return;
+                    fullText += content;
+                    options.onTextDelta?.(fullText);
+                    if (lastTask) {
+                        lastTask = { ...lastTask, textDraft: fullText };
+                        options.onTaskUpdate?.(lastTask);
+                    }
+                    return;
+                }
+                if (event.event === "progress") {
+                    if (!lastTask) return;
+                    lastTask = {
+                        ...lastTask,
+                        ...(isTaskStatus(payload.status) ? { status: payload.status } : {}),
+                        ...(typeof payload.stage === "string" ? { stage: payload.stage } : {}),
+                        ...(numberValue(payload.progress) !== undefined ? { progress: numberValue(payload.progress) } : {}),
+                    };
+                    options.onTaskUpdate?.(lastTask);
+                    return;
+                }
+                if (event.event === "terminal") {
+                    terminalReceived = true;
+                    if (typeof payload.finalText === "string" && payload.finalText !== fullText) {
+                        fullText = payload.finalText;
+                        options.onTextDelta?.(fullText);
+                    }
+                    return;
+                }
+                if (event.event === "error") throw new Error(typeof payload.message === "string" ? payload.message : "任务文本流不可用");
+            };
+            for (;;) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                consumeTaskTextStream(parser, decoder.decode(value, { stream: true }), onEvent);
+            }
+            consumeTaskTextStream(parser, decoder.decode(), onEvent, true);
+            if (terminalReceived) {
+                const completed = await queryGenerationTask(id, { signal: options.signal });
+                options.onTaskUpdate?.(completed);
+                window.dispatchEvent(new CustomEvent("wallet:updated"));
+                if (completed.status === "succeeded") return completed;
+                if (completed.status === "failed" || completed.status === "cancelled") {
+                    throw new TaskTextStreamFatalError(completed.error ? generationErrorMessage(completed.error) : `任务${completed.status === "cancelled" ? "已取消" : "失败"}`);
+                }
+            }
+            lastStreamError = new Error("任务文本流连接提前结束");
+        } catch (error) {
+            if (options.signal?.aborted) throw new DOMException("Aborted", "AbortError");
+            if (error instanceof TaskTextStreamFatalError) throw error;
+            lastStreamError = error;
+        }
+        await delay(intervalMs, options.signal);
+    }
+    throw new Error(lastStreamError instanceof Error ? `任务文本流同步失败：${lastStreamError.message}` : "任务执行超时，请稍后重试");
+}
+
+function asTaskTextStreamRecord(value: unknown): Record<string, unknown> {
+    return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function numberValue(value: unknown) {
+    return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function isTaskStatus(value: unknown): value is TaskStatus {
+    return value === "queued" || value === "running" || value === "succeeded" || value === "failed" || value === "cancelled";
+}
+
+class TaskTextStreamFatalError extends Error {
+    constructor(message: string) {
+        super(message);
+        this.name = "TaskTextStreamFatalError";
+    }
+}
+
+async function taskTextStreamHTTPError(response: Response) {
+    try {
+        const payload = await response.json() as { msg?: unknown };
+        if (typeof payload.msg === "string" && payload.msg.trim()) return payload.msg;
+    } catch {
+        // SSE 错误响应可能是空正文或网关 HTML，只返回状态码，避免泄露正文。
+    }
+    return `任务文本流请求失败（HTTP ${response.status}）`;
+}
+
 function taskWaitTimeoutMs(task?: GenerationTask) {
     const type = task?.type || "";
-    if (type.includes("storyboard")) return 13 * 60 * 1000;
-    if (type.includes("video")) return 32 * 60 * 1000;
+    // 等待上限必须不小于后端同类任务的执行超时（分镜 20 分钟、视频 120 分钟，见后台
+    // 资源与策略），否则长任务会在前端被判超时、消息显示失败，而后端其实还在跑并最终成功。
+    if (type.includes("storyboard")) return 25 * 60 * 1000;
+    if (type.includes("video")) return 125 * 60 * 1000;
     if (type.includes("image")) return 10 * 60 * 1000;
     if (type.includes("text") || type.includes("audio")) return 12 * 60 * 1000;
     return 10 * 60 * 1000;

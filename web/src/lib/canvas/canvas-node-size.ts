@@ -1,10 +1,16 @@
 import { NODE_DEFAULT_SIZE } from "@/constant/canvas";
-import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
+import { CanvasNodeType, isBuiltinCanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 
 export const MEDIA_NODE_MIN_SIZE = { width: 420, height: 236 } as const;
 export const VIDEO_NODE_MAX_SIZE = { width: 720, height: 520 } as const;
 
-export function fitNodeSize(width: number, height: number, maxWidth = 720, maxHeight = 520, minWidth = MEDIA_NODE_MIN_SIZE.width, minHeight = MEDIA_NODE_MIN_SIZE.height) {
+/** 素材使用有界预览框，极宽文字/极窄装饰不能把整组撑大；文件比例由 object-contain 保留。 */
+export function fitImageMaterialNodeSize(width: number, height: number) {
+    const fitted = fitNodeSize(width, height, 720, 520, 0, 0);
+    return { width: Math.max(MEDIA_NODE_MIN_SIZE.width, fitted.width), height: Math.max(MEDIA_NODE_MIN_SIZE.height, fitted.height) };
+}
+
+export function fitNodeSize(width: number, height: number, maxWidth = 720, maxHeight = 520, minWidth: number = MEDIA_NODE_MIN_SIZE.width, minHeight: number = MEDIA_NODE_MIN_SIZE.height) {
     const w = Math.max(1, width);
     const h = Math.max(1, height);
     // 媒体节点既要保留原始比例，也要给生成状态、操作按钮留下稳定的可读空间。
@@ -17,11 +23,34 @@ export function fitNodeSize(width: number, height: number, maxWidth = 720, maxHe
 export function nodeSizeFromRatio(size: string, baseWidth: number, baseHeight: number) {
     const raw = String(size || "").trim();
     if (!raw || raw.toLowerCase() === "auto") return null;
-    // 支持 16:9 / 1024x576 / 16:9-2k
+    let width = 0;
+    let height = 0;
     const match = raw.match(/^(\d+(?:\.\d+)?)(?:x|:)(\d+(?:\.\d+)?)/i);
-    if (!match) return null;
-    const width = Number(match[1]);
-    const height = Number(match[2]);
+    if (match) {
+        width = Number(match[1]);
+        height = Number(match[2]);
+    } else if (raw.includes("竖") || raw.includes("portrait") || raw.includes("9:16")) {
+        width = 9;
+        height = 16;
+    } else if (raw.includes("横") || raw.includes("landscape") || raw.includes("16:9")) {
+        width = 16;
+        height = 9;
+    } else if (raw.includes("(1:1)") || raw.includes("1:1") || raw.includes("square")) {
+        width = 1;
+        height = 1;
+    } else if (raw.includes("3:4")) {
+        width = 3;
+        height = 4;
+    } else if (raw.includes("4:3")) {
+        width = 4;
+        height = 3;
+    } else if (raw.includes("2:3")) {
+        width = 2;
+        height = 3;
+    } else if (raw.includes("3:2")) {
+        width = 3;
+        height = 2;
+    }
     if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return null;
     const ratio = width / Math.max(1, height);
     if (ratio < 0.25 || ratio > 4) return { width: baseWidth, height: baseHeight };
@@ -34,14 +63,23 @@ export function ensureMediaNodeMinimumSize(node: CanvasNodeData) {
     const title = node.title === "New Generation" ? "图片" : node.title === "Video" ? "视频" : node.title;
     let width = node.width;
     let height = node.height;
-    const emptyStage = NODE_DEFAULT_SIZE[node.type];
-    const shouldPromoteEmptyStage = !node.metadata?.content
-        && !node.metadata?.freeResize
-        && !node.metadata?.locked
-        && width * height < emptyStage.width * emptyStage.height;
-    if (shouldPromoteEmptyStage) {
-        width = emptyStage.width;
-        height = emptyStage.height;
+    const emptyStage = isBuiltinCanvasNodeType(node.type) ? NODE_DEFAULT_SIZE[node.type] : undefined;
+
+    // 如果未完成节点（生成中/失败/空节点）指定了目标比例（如 3:4, 9:16），按目标比例保持占位框尺寸，不能强制变成 16:9 横屏。
+    const targetSize = node.metadata?.size ? nodeSizeFromRatio(node.metadata.size, emptyStage?.width || 720, emptyStage?.height || 405) : null;
+    if (targetSize && !node.metadata?.content && !node.metadata?.freeResize && !node.metadata?.locked) {
+        width = targetSize.width;
+        height = targetSize.height;
+    } else {
+        const shouldPromoteEmptyStage = !node.metadata?.content
+            && !node.metadata?.freeResize
+            && !node.metadata?.locked
+            && emptyStage !== undefined
+            && (width <= 0 || height <= 0);
+        if (shouldPromoteEmptyStage) {
+            width = emptyStage.width;
+            height = emptyStage.height;
+        }
     }
     const naturalWidth = node.metadata?.naturalWidth || 0;
     const naturalHeight = node.metadata?.naturalHeight || 0;

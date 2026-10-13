@@ -16,8 +16,8 @@ import (
 	"strings"
 	"time"
 
-	"infinite-canvas/backend/internal/model"
-	"infinite-canvas/backend/internal/service"
+	"yingce/backend/internal/model"
+	"yingce/backend/internal/service"
 
 	"github.com/gin-gonic/gin"
 )
@@ -34,25 +34,11 @@ var (
 	customNovitaTaskResultPath = regexp.MustCompile(`(?:^|/)async/task-result$`)
 	customMiniMaxTaskPath      = regexp.MustCompile(`(?:^|/)v2/query/video_generation/[^/]+$`)
 	systemMiniMaxTaskPath      = regexp.MustCompile(`^/v2/query/video_generation/[^/]+$`)
-	bailianImageGenerationPath = "/api/v1/services/aigc/multimodal-generation/generation"
 	openAIPostEndpoints        = map[string]bool{
 		"/responses": true, "/chat/completions": true, "/images/generations": true, "/images/edits": true,
-		"/audio/speech": true,
+		"/audio/speech": true, "/messages": true,
 	}
 )
-
-func systemMiniMaxProviderRequestID(requestPath string) (string, bool) {
-	const prefix = "/v2/query/video_generation/"
-	if !systemMiniMaxTaskPath.MatchString(requestPath) || !strings.HasPrefix(requestPath, prefix) {
-		return "", false
-	}
-	value, err := url.PathUnescape(strings.TrimPrefix(requestPath, prefix))
-	value = strings.TrimSpace(value)
-	if err != nil || value == "" || len(value) > 160 || strings.Contains(value, "/") || value == "." || value == ".." {
-		return "", false
-	}
-	return value, true
-}
 
 func ConfigureRuntime(svc *service.Service) {
 	runtimeService = svc
@@ -75,10 +61,16 @@ func authorizeCustomRelay(method string, target *url.URL, apiFormat string, cont
 	}
 
 	apiFormat = strings.ToLower(strings.TrimSpace(apiFormat))
-	if apiFormat != "openai" && apiFormat != "gemini" {
+	if apiFormat != "openai" && apiFormat != "gemini" && apiFormat != "claude" {
 		return errors.New("自定义渠道调用格式无效")
 	}
 	if method == http.MethodGet {
+		if apiFormat == "openai" && requestPath == "/agnesapi" {
+			if len(query) == 2 && len(query["video_id"]) == 1 && len(query["model_name"]) == 1 && strings.TrimSpace(query.Get("video_id")) != "" && strings.TrimSpace(query.Get("model_name")) != "" {
+				return nil
+			}
+			return errors.New("Agnes 视频查询必须提供 video_id 和 model_name")
+		}
 		if customNovitaTaskResultPath.MatchString(requestPath) {
 			if len(query) == 1 && len(query["task_id"]) == 1 && strings.TrimSpace(query.Get("task_id")) != "" {
 				return nil
@@ -88,7 +80,7 @@ func authorizeCustomRelay(method string, target *url.URL, apiFormat string, cont
 		allowed := requestPath == "/models" || strings.HasSuffix(requestPath, "/models")
 		if apiFormat == "openai" {
 			allowed = allowed || customVideoTaskPath.MatchString(requestPath) || customXAIVideoTaskPath.MatchString(requestPath) || customVideoContentPath.MatchString(requestPath) || customArkVideoTaskPath.MatchString(requestPath) || customMiniMaxTaskPath.MatchString(requestPath)
-		} else {
+		} else if apiFormat == "gemini" {
 			allowed = allowed || customGeminiOperationPath.MatchString(requestPath)
 		}
 		if len(query) != 0 || !allowed {
@@ -105,9 +97,15 @@ func authorizeCustomRelay(method string, target *url.URL, apiFormat string, cont
 	}
 	if apiFormat == "openai" {
 		multipartAllowed := mediaType == "multipart/form-data" && (strings.HasSuffix(requestPath, "/images/edits") || strings.HasSuffix(requestPath, "/videos"))
-		jsonAllowed := mediaType == "application/json" && (strings.HasSuffix(requestPath, "/responses") || strings.HasSuffix(requestPath, "/chat/completions") || strings.HasSuffix(requestPath, "/images/generations") || strings.HasSuffix(requestPath, "/images/edits") || strings.HasSuffix(requestPath, "/audio/speech") || strings.HasSuffix(requestPath, "/video/generations") || strings.HasSuffix(requestPath, "/videos/generations") || strings.HasSuffix(requestPath, "/videos") || strings.HasSuffix(requestPath, "/contents/generations/tasks") || strings.HasSuffix(requestPath, "/video/create") || strings.HasSuffix(requestPath, "/v2/video_generation") || requestPath == bailianImageGenerationPath)
+		jsonAllowed := mediaType == "application/json" && (strings.HasSuffix(requestPath, "/responses") || strings.HasSuffix(requestPath, "/chat/completions") || strings.HasSuffix(requestPath, "/images/generations") || strings.HasSuffix(requestPath, "/images/edits") || strings.HasSuffix(requestPath, "/audio/speech") || strings.HasSuffix(requestPath, "/video/generations") || strings.HasSuffix(requestPath, "/videos/generations") || strings.HasSuffix(requestPath, "/videos") || strings.HasSuffix(requestPath, "/contents/generations/tasks") || strings.HasSuffix(requestPath, "/video/create") || strings.HasSuffix(requestPath, "/v2/video_generation"))
 		if len(query) != 0 || (!multipartAllowed && !jsonAllowed) {
 			return errors.New("自定义渠道不允许访问该上游接口")
+		}
+		return nil
+	}
+	if apiFormat == "claude" {
+		if mediaType != "application/json" || !strings.HasSuffix(requestPath, "/messages") {
+			return errors.New("Claude 自定义渠道只允许 application/json 的 /messages 请求")
 		}
 		return nil
 	}
@@ -154,8 +152,10 @@ func enforceRateLimit(c *gin.Context, key string, limit int, window time.Duratio
 	if allowed {
 		return true
 	}
-	c.Header("Retry-After", "60")
-	fail(c, http.StatusTooManyRequests, errors.New("请求过于频繁，请稍后再试"))
+	wait := runtimeService.RequestRetryAfter(c.Request.Context(), key, window)
+	seconds := max(1, int((wait+time.Second-1)/time.Second))
+	c.Header("Retry-After", strconv.Itoa(seconds))
+	failService(c, service.RateLimited(fmt.Sprintf("请求次数已达上限，请在 %d 秒后重试", seconds)))
 	return false
 }
 
@@ -176,13 +176,16 @@ func authorizeSystemProxy(channel *model.ModelChannel, protocol model.ChannelInt
 	if method == http.MethodGet && requestPath == "/models" {
 		return nil
 	}
-	if protocol == model.ChannelInterfaceBailianImage {
-		if method != http.MethodPost || requestPath != bailianImageGenerationPath {
+	if protocol == model.ChannelInterfaceAgnesVideo {
+		if method == http.MethodGet && requestPath == "/agnesapi" {
+			return nil
+		}
+		if method != http.MethodPost || requestPath != "/videos" {
 			return errors.New("系统渠道不允许访问该上游接口")
 		}
 		mediaType, _, err := mime.ParseMediaType(contentType)
 		if err != nil || mediaType != "application/json" {
-			return errors.New("阿里百炼图片请求必须使用 application/json")
+			return errors.New("Agnes 视频生成请求必须使用 application/json")
 		}
 		modelName := proxyRequestModel(contentType, body)
 		if modelName == "" || !channelAllowsModel(channel, modelName) {
@@ -237,13 +240,15 @@ func interfaceAllowsProxyPath(interfaceType model.ChannelInterfaceType, requestP
 		return requestPath == "/chat/completions"
 	case model.ChannelInterfaceOpenAIResponse:
 		return requestPath == "/responses"
+	case model.ChannelInterfaceClaudeAPI:
+		return requestPath == "/messages"
 	case model.ChannelInterfaceOpenAIImage, model.ChannelInterfaceGrokImage:
 		return requestPath == "/images/generations" || requestPath == "/images/edits"
-	case model.ChannelInterfaceVolcengineArkImage:
+	case model.ChannelInterfaceVolcengineArkImage, model.ChannelInterfaceVolcengineArkAgentPlanImage:
 		return requestPath == "/images/generations"
 	case model.ChannelInterfaceOpenAIAudio:
 		return requestPath == "/audio/speech"
-	case model.ChannelInterfaceBailianImage, model.ChannelInterfaceAsyncAudio, model.ChannelInterfaceNewAPIVideo, model.ChannelInterfaceNewAPIChannel1, model.ChannelInterfaceNewAPIChannel2, model.ChannelInterfaceAIAPIWayVideo, model.ChannelInterfaceXAIVideo, model.ChannelInterfaceVolcengineArkVideo, model.ChannelInterfaceVolcengineJiMengImage, model.ChannelInterfaceVolcengineJiMengVideo, model.ChannelInterfaceGeminiVeo, model.ChannelInterfaceGeminiImage, model.ChannelInterfaceNovitaVideo, model.ChannelInterfaceMiniMaxVideo:
+	case model.ChannelInterfaceAsyncAudio, model.ChannelInterfaceNewAPIVideo, model.ChannelInterfaceNewAPIChannel1, model.ChannelInterfaceNewAPIChannel2, model.ChannelInterfaceXAIVideo, model.ChannelInterfaceVolcengineArkVideo, model.ChannelInterfaceVolcengineArkAgentPlanVideo, model.ChannelInterfaceVolcengineJiMengImage, model.ChannelInterfaceVolcengineJiMengVideo, model.ChannelInterfaceGeminiVeo, model.ChannelInterfaceGeminiImage, model.ChannelInterfaceNovitaVideo, model.ChannelInterfaceMiniMaxVideo:
 		return false
 	default:
 		return true

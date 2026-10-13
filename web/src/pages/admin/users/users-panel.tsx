@@ -1,16 +1,19 @@
-import { App, Button, Checkbox, Dropdown, Input } from "antd";
-import { Ban, ChevronDown, Search, Settings2, UserPlus } from "lucide-react";
+import { App, Button, Dropdown, Input } from "antd";
+import { Checkbox } from "@/pages/admin/ui/controls";
+import { Ban, Search, Settings2, UserPlus } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { PaginationBar } from "@/components/layout/workspace-page";
+import { PaginationBar } from "@/pages/admin/components/admin-ui";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { bulkDisableAdminUsers, deleteAdminUser, listAdminUsers, updateAdminUser, type AdminUser, type LocalUser } from "@/services/api/auth";
 import { useUserStore } from "@/stores/use-user-store";
-import { AdminBatchBar, AdminDataTable, AdminFilterChip, AdminTableEmpty } from "../components/admin-ui";
+import { AdminBatchBar, AdminDataTable, AdminTableEmpty } from "../components/admin-ui";
 import { useTableUrlState } from "../lib/use-table-url-state";
 import { AdminUserDetailDrawer } from "../components/admin-user-detail-drawer";
 import { createUserColumns, userColumnOptions, type UserColumnKey } from "./users-columns";
 import { AdminUserCreateDrawer, AdminUserEditDrawer } from "./users-drawer";
+import { Select } from "@/components/ui/base/select";
+import { AdminSearchInput } from "../components/admin-search-input";
 
 const columnStorageKey = "admin-users-visible-columns";
 const allColumnKeys = userColumnOptions.map((item) => item.key);
@@ -23,6 +26,8 @@ export default function UsersPanel({ onUserChanged }: { onUserChanged?: (user: L
     const [users, setUsers] = useState<AdminUser[]>([]);
     const [total, setTotal] = useState(0);
     const [loading, setLoading] = useState(true);
+    const [loadError, setLoadError] = useState("");
+    const [retry, setRetry] = useState(0);
     const [detailUserId, setDetailUserId] = useState<string | null>(null);
     const [editingUser, setEditingUser] = useState<AdminUser | null>(null);
     const [createUserOpen, setCreateUserOpen] = useState(false);
@@ -51,12 +56,15 @@ export default function UsersPanel({ onUserChanged }: { onUserChanged?: (user: L
     useEffect(() => {
         const sequence = ++requestSequence.current;
         setLoading(true);
+        setLoadError("");
+        setUsers([]);
+        setTotal(0);
         void listAdminUsers({
             keyword: debouncedFilter || undefined,
             role: state.role === "all" ? undefined : state.role,
             status: state.status === "all" ? undefined : state.status,
             page: state.page,
-            limit: state.pageSize,
+            pageSize: state.pageSize,
         })
             .then((result) => {
                 if (sequence !== requestSequence.current) return;
@@ -66,12 +74,15 @@ export default function UsersPanel({ onUserChanged }: { onUserChanged?: (user: L
                 if (result.total > 0 && result.users.length === 0 && state.page > 1) update({ page: 1 }, true);
             })
             .catch((error) => {
-                if (sequence === requestSequence.current) message.error(error instanceof Error ? error.message : "读取用户失败");
+                if (sequence !== requestSequence.current) return;
+                const text = error instanceof Error ? error.message : "读取用户失败";
+                setLoadError(text);
+                message.error(text);
             })
             .finally(() => {
                 if (sequence === requestSequence.current) setLoading(false);
             });
-    }, [debouncedFilter, message, state.page, state.pageSize, state.role, state.status, update]);
+    }, [debouncedFilter, message, retry, state.page, state.pageSize, state.role, state.status, update]);
 
     const replaceUser = useCallback((nextUser: LocalUser) => {
         setUsers((items) => items.map((item) => item.id === nextUser.id ? { ...item, ...nextUser } : item));
@@ -139,35 +150,31 @@ export default function UsersPanel({ onUserChanged }: { onUserChanged?: (user: L
             <AdminDataTable
                 toolbar={
                     <>
-                        <Input
+                        <AdminSearchInput
                             allowClear
                             className="app-list-search"
                             prefix={<Search className="size-4 text-foreground/40" />}
                             value={state.filter}
+                            aria-label="搜索用户"
                             placeholder="搜索用户名、名称或邮箱"
-                            onChange={(event) => update({ filter: event.target.value, page: 1 }, true)}
+                            onValueChange={(value) => update({ filter: value, page: 1 }, true)}
                         />
                     </>
                 }
-                toolbarActiveFilters={(
-                    <>
-                        {state.filter ? <AdminFilterChip label={`搜索：${state.filter}`} onRemove={() => update({ filter: "", page: 1 })} /> : null}
-                        {state.role !== "all" ? <AdminFilterChip label={`角色：${state.role === "admin" ? "管理员" : "普通用户"}`} onRemove={() => update({ role: "all", page: 1 })} /> : null}
-                        {state.status !== "all" ? <AdminFilterChip label={`状态：${state.status === "active" ? "已启用" : "已停用"}`} onRemove={() => update({ status: "all", page: 1 })} /> : null}
-                    </>
-                )}
                 toolbarActive={hasFilters}
                 onReset={resetFilters}
                 toolbarFilters={
                     <>
-                        <FilterMenu
-                            label="角色"
+                        <Select
+                            aria-label="筛选用户角色"
+                            className="w-32"
                             value={state.role}
                             options={[{ value: "all", label: "全部角色" }, { value: "admin", label: "管理员" }, { value: "user", label: "普通用户" }]}
                             onChange={(role) => update({ role, page: 1 })}
                         />
-                        <FilterMenu
-                            label="状态"
+                        <Select
+                            aria-label="筛选用户状态"
+                            className="w-32"
                             value={state.status}
                             options={[{ value: "all", label: "全部状态" }, { value: "active", label: "已启用" }, { value: "disabled", label: "已停用" }]}
                             onChange={(status) => update({ status, page: 1 })}
@@ -179,13 +186,14 @@ export default function UsersPanel({ onUserChanged }: { onUserChanged?: (user: L
                         <Button icon={<UserPlus className="size-4" />} onClick={() => { setEditingUser(null); setCreateUserOpen(true); }}>{"\u6dfb\u52a0\u7528\u6237"}</Button>
                         <Dropdown
                             trigger={["click"]}
-                            dropdownRender={() => (
+                            popupRender={() => (
                                 <div className="w-48 rounded-md border border-border bg-popover p-2 shadow-lg">
                                     <div className="px-2 pb-2 text-xs font-medium text-foreground/55">显示列</div>
                                     <div className="space-y-0.5">
                                         {userColumnOptions.map((option) => (
                                             <label key={option.key} className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-muted/60">
                                                 <Checkbox
+                                                    bare
                                                     checked={visibleColumns.has(option.key)}
                                                     disabled={option.locked}
                                                     onChange={(event) => setVisibleColumns((current) => {
@@ -209,7 +217,7 @@ export default function UsersPanel({ onUserChanged }: { onUserChanged?: (user: L
                 batchActions={<AdminBatchBar count={selectedUserIds.length} onClear={() => setSelectedUserIds([])}><Button danger size="small" icon={<Ban className="size-3.5" />} loading={bulkDisabling} onClick={bulkDisable}>批量停用</Button></AdminBatchBar>}
                 skeletonColumns={Math.max(4, columns.length)}
                 table={{
-                    className: "app-data-table",
+                    className: "app-data-table admin-users-table",
                     size: "small",
                     rowKey: "id",
                     loading,
@@ -224,7 +232,7 @@ export default function UsersPanel({ onUserChanged }: { onUserChanged?: (user: L
                     pagination: false,
                     scroll: { x: 860 },
                 }}
-                empty={<AdminTableEmpty filtered={hasFilters} />}
+                empty={loadError ? <div className="admin-inline-load-error" role="status"><span>用户数据暂不可用：{loadError}</span><Button size="small" onClick={() => setRetry((value) => value + 1)}>重试</Button></div> : <AdminTableEmpty filtered={hasFilters} />}
                 footer={<PaginationBar alwaysShow current={state.page} pageSize={state.pageSize} total={total} onChange={(page, pageSize) => update({ page: pageSize !== state.pageSize ? 1 : page, pageSize })} />}
             />
 
@@ -232,22 +240,5 @@ export default function UsersPanel({ onUserChanged }: { onUserChanged?: (user: L
             <AdminUserCreateDrawer open={createUserOpen} onClose={() => setCreateUserOpen(false)} onCreated={addUser} />
             <AdminUserEditDrawer user={editingUser} actorId={actor?.id} onClose={() => setEditingUser(null)} onSaved={replaceUser} />
         </>
-    );
-}
-
-function FilterMenu({ label, value, options, onChange }: { label: string; value: string; options: Array<{ value: string; label: string }>; onChange: (value: string) => void }) {
-    const selected = options.find((option) => option.value === value)?.label || label;
-    return (
-        <Dropdown
-            trigger={["click"]}
-            menu={{
-                selectable: true,
-                selectedKeys: [value],
-                items: options.map((option) => ({ key: option.value, label: option.label })),
-                onClick: ({ key }) => onChange(key),
-            }}
-        >
-            <Button>{value === "all" ? label : selected}<ChevronDown className="ml-1 size-3.5" /></Button>
-        </Dropdown>
     );
 }

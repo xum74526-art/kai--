@@ -1,22 +1,20 @@
-import axios from "axios";
-
 import { resolveModelRequestConfig, type AiConfig } from "@/stores/use-config-store";
 import { dataUrlToFile } from "@/lib/image-utils";
 import { buildImageReferencePromptText } from "@/lib/image-reference-prompt";
-import { channelRequest } from "@/services/api/custom-channel-relay";
 import { imageToDataUrl } from "@/services/image-storage";
 import type { ReferenceImage } from "@/types/image";
 import { withOpenAIPromptCacheKey } from "@/lib/openai-prompt-cache";
 import { modelCapabilityConfigFor, normalizeImageValue } from "@/lib/model-capabilities";
 import { buildGeminiImageGenerationConfig, parseGeminiImageDataUrl, type GeminiImageGenerationConfig } from "@/lib/gemini-image";
-import { aiApiUrl, aiHeaders, geminiApiUrl, geminiHeaders, postChannelJSON, postGeminiJSON, postVolcengineArkImage } from "@/services/api/image-transport";
+import { isVolcengineArkImageProtocol } from "@/lib/model-protocols";
+import { aiApiUrl, aiHeaders, imageChannelTransport, postChannelJSON, postGeminiJSON, postVolcengineArkImage } from "@/services/api/image-transport";
 
 const IMAGE_OUTPUT_FORMAT = "png";
 import type { AiTextMessage, GeminiPart, ImageApiResponse, RequestOptions, ResponseApiPayload, ResponseFunctionTool, ResponseInputMessage, ToolChoice, ToolResponseResult } from "@/services/api/image-contracts";
 import { normalizeGrokImageResolution, normalizeQuality, normalizeVolcengineArkImageSize, resolveImageRequestSize, validateImageCapability } from "@/services/api/image-validation";
 import { parseGeminiImagePayload, parseImagePayload, readAxiosError } from "@/services/api/image-response";
-import { toChatCompletionMessages, toChatCompletionToolChoice, toGeminiBody, toGeminiToolOptions, toResponseInput, toResponseTool, withSystemMessage } from "@/services/api/image-protocols";
-import { requestGeminiStreamingResponse, requestStreamingChatCompletion, requestStreamingResponse } from "@/services/api/image-streaming";
+import { toChatCompletionMessages, toChatCompletionToolChoice, toClaudeBody, toGeminiBody, toGeminiToolOptions, toResponseInput, toResponseTool, withSystemMessage } from "@/services/api/image-protocols";
+import { requestGeminiStreamingResponse, requestStreamingChatCompletion, requestStreamingClaude, requestStreamingResponse } from "@/services/api/image-streaming";
 export { buildBackendToolRequests } from "@/services/api/image-protocols";
 export type { AiTextContentPart, AiTextMessage, ResponseFunctionTool, ResponseInputMessage, ResponseToolCall, ToolChoice, ToolResponseResult } from "@/services/api/image-contracts";
 
@@ -64,15 +62,13 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
     validateImageCapability(imageProfile, []);
     const normalizedImage = normalizeImageValue(imageProfile, config);
     const n = Number(normalizedImage.count);
+    if (requestConfig.interfaceType === "bailian-image") throw new Error("阿里百炼图片必须通过任务中心异步生成");
     if (requestConfig.interfaceType === "gemini-image") {
         try {
             return await requestGeminiImages(requestConfig, prompt, [], n, buildGeminiImageGenerationConfig(normalizedImage.size, normalizedImage.quality), options);
         } catch (error) {
             throw new Error(readAxiosError(error, "请求失败"));
         }
-    }
-    if (requestConfig.interfaceType === "bailian-image") {
-        throw new Error("阿里百炼图片必须通过任务中心异步生成");
     }
     if (requestConfig.interfaceType === "grok-image") {
         try {
@@ -100,7 +96,7 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
     }
     const quality = imageProfile.quality.supported && normalizedImage.quality !== "auto" ? normalizeQuality(normalizedImage.quality) || normalizedImage.quality : undefined;
     const requestSize = resolveImageRequestSize(imageProfile, quality, normalizedImage.size);
-    const isVolcengineArk = requestConfig.interfaceType === "volcengine-ark-image";
+    const isVolcengineArk = isVolcengineArkImageProtocol(requestConfig.interfaceType);
     const normalizedRequestSize = requestSize?.parameter === "size" && isVolcengineArk ? { ...requestSize, value: normalizeVolcengineArkImageSize(requestSize.value)! } : requestSize;
     try {
         const payload = isVolcengineArk
@@ -144,6 +140,7 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
     const normalizedImage = normalizeImageValue(imageProfile, config);
     const n = Number(normalizedImage.count);
     const requestPrompt = buildImageReferencePromptText(prompt, references);
+    if (requestConfig.interfaceType === "bailian-image") throw new Error("阿里百炼图片必须通过任务中心异步编辑");
     if (requestConfig.interfaceType === "gemini-image") {
         if (mask) throw new Error("Gemini 调用格式暂不支持蒙版编辑");
         try {
@@ -151,10 +148,6 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
         } catch (error) {
             throw new Error(readAxiosError(error, "请求失败"));
         }
-    }
-    if (requestConfig.interfaceType === "bailian-image") {
-        if (mask) throw new Error("阿里百炼图片协议不支持蒙版编辑，请移除蒙版后重试");
-        throw new Error("阿里百炼图片必须通过任务中心异步编辑");
     }
     if (requestConfig.interfaceType === "grok-image") {
         if (mask) throw new Error("Grok 图片协议不支持蒙版编辑，请移除蒙版后重试");
@@ -184,7 +177,7 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
             throw new Error(readAxiosError(error, "Grok 图片编辑失败"));
         }
     }
-    if (requestConfig.interfaceType === "volcengine-ark-image") {
+    if (isVolcengineArkImageProtocol(requestConfig.interfaceType)) {
         if (mask) throw new Error("火山方舟图片协议不支持蒙版编辑，请移除蒙版后重试");
         const quality = imageProfile.quality.supported && normalizedImage.quality !== "auto" ? normalizeQuality(normalizedImage.quality) || normalizedImage.quality : undefined;
         const sizeRequest = resolveImageRequestSize(imageProfile, quality, normalizedImage.size);
@@ -231,9 +224,7 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
     if (mask) formData.set("mask", dataUrlToFile(mask));
 
     try {
-        const request = channelRequest(requestConfig, aiApiUrl(requestConfig, "/images/edits"), aiHeaders(requestConfig));
-        const response = await axios.post<ImageApiResponse>(request.url, formData, { headers: request.headers, withCredentials: request.credentials === "include", signal: options?.signal });
-        const images = parseImagePayload(response.data);
+        const images = parseImagePayload(await imageChannelTransport(requestConfig).postForm<ImageApiResponse>(aiApiUrl(requestConfig, "/images/edits"), formData, { signal: options?.signal, headers: aiHeaders(requestConfig) }));
         return images;
     } catch (error) {
         throw new Error(readAxiosError(error, "请求失败"));
@@ -245,6 +236,11 @@ export async function requestImageQuestion(config: AiConfig, messages: AiTextMes
     try {
         if (requestConfig.apiFormat === "gemini") {
             const answer = (await requestGeminiStreamingResponse(requestConfig, toGeminiBody(requestConfig, messages), onDelta, options)).content || "没有返回内容";
+            if (answer === "没有返回内容") onDelta(answer);
+            return answer;
+        }
+        if (requestConfig.interfaceType === "claude-api") {
+            const answer = (await requestStreamingClaude(requestConfig, toClaudeBody(requestConfig, messages), onDelta, options)).content || "没有返回内容";
             if (answer === "没有返回内容") onDelta(answer);
             return answer;
         }
@@ -289,6 +285,7 @@ export async function requestToolResponse(config: AiConfig, messages: ResponseIn
         if (requestConfig.apiFormat === "gemini") {
             return await requestGeminiStreamingResponse(requestConfig, toGeminiBody(requestConfig, messages, toGeminiToolOptions(tools, toolChoice)), onDelta, options);
         }
+        if (requestConfig.interfaceType === "claude-api") return await requestStreamingClaude(requestConfig, toClaudeBody(requestConfig, messages, tools), onDelta, options);
         if (requestConfig.interfaceType === "chat-completion" || !requestConfig.interfaceType) {
             const chatPayload: Record<string, unknown> = {
                 model: requestConfig.model,

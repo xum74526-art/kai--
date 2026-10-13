@@ -1,6 +1,8 @@
 import type { Dispatch, SetStateAction } from "react";
 
 import { applyMaterializedGenerationTaskResultToNodes } from "@/lib/canvas/canvas-generation-task-sync";
+import { commitCanvasGenerationResult } from "@/lib/canvas/canvas-generation-result";
+import { sameCanvasContent } from "@/lib/canvas/canvas-content";
 import { parseCanvasStorageDocument, rebaseCanvasProjects, serializeCanvasStorageDocument } from "@/lib/canvas/canvas-storage-revision";
 import { localForageStorageForScope } from "@/lib/localforage-storage";
 import { getActiveUserScope } from "@/lib/user-scope";
@@ -15,6 +17,7 @@ import {
     rebasePendingCanvasStorePersistenceAfterGenerationCommitLocked,
     reconcileCanvasGenerationFailure,
     recordCanvasStorageDocument,
+    registerCanvasGenerationPersistenceAttempt,
     useCanvasStore,
     withCanvasStorePersistenceLock,
     withCanvasStorePersistenceSuppressed,
@@ -113,21 +116,27 @@ export async function applyCanvasGenerationTaskNodeEffect(input: {
     setNodes: Dispatch<SetStateAction<CanvasNodeData[]>>;
 }) {
     throwIfAborted(input.signal);
-    const previousNodes = input.nodesRef.current;
-    const applied = await applyMaterializedGenerationTaskResultToNodes(previousNodes, input.task, input.output, input.effectKey, input.nodeId);
+    const snapshot = input.nodesRef.current;
+    const before = snapshot.find((node) => node.id === input.nodeId);
+    if (!before) throw new Error("画布中找不到对应任务节点");
+    const applied = await applyMaterializedGenerationTaskResultToNodes(snapshot, input.task, input.output, input.effectKey, input.nodeId);
     if (!applied.updated || !applied.node) throw new Error("画布中找不到对应任务节点");
-    const persistedProject = await persistCanvasGenerationEffect({
+    throwIfAborted(input.signal);
+    const previousNodes = input.nodesRef.current;
+    const nodes = commitCanvasGenerationResult(previousNodes, before, applied.node, input.task.id, applied.additionalNodes);
+    await persistCanvasGenerationEffect({
         projectId: input.projectId,
         effectKey: input.effectKey,
         previousNodes,
-        nodes: applied.nodes,
+        nodes,
         signal: input.signal,
     });
-    input.nodesRef.current = persistedProject.nodes;
-    input.setNodes(persistedProject.nodes);
+    throwIfAborted(input.signal);
+    // 持久化已完成；最后一次 await 之后仍按节点合并，保留期间发生的编辑。
+    input.setNodes((current) => commitCanvasGenerationResult(current, before, applied.node!, input.task.id, applied.additionalNodes));
 }
 
-export async function persistCanvasAgentGenerationContinuationEffect(input: {
+export async function persistCanvasOperationContinuationEffect(input: {
     projectId: string;
     nodeId: string;
     continuation: NonNullable<NonNullable<CanvasNodeData["metadata"]>["agentGenerationContinuation"]>;
@@ -142,8 +151,7 @@ export async function persistCanvasAgentGenerationContinuationEffect(input: {
     const currentNodes = input.nodesRef.current;
     const currentNode = currentNodes.find((node) => node.id === input.nodeId);
     if (!currentNode) throw new Error("画布中找不到 Agent continuation 节点");
-    if (generationEffectApplied(currentNode.metadata || {}, input.effectKey) && currentNode.metadata?.agentGenerationContinuation?.status === input.continuation.status) return;
-    const failureMessage = input.continuation.status === "failed" ? input.continuation.errorMessage || "任务状态无法继续同步，请重新生成。" : undefined;
+    if (generationEffectApplied(currentNode.metadata || {}, input.effectKey) && currentNode.metadata?.agentGenerationContinuation?.status === "completed") return;
 
     const nodes = currentNodes.map((node) =>
         node.id === input.nodeId
@@ -152,7 +160,6 @@ export async function persistCanvasAgentGenerationContinuationEffect(input: {
                   metadata: {
                       ...node.metadata,
                       agentGenerationContinuation: input.continuation,
-                      ...(failureMessage ? { status: "error" as const, errorDetails: failureMessage } : {}),
                       generationEffectKeys: Array.from(new Set([...(node.metadata?.generationEffectKeys || []), input.effectKey])),
                   },
               }
@@ -200,7 +207,14 @@ function reconcileCinematicEntities<T extends IdentifiedCanvasEntity>(previous: 
             continue;
         }
         const previousEntity = previousById.get(liveEntity.id);
-        if (!previousEntity) continue;
+        if (!previousEntity) {
+            // A generated entity may have been created after the previous
+            // snapshot. Keep the live branch visible so an ACK failure does not
+            // turn a recoverable local result into a silent deletion.
+            reconciled.push(liveEntity);
+            included.add(liveEntity.id);
+            continue;
+        }
         reconciled.push(previousEntity);
         included.add(previousEntity.id);
     }
@@ -439,6 +453,12 @@ function rebaseCommittedCanvasGenerationOntoLiveProject(scope: string, projectId
 export async function persistCanvasGenerationEffect(input: CanvasGenerationEffectInput) {
     throwIfAborted(input.signal);
     const scope = getActiveUserScope();
+    if (!useCanvasStore.getState().projects.some((project) => project.id === input.projectId)) {
+        const { loadCanvasProjectForEditing } = await import("@/services/user-data-sync");
+        await loadCanvasProjectForEditing(input.projectId);
+        throwIfAborted(input.signal);
+        if (scope !== getActiveUserScope()) throw new Error("账号已切换，无法写入生成结果");
+    }
     const baseRevision = canvasStoreStorageRevision(scope);
     const memoryProjects = useCanvasStore.getState().projects;
     const memoryProject = memoryProjects.find((candidate) => candidate.id === input.projectId);
@@ -447,9 +467,17 @@ export async function persistCanvasGenerationEffect(input: CanvasGenerationEffec
     const delta = generationProjectDelta(input, memoryProject);
     if (!delta.stamped) throw new Error("生成副作用缺少持久幂等标记");
 
-    return withCanvasStorePersistenceLock(
-        scope,
-        async () => {
+    const unregisterAttempt = registerCanvasGenerationPersistenceAttempt(scope, input.projectId, input.effectKey, {
+        previousNodes: input.previousNodes,
+        nodes: input.nodes,
+        previousChatSessions: input.previousChatSessions,
+        chatSessions: input.chatSessions,
+    });
+
+    try {
+        return await withCanvasStorePersistenceLock(
+            scope,
+            async () => {
             let latestDurable: ReturnType<typeof parseCanvasStorageDocument> | undefined;
             let generationCommittedProject: CanvasProject | undefined;
             let reconcileLiveOnFailure = false;
@@ -499,11 +527,19 @@ export async function persistCanvasGenerationEffect(input: CanvasGenerationEffec
                 const persistedProject = rebaseCommittedCanvasGenerationOntoLiveProject(scope, input.projectId, finalDocument, memoryProject, baseRevision) ?? generationCommittedProject;
                 if (!persistedProject) throw new Error("画布项目不存在，无法确认生成副作用");
                 if (getActiveUserScope() === scope) {
-                    withCanvasStorePersistenceSuppressed(() => {
+                    const publish = () => {
                         useCanvasStore.setState((state) => ({
                             projects: state.projects.map((project) => (project.id === input.projectId ? persistedProject : project)),
                         }));
-                    });
+                    };
+                    const durableProject = finalDocument.state.projects.find((project) => project.id === input.projectId);
+                    // 只有已落盘的快照才能跳过普通保存。rebase 带回的编辑仍是脏数据，
+                    // 否则 store 已接受编辑、后续 updateProject 判定无变化，刷新就会丢失。
+                    if (sameCanvasContent(durableProject, persistedProject) && JSON.stringify(durableProject?.viewport) === JSON.stringify(persistedProject.viewport)) {
+                        withCanvasStorePersistenceSuppressed(publish);
+                    } else {
+                        publish();
+                    }
                 }
                 return persistedProject;
             } catch (error) {
@@ -521,7 +557,10 @@ export async function persistCanvasGenerationEffect(input: CanvasGenerationEffec
                 }
                 throw error;
             }
-        },
-        { requireCrossRealmLock: true },
-    );
+            },
+            { requireCrossRealmLock: true },
+        );
+    } finally {
+        unregisterAttempt();
+    }
 }

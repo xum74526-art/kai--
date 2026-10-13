@@ -2,8 +2,7 @@ import type { CanvasProject } from "@/stores/canvas/use-canvas-store";
 import type { CanvasDrawingEngine } from "@/lib/canvas/canvas-drawing-engine";
 
 export type CanvasExportFile = {
-    // 导出文件标识保持兼容，确保已有画布包仍可重新导入。
-    app: "infinite-canvas";
+    app: "yingce";
     version: 3 | 4;
     exportedAt: string;
     projects: CanvasProjectExportItem[];

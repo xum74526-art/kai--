@@ -1,16 +1,18 @@
 export type CanvasColorTheme = "light" | "dark";
 export type CanvasBackgroundMode = "dots" | "lines" | "blank";
+export const DEFAULT_CANVAS_COLOR_THEME: CanvasColorTheme = "dark";
 
 export const canvasThemes = {
     light: {
         canvas: {
-            background: "#ffffff",
-            dot: "rgba(15,23,42,.30)",
-            line: "rgba(15,23,42,.15)",
+            background: "#f0f0f0",
+            dot: "rgba(0,0,0,.80)",
+            line: "rgba(0,0,0,.80)",
             selectionFill: "rgba(17,17,17,.10)",
         },
         node: {
             label: "#4b5563",
+            agentUserMessage: "#edf6ff",
             fill: "#ffffff",
             panel: "#ffffff",
             stroke: "#e2e4e8",
@@ -70,13 +72,14 @@ export const canvasThemes = {
     },
     dark: {
         canvas: {
-            background: "#090a0c",
-            dot: "rgba(174,184,199,.32)",
-            line: "rgba(174,184,199,.16)",
+            background: "#000000",
+            dot: "#000000",
+            line: "#000000",
             selectionFill: "rgba(255,255,255,.12)",
         },
         node: {
             label: "#a3a3a3",
+            agentUserMessage: "#182b40",
             fill: "#181818",
             panel: "#141414",
             stroke: "rgba(255,255,255,.12)",

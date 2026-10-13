@@ -2,6 +2,7 @@ import { nanoid } from "nanoid";
 
 import { NODE_DEFAULT_SIZE } from "@/constant/canvas";
 import { getGenerationCount, runCanvasGenerationTaskToConsumer } from "@/lib/canvas/canvas-project-generation";
+import { canvasGenerationPromptMetadata } from "@/lib/canvas/canvas-generation-submission";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 
 import type { CanvasGenerationExecution } from "./canvas-generation-executor-types";
@@ -27,6 +28,7 @@ export async function executeTextGeneration({
     applyGenerationTaskResult,
     registerPendingNodeIds,
     taskContext,
+    skillMetadata,
     retryContext,
 }: CanvasGenerationExecution) {
     const isConfigNode = sourceNode?.type === CanvasNodeType.Config;
@@ -50,9 +52,9 @@ export async function executeTextGeneration({
             },
             width: textConfig.width,
             height: textConfig.height,
-            metadata: { prompt: effectivePrompt, status: NODE_STATUS_LOADING, fontSize: 14 },
+            metadata: { ...canvasGenerationPromptMetadata(prompt, effectivePrompt), status: NODE_STATUS_LOADING, fontSize: 14, ...skillMetadata },
         }));
-        setNodes((current) => [...current.map((node) => (node.id === nodeId && isConfigNode ? { ...node, metadata: { ...node.metadata, prompt: effectivePrompt, status: NODE_STATUS_LOADING, errorDetails: undefined } } : node)), ...childNodes]);
+        setNodes((current) => [...current.map((node) => (node.id === nodeId && isConfigNode ? { ...node, metadata: { ...node.metadata, ...canvasGenerationPromptMetadata(prompt, effectivePrompt), status: NODE_STATUS_LOADING, errorDetails: undefined } } : node)), ...childNodes]);
         setConnections((current) => [...current, ...childIds.map((childId) => ({ id: nanoid(), fromNodeId: nodeId, toNodeId: childId }))]);
     }
 
@@ -71,7 +73,7 @@ export async function executeTextGeneration({
                     referenceImages: generationContext.referenceImages,
                     referenceVideos: generationContext.referenceVideos,
                     signal: controller.signal,
-                    metadata: { sourceNodeId: nodeId, ...taskContext, resolvedCharacterVersions: generationContext.resolvedCharacterVersions },
+                    metadata: { sourceNodeId: nodeId, ...taskContext, resolvedCharacterVersions: generationContext.resolvedCharacterVersions, ...skillMetadata },
                 },
                 {
                     bindTask: (task) => bindGenerationTask(targetNodeId, task),
@@ -85,6 +87,6 @@ export async function executeTextGeneration({
     if (controller.signal.aborted) return;
     void answers;
     if (isConfigNode) {
-        setNodes((current) => current.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_SUCCESS, errorDetails: undefined, generationErrorCode: undefined, failedPromptFingerprint: undefined } } : node)));
+        setNodes((current) => current.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_SUCCESS, errorDetails: undefined, generationErrorCode: undefined, resourceReloadAvailable: undefined, failedPromptFingerprint: undefined } } : node)));
     }
 }

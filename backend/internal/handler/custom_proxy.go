@@ -11,14 +11,14 @@ import (
 	"strings"
 	"time"
 
-	"infinite-canvas/backend/internal/service"
+	"yingce/backend/internal/service"
 
 	"github.com/gin-gonic/gin"
 )
 
 const maxCustomRelayErrorResponseBytes int64 = 64 << 10
 
-var customRelayClient = service.CustomRelayHTTPClientForChannel
+var customRelayClient = service.CustomRelayHTTPClient
 
 func RegisterCustomRelayRoutes(r *gin.RouterGroup, svc *service.Service) {
 	r.Any("/ai/custom", func(c *gin.Context) {
@@ -46,21 +46,16 @@ func RegisterCustomRelayRoutes(r *gin.RouterGroup, svc *service.Service) {
 			return
 		}
 		defer release()
-		proxyCustomRelayRequestWithService(c, policy.Request, svc.DesktopLocalChannelsEnabled(), svc)
+		proxyCustomRelayRequestWithService(c, policy.Request, svc)
 	})
 }
 
 func proxyCustomRelayRequest(c *gin.Context, policy service.RuntimeRequestPolicy) {
-	proxyCustomRelayRequestWithCapabilities(c, policy, false)
+	proxyCustomRelayRequestWithService(c, policy, nil)
 }
 
-func proxyCustomRelayRequestWithCapabilities(c *gin.Context, policy service.RuntimeRequestPolicy, desktopLocalChannelsEnabled bool) {
-	proxyCustomRelayRequestWithService(c, policy, desktopLocalChannelsEnabled, nil)
-}
-
-func proxyCustomRelayRequestWithService(c *gin.Context, policy service.RuntimeRequestPolicy, desktopLocalChannelsEnabled bool, svc *service.Service) {
-	requestedAllowLocal := strings.TrimSpace(c.GetHeader(service.LocalChannelRequestHeader)) == "1"
-	target, err := service.ValidateCustomRelayChannelURL(c.GetHeader("X-Canvas-Upstream-URL"), c.GetHeader(service.LocalChannelBaseURLHeader), requestedAllowLocal, desktopLocalChannelsEnabled)
+func proxyCustomRelayRequestWithService(c *gin.Context, policy service.RuntimeRequestPolicy, svc *service.Service) {
+	target, err := service.ValidateCustomRelayURL(c.GetHeader("X-Canvas-Upstream-URL"))
 	if err != nil {
 		failService(c, err)
 		return
@@ -120,11 +115,14 @@ func proxyCustomRelayRequestWithService(c *gin.Context, policy service.RuntimeRe
 	service.ApplyDefaultOutboundHeaders(upstreamReq)
 	if apiFormat == "gemini" {
 		upstreamReq.Header.Set("x-goog-api-key", apiKey)
+	} else if apiFormat == "claude" {
+		upstreamReq.Header.Set("x-api-key", apiKey)
+		upstreamReq.Header.Set("anthropic-version", "2023-06-01")
 	} else {
 		upstreamReq.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 
-	resp, err := customRelayClient(time.Duration(policy.CustomRelayTimeoutMinutes)*time.Minute, target, requestedAllowLocal, desktopLocalChannelsEnabled).Do(upstreamReq)
+	resp, err := customRelayClient(time.Duration(policy.CustomRelayTimeoutMinutes) * time.Minute).Do(upstreamReq)
 	if err != nil {
 		fail(c, http.StatusBadGateway, errors.New(userFacingRelayError(svc, errors.New("自定义渠道上游连接失败"))))
 		return

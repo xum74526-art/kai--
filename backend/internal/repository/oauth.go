@@ -1,10 +1,9 @@
 package repository
 
 import (
-	"errors"
 	"time"
 
-	"infinite-canvas/backend/internal/model"
+	"yingce/backend/internal/model"
 
 	"gorm.io/gorm"
 )
@@ -51,6 +50,12 @@ func (r *Repository) ConsumeOAuthState(provider string, stateHash string) (*mode
 
 func (r *Repository) CreateOAuthUser(user *model.User, identity *model.UserIdentity) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := lockRegistrationEmail(tx, user.Email); err != nil {
+			return err
+		}
+		if err := New(tx).CheckEmailAvailable(user.Email, ""); err != nil {
+			return err
+		}
 		if err := tx.Create(user).Error; err != nil {
 			return err
 		}
@@ -58,28 +63,5 @@ func (r *Repository) CreateOAuthUser(user *model.User, identity *model.UserIdent
 			return err
 		}
 		return tx.Create(&model.CreditAccount{UserID: user.ID}).Error
-	})
-}
-
-// CreateOAuthUserWithSession 把首次 OAuth 用户、身份、积分账户/奖励和登录会话一次提交。
-// OAuth state 已在外部交换前消费，事务失败时不会留下无法登录的半成品账号。
-func (r *Repository) CreateOAuthUserWithSession(
-	user *model.User,
-	identity *model.UserIdentity,
-	account *model.CreditAccount,
-	ledger *model.CreditLedgerEntry,
-	session *model.AuthSession,
-) error {
-	if user == nil || identity == nil || identity.UserID != user.ID || session == nil || session.UserID != user.ID {
-		return errors.New("oauth user bootstrap records are inconsistent")
-	}
-	return r.db.Transaction(func(tx *gorm.DB) error {
-		if err := createUserBootstrapRecords(tx, user, account, ledger); err != nil {
-			return err
-		}
-		if err := tx.Create(identity).Error; err != nil {
-			return err
-		}
-		return tx.Create(session).Error
 	})
 }

@@ -1,6 +1,13 @@
+import type { CanvasColorGrade } from "@/lib/canvas/canvas-color-grade";
+import type { MediaConversionNodeState } from "@/lib/media-conversion/contracts";
+import type { AssetCategory } from "@/lib/asset-category";
 import type { PortraitTextureSettings } from "@/lib/canvas/canvas-portrait-texture";
 import type { StyleExecutionPlan } from "@/lib/canvas/style-profile";
+import type { ArtCritiqueNodeState } from "@/lib/art-critique/contracts";
+import type { CameraControlOptions } from "@/lib/canvas/camera-prompt-library";
 import type { SrtEntry, SubtitleHighlight, SubtitleStyle } from "@/types/timeline";
+import type { GenerationSpec } from "@/lib/canvas/generation-contract.generated";
+import type { GenerationTask } from "@/services/api/task-center";
 
 export type Position = {
     x: number;
@@ -23,10 +30,26 @@ export enum CanvasNodeType {
     Video = "video",
     Audio = "audio",
     Frame = "frame",
+    Markdown = "markdown",
+    Svg = "svg",
+    Html = "html",
+    Panorama = "panorama",
+    Compare = "compare",
+    Chart = "chart",
+    ColorGrade = "colorgrade",
+    MediaConversion = "media-conversion",
+    BatchTable = "batch-table",
+}
+
+/** Runtime IDs contributed by plugins share the persisted node type field. */
+export type PluginCanvasNodeType = string & { readonly __pluginCanvasNodeType?: unique symbol };
+export type CanvasNodeTypeId = CanvasNodeType | PluginCanvasNodeType;
+
+export function isBuiltinCanvasNodeType(type: CanvasNodeTypeId): type is CanvasNodeType {
+    return Object.values(CanvasNodeType).includes(type as CanvasNodeType);
 }
 
 export type CanvasNodeStatus = "idle" | "success" | "loading" | "error";
-export type CanvasMediaPerformanceMode = "auto" | "quality" | "performance";
 export type CanvasWorkspaceMode = "simple" | "professional";
 export type CanvasToolMode = "move" | "box-select";
 export type CanvasFolderStyle = "glass" | "stacked" | "midnight" | "paper" | "cinema" | "compact";
@@ -35,12 +58,12 @@ export type StoryboardShotDuration = "auto" | "5" | "10" | "15" | "30";
 export type StoryboardShotCount = "auto" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "10";
 export type StoryboardVideoInputMode = "direct" | "keyframe";
 export type CanvasGenerationMode = "text" | "image" | "video" | "audio";
-export type CanvasGenerationBatchMode = "storyboard_image" | "storyboard_video" | "action_board";
+export type CanvasGenerationBatchMode = "storyboard_image" | "storyboard_video" | "action_board" | "batch_image";
 export type CanvasGenerationBatchStatus = "queued" | "running" | "partial_failed" | "completed" | "cancelled";
 export type CanvasGenerationBatchItemStatus = "waiting" | "submitting" | "queued" | "running" | "succeeded" | "failed" | "cancelled";
 export type CanvasImageGenerationType = "generation" | "edit";
 export type CanvasWorkflowKind = "free" | "script" | "story_input" | "character" | "scene" | "storyboard" | "shot" | "final" | "styleboard" | "reference_set" | "reference_video" | "action_board";
-export type CanvasVideoEditOperation = "text_to_video" | "image_to_video" | "extend" | "inpaint" | "replace_element" | "camera_motion" | "style_transfer" | "audio_to_video" | "compare_versions" | "concat";
+export type CanvasVideoEditOperation = "text_to_video" | "image_to_video" | "reference_to_video" | "extend" | "inpaint" | "replace_element" | "camera_motion" | "style_transfer" | "audio_to_video" | "compare_versions" | "concat";
 export type CanvasSkillCategory = "writing" | "storyboard" | "image" | "video" | "utility";
 export type CanvasSkillOutputMode = "text" | "json" | "image_prompt" | "workflow";
 export type StoryboardColumn =
@@ -60,8 +83,17 @@ export type StoryboardColumn =
     | "timeBeats"
     | "imageGenerationPrompt"
     | "videoMotionPrompt"
+    | "assets"
     | "continuityOut"
     | "negativePrompt";
+
+export type StoryboardAssetRole = "character" | "environment" | "wardrobe" | "prop" | "weapon" | "style" | "motion" | "audio";
+
+export type StoryboardAssetBinding = {
+    nodeId: string;
+    role: StoryboardAssetRole;
+    priority: number;
+};
 
 export type StoryboardCharacterReference = {
     characterName: string;
@@ -96,11 +128,19 @@ export type StoryboardRow = {
     optionalDetails: string[];
     continuityOut: string;
     negativePrompt: string;
-    referenceNodeIds: string[];
+    assetBindings: StoryboardAssetBinding[];
+    /** 原视频拆解时的时间范围，用于自动抽取关键帧。 */
+    sourceStartMs?: number;
+    sourceEndMs?: number;
+    keyframeTimeMs?: number;
     imageNodeId?: string;
     videoNodeId?: string;
     status?: CanvasNodeStatus;
     errorDetails?: string;
+    /** 与该分镜行关联的预演台场景 ID。由 Agent 或用户创建预演后写入。 */
+    previsSceneId?: string;
+    /** 最后一次生成白膜预演后的缩略图 URL，用于在分镜行内展示预览图。 */
+    previsSnapshotUrl?: string;
 };
 
 export type StoryboardData = {
@@ -127,8 +167,45 @@ export type CanvasGenerationBatch = {
     mode: CanvasGenerationBatchMode;
     status: CanvasGenerationBatchStatus;
     items: CanvasGenerationBatchItem[];
+    concurrency?: number;
     createdAt: string;
     updatedAt: string;
+};
+
+export type CanvasBatchOperation = "try_on" | "creative";
+export type CanvasBatchRow = {
+    id: string;
+    enabled: boolean;
+    inputNodeIds: string[];
+    /** Text nodes selected for this row; their contents are appended to prompt. */
+    textNodeIds?: string[];
+    prompt: string;
+    outputNodeId?: string;
+    /** AI-generated cell content keyed by column id (for aiGenerated tables). */
+    cells?: Record<string, string>;
+};
+export type CanvasBatchColumnType = "image" | "text";
+export type CanvasBatchTableContentKind = "content" | "storyboard";
+export type CanvasBatchReferenceColumn = {
+    id: string;
+    label: string;
+    type?: CanvasBatchColumnType;
+};
+export type CanvasBatchTableData = {
+    operation: CanvasBatchOperation;
+    concurrency: number;
+    /** AI 输出的业务结构；分镜表会保留标准 StoryboardRow，避免依赖列名猜测。 */
+    contentKind?: CanvasBatchTableContentKind;
+    storyboardRows?: StoryboardRow[];
+    storyboardTitle?: string;
+    storyboardSourceNodeIds?: string[];
+    /** Optional prompt override applied to every batch row while non-empty. */
+    globalPrompt?: string;
+    referenceColumns?: CanvasBatchReferenceColumn[];
+    textColumns?: CanvasBatchReferenceColumn[];
+    rows: CanvasBatchRow[];
+    /** When true, columns are AI-generated with dynamic headers. */
+    aiGenerated?: boolean;
 };
 
 export type CanvasSkillSnapshot = {
@@ -144,6 +221,12 @@ export type CanvasSkillSnapshot = {
 };
 
 export type CanvasNodeMetadata = {
+    /** Credential-free editable generation contract; submitted recipes live with tasks. */
+    generationSpec?: GenerationSpec;
+    /** Namespaced extension ownership for nodes contributed by a unified plugin. */
+    pluginId?: string;
+    pluginNodeId?: string;
+    pluginData?: Record<string, unknown>;
     importSource?:
         | {
               provider: "libtv";
@@ -164,20 +247,45 @@ export type CanvasNodeMetadata = {
           };
     content?: string;
     previewContent?: string;
+    videoPreview?: {
+        content: string;
+        storageKey?: string;
+        width?: number;
+        height?: number;
+        bytes?: number;
+        mimeType?: string;
+    };
     richText?: Record<string, unknown>;
     composerContent?: string;
     prompt?: string;
+    /** 文本节点是否处于列表模式；用于触发多模态分析并创建多维表格。 */
+    listMode?: boolean;
     promptTemplateOperation?: string;
     promptTemplateVariables?: Record<string, string>;
     status?: CanvasNodeStatus;
+    /** 浏览器文件上传，与模型生成任务状态独立。 */
+    fileUpload?: "uploading" | "error";
+    fileUploadProgress?: number;
     locked?: boolean;
     errorDetails?: string;
     generationErrorCode?: string;
+    resourceReloadAvailable?: boolean;
     failedPromptFingerprint?: string;
+    lastGenerationRequestFingerprint?: string;
     fontSize?: number;
     generationMode?: CanvasGenerationMode;
     generationType?: CanvasImageGenerationType;
+    /** 选用模型：下一次生成将使用的模型，随提示词面板下拉变化。 */
     model?: string;
+    /** 产出模型：当前图片、视频或音频内容生成成功时冻结的模型身份。 */
+    producedModel?: string;
+    /** 本次生成已提交、尚未成功落盘的模型身份。失败或改下拉都不改产出模型。 */
+    producedModelCandidate?: string;
+    workflowProvider?: "model" | "runninghub";
+    runningHubWorkflowId?: string;
+    runningHubWorkflowKind?: "workflow" | "app";
+    /** 当前画布节点覆盖的工作流动态字段，键为 source:* 或 field:nodeId:fieldName。 */
+    workflowParameters?: Record<string, unknown>;
     size?: string;
     quality?: string;
     transparentBackground?: string;
@@ -190,7 +298,19 @@ export type CanvasNodeMetadata = {
     audioVoice?: string;
     audioFormat?: string;
     audioSpeed?: string;
+    audioLanguage?: string;
+    audioDialect?: string;
     audioInstructions?: string;
+    audioEmotionControlMethod?: string;
+    audioEmotionRandom?: string;
+    audioEmotionHappy?: string;
+    audioEmotionAngry?: string;
+    audioEmotionSad?: string;
+    audioEmotionAfraid?: string;
+    audioEmotionDisgusted?: string;
+    audioEmotionMelancholic?: string;
+    audioEmotionSurprised?: string;
+    audioEmotionCalm?: string;
     references?: string[];
     naturalWidth?: number;
     naturalHeight?: number;
@@ -202,19 +322,74 @@ export type CanvasNodeMetadata = {
     batchUsesReferenceImages?: boolean;
     primaryImageId?: string;
     imageBatchExpanded?: boolean;
+    /** 拆层请求身份与画布展开位置分离，恢复任务时沿用同一结果消费流程。 */
+    layerDecomposition?: { sourceNodeId: string; canvas?: { width: number; height: number } };
+    /** 一次拆分从视觉规划起计时；刷新不续发尚未提交的拆图请求。 */
+    imageLayerWorkflow?: { sourceNodeId: string; startedAt: string; stage: "planning" | "extract"; total?: number; plannerModel: string; planningTaskId?: string };
+    /** 普通生图模型逐层提取；刷新只恢复已提交任务，不自动提交下一次付费请求。 */
+    experimentalLayerPlan?: {
+        sourceNodeId: string;
+        requests: Array<{
+            nodeId: string;
+            target: string;
+            removeFromBackground?: boolean;
+            extraction?: import("@/lib/canvas/canvas-image-layer-strategy").ImageLayerExtraction;
+            generation?: import("@/lib/canvas/canvas-image-layers").ImageLayerGeneration;
+        }>;
+        errorSignature?: string;
+        composedSignature?: string;
+        plannerModel?: string;
+        planningTaskId?: string;
+        progress?: string;
+    };
+    layerExtraction?: {
+        sourceNodeId: string;
+        groupId: string;
+        index: number;
+        strategy?: import("@/lib/canvas/canvas-image-layer-strategy").ImageLayerExtraction;
+        source?: import("@/lib/canvas/canvas-image-layer-strategy").ImageLayerSource;
+        backgroundPatch?: import("@/lib/canvas/canvas-image-layer-strategy").ImageLayerBackgroundPatch;
+        allowBackgroundRemoval?: boolean;
+        backgroundRemovalModel?: string;
+        phase?: "extract" | "background-removal-required" | "remove-background" | "complete";
+        extractionTaskId?: string;
+        /** 原任务资源与本地归一化/修补后的资源分开登记，不能沿用原素材身份。 */
+        sourceResultStorageKey?: string;
+        rejectedTaskId?: string;
+        canvas?: { width: number; height: number };
+    };
+    imageLayerGroup?: {
+        width: number;
+        height: number;
+        /** 从底到顶；x/y 为合成像素坐标，不是画布节点位置。 */
+        layers: Array<{ nodeId: string; x: number; y: number; visible: boolean }>;
+        compositeSignature?: string;
+        compositeStatus?: "ready" | "updating" | "error";
+        compositeError?: string;
+        incomplete?: { completed: number; total: number; failed: number; missingBackground: boolean };
+    };
+    imageLayer?: { groupId: string; outputIndex: number; kind?: "base" | "transparent" };
+    /** 裁切素材与完整画布尺寸的图层合成分别保存。 */
+    imageLayerMaterials?: { auto?: boolean; status?: "loading" | "ready" | "error"; groupId?: string; error?: string };
+    imageLayerMaterial?: { sourceLayerId: string; sourceGroupId: string; bounds: { left: number; top: number; width: number; height: number } };
     storageKey?: string;
     mimeType?: string;
     bytes?: number;
     durationMs?: number;
+    /** Whether the video file contains an audio track when this is known. */
+    hasAudio?: boolean;
     assetId?: string;
     assetTags?: string[];
-    assetCategory?: "character" | "environment" | "wardrobe" | "prop" | "weapon" | "style" | "other";
+    assetCategory?: AssetCategory;
     workflowKind?: CanvasWorkflowKind;
     workflowTitle?: string;
     workflowDescription?: string;
     stylePresetId?: string;
     styleProfileJson?: string;
     styleExecutionPlan?: StyleExecutionPlan;
+    skillIds?: string[];
+    skillVersions?: Array<{ skillId: string; versionId: string; version: string }>;
+    skillFiles?: Array<{ skillId: string; path: string; sha256?: string }>;
     chapterId?: string;
     chapterTitle?: string;
     shotIndex?: number;
@@ -222,6 +397,7 @@ export type CanvasNodeMetadata = {
     characterIds?: string[];
     referenceSetId?: string;
     referenceAssetNodeIds?: string[];
+    assetBindings?: StoryboardAssetBinding[];
     characterName?: string;
     characterPrompt?: string;
     characterAliases?: string[];
@@ -255,13 +431,19 @@ export type CanvasNodeMetadata = {
     taskStatus?: "queued" | "running" | "succeeded" | "failed" | "cancelled" | string;
     taskProgress?: number;
     taskStage?: string;
+    taskMediaStage?: GenerationTask["mediaStage"];
+    taskCanRecoverMedia?: boolean;
     taskProvider?: string;
+    taskStartedAt?: string;
+    taskCompletedAt?: string;
+    taskDurationMs?: number;
     taskErrorCode?: string;
     taskOfficialStatus?: "pending" | "processing" | "completed" | "failed" | "cancelled";
     taskReceiptRecorded?: boolean;
     taskCreatedAt?: string;
     taskUpdatedAt?: string;
     generationEffectKeys?: string[];
+    generationOutputCount?: number;
     agentGenerationContinuation?: {
         id: string;
         taskId: string;
@@ -269,25 +451,28 @@ export type CanvasNodeMetadata = {
         messageId?: string;
         source?: "online" | "local";
         status: "pending" | "completed" | "failed";
-        errorMessage?: string;
         effectKey?: string;
     };
     sessionId?: string;
     videoEditOperation?: CanvasVideoEditOperation;
+    arkPrivateAssetUpload?: string;
     videoCameraMoveId?: string;
     videoCameraMovePrompt?: string;
     videoStartFrameNodeId?: string;
     videoEndFrameNodeId?: string;
+    videoFrameSourceNodeId?: string;
+    videoFrameTimeMs?: number;
     versionOfNodeId?: string;
     versionLabel?: string;
     versionPrimary?: boolean;
     copiedFromNodeId?: string;
-    directorSceneId?: string;
-    directorShotId?: string;
-    directorPreviewNodeId?: string;
-    directorDepthNodeId?: string;
-    directorNormalNodeId?: string;
-    directorClayVideoNodeId?: string;
+    generationResultPlacement?: "replace-node" | "new-version";
+    previsSceneId?: string;
+    previsShotId?: string;
+    previsPreviewNodeId?: string;
+    previsDepthNodeId?: string;
+    previsNormalNodeId?: string;
+    previsClayVideoNodeId?: string;
     subtitleEntries?: SrtEntry[];
     subtitleHighlights?: SubtitleHighlight[];
     subtitleStyle?: SubtitleStyle;
@@ -295,12 +480,24 @@ export type CanvasNodeMetadata = {
     skillId?: string;
     skillVersion?: number;
     skillSnapshot?: CanvasSkillSnapshot;
+    /** 图表节点的图形类型，缺省柱状图。落盘字段——新增扩展节点的自有字段都要在这里声明。 */
+    chartKind?: "bar" | "line";
+    /** 调色节点的参数；缺省视为未调色。 */
+    colorGrade?: CanvasColorGrade;
+    mediaConversion?: MediaConversionNodeState;
+    /** 用户手动拉伸过尺寸；图片按真实比例自动适配时避让它。 */
+    manualSize?: boolean;
     storyboard?: StoryboardData;
     storyboardShotDuration?: StoryboardShotDuration;
     storyboardShotCount?: StoryboardShotCount;
     storyboardVideoInputMode?: StoryboardVideoInputMode;
     storyboardComposerHeight?: number;
     generationBatches?: CanvasGenerationBatch[];
+    batchTable?: CanvasBatchTableData;
+    batchSourceNodeId?: string;
+    batchRowId?: string;
+    batchOperation?: CanvasBatchOperation;
+    batchInputNodeIds?: string[];
     frame?: {
         collapsed: boolean;
         expandedWidth: number;
@@ -352,12 +549,25 @@ export type CanvasNodeMetadata = {
         editMode?: "provider-mask" | "local-composite";
     };
     portraitTexture?: PortraitTextureSettings;
+    /** AI 审美批改节点只保存当前报告和输入指纹，不保存图片二进制。 */
+    artCritique?: ArtCritiqueNodeState;
+    /** 摄像机控制选项，启用后生成时自动追加摄影机/镜头/焦距/光圈提示词。 */
+    cameraControl?: CameraControlOptions;
+    /** 全景节点配置：投影方式、生成方式和比例兜底开关。 */
+    panoramaConfig?: {
+        projection: "spherical" | "cylindrical";
+        sourceMode: "ai" | "image";
+        smartBase: boolean;
+        directImageUrl?: string | null;
+    };
 };
 
 export type CanvasNodeData = {
     id: string;
-    type: CanvasNodeType;
+    type: CanvasNodeTypeId;
     title: string;
+    createdAt?: string;
+    updatedAt?: string;
     position: Position;
     width: number;
     height: number;
@@ -373,6 +583,8 @@ export type CanvasConnection = {
     toHandleId?: string;
     fromAnchorRatio?: number;
     toAnchorRatio?: number;
+    relation?: "storyboard-output" | "storyboard-asset-reference" | "batch-output" | "batch-input";
+    storyboardRowId?: string;
 };
 
 export type CanvasDisplayConnection = {
@@ -383,7 +595,7 @@ export type CanvasDisplayConnection = {
 
 export type CanvasAssistantReference = {
     id: string;
-    type: CanvasNodeType;
+    type: CanvasNodeTypeId;
     title: string;
     dataUrl?: string;
     storageKey?: string;
@@ -432,13 +644,16 @@ export type ConnectionHandle = {
     anchorRatio?: number;
 };
 
+export type CanvasSelectionStrategy = "replace" | "add" | "toggle" | "subtract";
+export type CanvasSelectionHitMode = "contain" | "intersect";
+
 export type SelectionBox = {
     startWorldX: number;
     startWorldY: number;
     currentWorldX: number;
     currentWorldY: number;
-    additive: boolean;
-    subtractive: boolean;
+    strategy: CanvasSelectionStrategy;
+    hitMode: CanvasSelectionHitMode;
     initialSelectedNodeIds: string[];
 };
 
@@ -448,6 +663,7 @@ export type ContextMenuState =
           x: number;
           y: number;
           position: Position;
+          createOpen?: boolean;
       }
     | {
           type: "node";

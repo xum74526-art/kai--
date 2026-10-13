@@ -1,69 +1,74 @@
 import type { ReactNode } from "react";
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 
-import { WorkspaceErrorState } from "@/components/layout/workspace-state";
+import { getAuthSession, type AuthSessionPayload } from "@/services/api/auth";
 import { FullScreenLoader } from "@/components/ui/aceternity/full-screen-loader";
-import { applyUserSession } from "@/lib/user-session";
-import { getAuthSession } from "@/services/api/auth";
-import { ApiError } from "@/services/api/request";
 import { preloadWorkspaceRoute } from "@/lib/workspace-route-modules";
 import { useUserStore } from "@/stores/use-user-store";
-import { appRoutePath } from "@/lib/app-base-path";
-
-function isExplicitlyUnauthenticated(error: unknown) {
-    return error instanceof ApiError && (error.status === 401 || error.status === 403);
-}
-
-function sessionRecoveryErrorMessage(error: unknown) {
-    return error instanceof Error && error.message.trim() ? error.message : "无法连接登录服务";
-}
+import { recordDiagnosticEvent } from "@/services/diagnostics/client-diagnostics";
 
 export function AuthSessionHydrator({ children }: { children: ReactNode }) {
     const hydrated = useUserStore((state) => state.hydrated);
-    const [recoveryError, setRecoveryError] = useState<string | null>(null);
-    const [retrySequence, setRetrySequence] = useState(0);
 
     useEffect(() => {
         let cancelled = false;
-        setRecoveryError(null);
-        // 登录态与当前工作区 chunk 并行恢复，避免进入应用后再出现一次页面级等待。
-        preloadWorkspaceRoute(appRoutePath(window.location.pathname));
-        const restoreSession = async () => {
-            try {
-                const payload = await getAuthSession();
-                if (!cancelled) await applyUserSession(payload);
-            } catch (error) {
+        const startedAt = performance.now();
+        recordDiagnosticEvent({ category: "navigation", level: "info", code: "startup.auth_session_started", message: "开始恢复认证会话" });
+        getAuthSession()
+            .then(async (payload) => {
                 if (cancelled) return;
-                // 只有后端明确拒绝当前会话时才退出；网络与服务异常必须保留本地登录态。
-                if (isExplicitlyUnauthenticated(error)) {
-                    try {
-                        await applyUserSession({ user: null, logicalModels: [] });
-                    } catch (sessionError) {
-                        if (!cancelled) setRecoveryError(sessionRecoveryErrorMessage(sessionError));
-                    }
+                recordDiagnosticEvent({
+                    category: "navigation",
+                    level: "info",
+                    code: "startup.auth_session_ready",
+                    message: payload.user ? "认证会话已恢复" : "匿名会话已确认",
+                    durationMs: performance.now() - startedAt,
+                });
+                if (!payload.user) {
+                    await applyAnonymousSession(payload);
+                    recordDiagnosticEvent({
+                        category: "navigation",
+                        level: "info",
+                        code: "startup.anonymous_ready",
+                        message: "匿名页面已解除启动阻塞",
+                        durationMs: performance.now() - startedAt,
+                    });
                     return;
                 }
-                setRecoveryError(sessionRecoveryErrorMessage(error));
-            }
-        };
-        void restoreSession();
+                // 账号数据、画布和素材持久化只属于已登录工作区，登录页不下载这些模块。
+                const { applyUserSession } = await import("@/lib/user-session");
+                if (cancelled) return;
+                await applyUserSession(payload);
+                recordDiagnosticEvent({
+                    category: "navigation",
+                    level: "info",
+                    code: "startup.workspace_ready",
+                    message: "登录工作区已解除启动阻塞",
+                    durationMs: performance.now() - startedAt,
+                });
+                preloadWorkspaceRoute(window.location.pathname);
+            })
+            .catch(async () => {
+                if (!cancelled) {
+                    await applyAnonymousSession({ user: null });
+                    recordDiagnosticEvent({
+                        category: "navigation",
+                        level: "warning",
+                        code: "startup.auth_session_failed",
+                        message: "认证会话恢复失败，已降级为匿名页面",
+                        durationMs: performance.now() - startedAt,
+                    });
+                }
+            });
         return () => {
             cancelled = true;
         };
-    }, [retrySequence]);
-
-    if (recoveryError) {
-        return (
-            <main className="grid min-h-screen place-items-center bg-background p-6">
-                <WorkspaceErrorState
-                    title="登录服务暂时不可用"
-                    description={`${recoveryError}。当前登录状态未被清除，请检查网络连接后重试。`}
-                    actionLabel="重试"
-                    onRetry={() => setRetrySequence((current) => current + 1)}
-                />
-            </main>
-        );
-    }
+    }, []);
 
     return hydrated ? children : <FullScreenLoader />;
+}
+
+async function applyAnonymousSession(payload: AuthSessionPayload) {
+    const { applyUserSession } = await import("@/lib/user-session");
+    await applyUserSession({ ...payload, user: null });
 }
