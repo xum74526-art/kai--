@@ -1,0 +1,675 @@
+{
+  "apiVersion": "yingce.plugin/v2",
+  "id": "kai-bailian-image",
+  "name": "阿里百炼图片",
+  "version": "1.0.0",
+  "author": "KAI影",
+  "description": "KAI影现有万相与千问原生图片渠道。",
+  "documentation": "# 阿里百炼图片\n\n保留 KAI影 的 bailian-image 渠道 ID，使用百炼原生异步接口。创建 POST /api/v1/services/aigc/image-generation/generation，带 X-DashScope-Async: enable；查询 GET /api/v1/tasks/{taskId}。Bearer 鉴权，使用所配置 Base URL 的 origin，兼容 compatible-mode/v1 地址。input.messages[].content 同时包含提示词与参考图；图优先 data URL。不支持蒙版、视频或音频输入。parameters.n 控制张数；size 保留既有 1K/2K/4K 档位、比例推荐尺寸及自定义宽x高到宽*高转换。4K 仅允许 wan2.7-image-pro 文生图。正式生成保留供应商提示词扩写/思考默认值，连接测试关闭对应模型的扩写/思考。结果读取 output.choices[].message.content[].image，失败保留 code/message。异步恢复、重试、权限与结果下载使用宿主统一流程。\n\n协议源码为 manifest.json，分发文件为上一级同名 .yingce-plugin 包；修改后必须同步更新包。\n\n---\n\n# 阿里百炼图片接口\n\n配置 `apiKey` 由宿主注入 Bearer 请求头；插件不保存密钥。配置 Base URL 使用 origin，以兼容 compatible-mode/v1 地址。\n\n## 创建和查询\n\n使用 `POST /api/v1/services/aigc/image-generation/generation`，设置 `X-DashScope-Async: enable`；查询使用 `GET /api/v1/tasks/{taskId}`。`model` 为千问或万相模型，`prompt` 与可选 instructions 合并到消息文本，`images` 作为参考图消息且优先 data URL。`imageCount` 映射为 parameters.n，`aspectRatio` 映射为 parameters.size；支持宽x高、推荐比例以及适用模型的 1K/2K/4K 档位。不支持蒙版、参考视频或音频。\n\n正常生成不覆盖供应商提示词扩写或思考默认值；连接测试才关闭对应功能，以缩短测试耗时。4K 仅支持 wan2.7-image-pro 文生图，具体数量、尺寸、字数限制由宿主能力校验。\n\n## 响应\n\n创建响应读取 output.task_id；查询读取 output.task_status，成功从 output.choices[].message.content[].image 提取 URL 或 data URL。code/output.code 及 message/output.message 保留上游错误。已持久化的上游任务超时后只恢复查询，不重新提交。\n\n<!-- YINGCE_MANIFEST_CONTRACT_START -->\n## Manifest 完整接口定义\n\n以下 JSON 与插件包内实际 `manifest.json` 逐字段一致，覆盖插件身份、权限、配置、鉴权、参数、校验、创建、Agent、查询、取消、结果下载、响应和 Agent 响应映射。`documentation` 字段的值就是当前完整文档；为避免文档在自身内部无限递归，JSON 中仅用等义占位文本表示正文。\n\n```json\n{\n  \"apiVersion\": \"yingce.plugin/v2\",\n  \"id\": \"kai-bailian-image\",\n  \"name\": \"阿里百炼图片\",\n  \"version\": \"1.0.0\",\n  \"author\": \"KAI影\",\n  \"description\": \"KAI影现有万相与千问原生图片渠道。\",\n  \"documentation\": \"<当前插件的完整 documentation，由 README.md 与 docs/interface.md 拼接而成；为避免 JSON 递归，此处不重复展开正文。>\",\n  \"permissions\": [\n    \"generation.run\",\n    \"media.read\"\n  ],\n  \"configuration\": {\n    \"fields\": [\n      {\n        \"name\": \"apiKey\",\n        \"type\": \"secret\",\n        \"label\": \"API Key\",\n        \"required\": true\n      }\n    ]\n  },\n  \"contributes\": {\n    \"providers\": [\n      {\n        \"id\": \"bailian-image\",\n        \"label\": \"阿里百炼图片\",\n        \"capabilities\": [\n          \"image\"\n        ],\n        \"scopes\": [\n          \"admin.system-channel\",\n          \"user.custom-channel\",\n          \"canvas\",\n          \"creation\",\n          \"agent\"\n        ],\n        \"baseUrl\": \"https://dashscope.aliyuncs.com\",\n        \"requiresPublicMediaUrls\": false,\n        \"auth\": {\n          \"type\": \"bearer\",\n          \"field\": \"apiKey\"\n        },\n        \"parameters\": [\n          {\n            \"name\": \"model\",\n            \"type\": \"string\",\n            \"required\": true,\n            \"mapping\": \"model\",\n            \"description\": \"百炼千问或万相图片模型标识\"\n          },\n          {\n            \"name\": \"prompt\",\n            \"type\": \"string\",\n            \"required\": true,\n            \"mapping\": \"input.messages\",\n            \"description\": \"图片生成提示词，可与 instructions 合并\"\n          },\n          {\n            \"name\": \"images\",\n            \"type\": \"media[]\",\n            \"required\": false,\n            \"mapping\": \"input.messages\",\n            \"description\": \"编辑参考图，优先内嵌 data URL，不支持蒙版\"\n          },\n          {\n            \"name\": \"imageCount\",\n            \"type\": \"integer\",\n            \"required\": false,\n            \"mapping\": \"parameters.n\",\n            \"description\": \"生成数量，默认 1，模型能力限定最大数量\"\n          },\n          {\n            \"name\": \"aspectRatio\",\n            \"type\": \"string\",\n            \"required\": false,\n            \"mapping\": \"parameters.size\",\n            \"description\": \"尺寸档位、推荐宽高比或自定义宽x高\"\n          }\n        ],\n        \"validations\": [\n          {\n            \"assert\": {\n              \"$eq\": [\n                {\n                  \"$len\": {\n                    \"$ref\": \"request.videos\"\n                  }\n                },\n                0\n              ]\n            },\n            \"message\": \"阿里百炼图片协议不支持参考视频\"\n          },\n          {\n            \"assert\": {\n              \"$eq\": [\n                {\n                  \"$len\": {\n                    \"$ref\": \"request.audios\"\n                  }\n                },\n                0\n              ]\n            },\n            \"message\": \"阿里百炼图片协议不支持参考音频\"\n          },\n          {\n            \"assert\": {\n              \"$eq\": [\n                {\n                  \"$len\": {\n                    \"$filter\": {\n                      \"from\": {\n                        \"$ref\": \"request.images\"\n                      },\n                      \"as\": \"media\",\n                      \"where\": {\n                        \"$eq\": [\n                          {\n                            \"$ref\": \"media.role\"\n                          },\n                          \"mask\"\n                        ]\n                      }\n                    }\n                  }\n                },\n                0\n              ]\n            },\n            \"message\": \"阿里百炼图片协议不支持蒙版文件\"\n          },\n          {\n            \"assert\": {\n              \"$gt\": [\n                {\n                  \"$len\": {\n                    \"$trim\": {\n                      \"$ref\": \"request.prompt\"\n                    }\n                  }\n                },\n                0\n              ]\n            },\n            \"message\": \"阿里百炼图片请求缺少提示词\"\n          }\n        ],\n        \"create\": {\n          \"method\": \"POST\",\n          \"path\": \"/api/v1/services/aigc/image-generation/generation\",\n          \"originPath\": true,\n          \"contentType\": \"application/json\",\n          \"headers\": {\n            \"X-DashScope-Async\": \"enable\"\n          },\n          \"body\": {\n            \"model\": {\n              \"$ref\": \"request.model\"\n            },\n            \"input\": {\n              \"messages\": [\n                {\n                  \"role\": \"user\",\n                  \"content\": {\n                    \"$concatArrays\": [\n                      {\n                        \"$map\": {\n                          \"from\": {\n                            \"$sortByOrder\": {\n                              \"$ref\": \"request.images\"\n                            }\n                          },\n                          \"as\": \"media\",\n                          \"in\": {\n                            \"image\": {\n                              \"$coalesce\": [\n                                {\n                                  \"$ref\": \"media.dataUrl\"\n                                },\n                                {\n                                  \"$ref\": \"media.url\"\n                                }\n                              ]\n                            }\n                          }\n                        }\n                      },\n                      [\n                        {\n                          \"text\": {\n                            \"$if\": {\n                              \"condition\": {\n                                \"$ref\": \"request.instructions\"\n                              },\n                              \"then\": {\n                                \"$concat\": [\n                                  {\n                                    \"$ref\": \"request.instructions\"\n                                  },\n                                  \"\\n\\n\",\n                                  {\n                                    \"$ref\": \"request.prompt\"\n                                  }\n                                ]\n                              },\n                              \"else\": {\n                                \"$ref\": \"request.prompt\"\n                              }\n                            }\n                          }\n                        }\n                      ]\n                    ]\n                  }\n                }\n              ]\n            },\n            \"parameters\": {\n              \"n\": {\n                \"$if\": {\n                  \"condition\": {\n                    \"$gt\": [\n                      {\n                        \"$ref\": \"request.imageCount\"\n                      },\n                      0\n                    ]\n                  },\n                  \"then\": {\n                    \"$ref\": \"request.imageCount\"\n                  },\n                  \"else\": 1\n                }\n              },\n              \"watermark\": false,\n              \"size\": {\n                \"$omitEmpty\": {\n                  \"$switch\": {\n                    \"cases\": [\n                      {\n                        \"when\": {\n                          \"$in\": [\n                            {\n                              \"$lower\": {\n                                \"$trim\": {\n                                  \"$ref\": \"request.aspectRatio\"\n                                }\n                              }\n                            },\n                            [\n                              \"1k\",\n                              \"2k\",\n                              \"4k\"\n                            ]\n                          ]\n                        },\n                        \"then\": {\n                          \"$upper\": {\n                            \"$lower\": {\n                              \"$trim\": {\n                                \"$ref\": \"request.aspectRatio\"\n                              }\n                            }\n                          }\n                        }\n                      },\n                      {\n                        \"when\": {\n                          \"$eq\": [\n                            {\n                              \"$lower\": {\n                                \"$trim\": {\n                                  \"$ref\": \"request.aspectRatio\"\n                                }\n                              }\n                            },\n                            \"1:1\"\n                          ]\n                        },\n                        \"then\": \"2048*2048\"\n                      },\n                      {\n                        \"when\": {\n                          \"$eq\": [\n                            {\n                              \"$lower\": {\n                                \"$trim\": {\n                                  \"$ref\": \"request.aspectRatio\"\n                                }\n                              }\n                            },\n                            \"16:9\"\n                          ]\n                        },\n                        \"then\": \"2688*1536\"\n                      },\n                      {\n                        \"when\": {\n                          \"$eq\": [\n                            {\n                              \"$lower\": {\n                                \"$trim\": {\n                                  \"$ref\": \"request.aspectRatio\"\n                                }\n                              }\n                            },\n                            \"9:16\"\n                          ]\n                        },\n                        \"then\": \"1536*2688\"\n                      },\n                      {\n                        \"when\": {\n                          \"$eq\": [\n                            {\n                              \"$lower\": {\n                                \"$trim\": {\n                                  \"$ref\": \"request.aspectRatio\"\n                                }\n                              }\n                            },\n                            \"4:3\"\n                          ]\n                        },\n                        \"then\": \"2368*1728\"\n                      },\n                      {\n                        \"when\": {\n                          \"$eq\": [\n                            {\n                              \"$lower\": {\n                                \"$trim\": {\n                                  \"$ref\": \"request.aspectRatio\"\n                                }\n                              }\n                            },\n                            \"3:4\"\n                          ]\n                        },\n                        \"then\": \"1728*2368\"\n                      },\n                      {\n                        \"when\": {\n                          \"$eq\": [\n                            {\n                              \"$lower\": {\n                                \"$trim\": {\n                                  \"$ref\": \"request.aspectRatio\"\n                                }\n                              }\n                            },\n                            \"3:2\"\n                          ]\n                        },\n                        \"then\": \"2496*1664\"\n                      },\n                      {\n                        \"when\": {\n                          \"$eq\": [\n                            {\n                              \"$lower\": {\n                                \"$trim\": {\n                                  \"$ref\": \"request.aspectRatio\"\n                                }\n                              }\n                            },\n                            \"2:3\"\n                          ]\n                        },\n                        \"then\": \"1664*2496\"\n                      },\n                      {\n                        \"when\": {\n                          \"$eq\": [\n                            {\n                              \"$lower\": {\n                                \"$trim\": {\n                                  \"$ref\": \"request.aspectRatio\"\n                                }\n                              }\n                            },\n                            \"21:9\"\n                          ]\n                        },\n                        \"then\": \"3072*1312\"\n                      },\n                      {\n                        \"when\": {\n                          \"$eq\": [\n                            {\n                              \"$len\": {\n                                \"$split\": [\n                                  {\n                                    \"$lower\": {\n                                      \"$trim\": {\n                                        \"$ref\": \"request.aspectRatio\"\n                                      }\n                                    }\n                                  },\n                                  \"x\"\n                                ]\n                              }\n                            },\n                            2\n                          ]\n                        },\n                        \"then\": {\n                          \"$concat\": [\n                            {\n                              \"$at\": [\n                                {\n                                  \"$split\": [\n                                    {\n                                      \"$lower\": {\n                                        \"$trim\": {\n                                          \"$ref\": \"request.aspectRatio\"\n                                        }\n                                      }\n                                    },\n                                    \"x\"\n                                  ]\n                                },\n                                0\n                              ]\n                            },\n                            \"*\",\n                            {\n                              \"$at\": [\n                                {\n                                  \"$split\": [\n                                    {\n                                      \"$lower\": {\n                                        \"$trim\": {\n                                          \"$ref\": \"request.aspectRatio\"\n                                        }\n                                      }\n                                    },\n                                    \"x\"\n                                  ]\n                                },\n                                1\n                              ]\n                            }\n                          ]\n                        }\n                      },\n                      {\n                        \"when\": {\n                          \"$eq\": [\n                            {\n                              \"$len\": {\n                                \"$split\": [\n                                  {\n                                    \"$lower\": {\n                                      \"$trim\": {\n                                        \"$ref\": \"request.aspectRatio\"\n                                      }\n                                    }\n                                  },\n                                  \"×\"\n                                ]\n                              }\n                            },\n                            2\n                          ]\n                        },\n                        \"then\": {\n                          \"$concat\": [\n                            {\n                              \"$at\": [\n                                {\n                                  \"$split\": [\n                                    {\n                                      \"$lower\": {\n                                        \"$trim\": {\n                                          \"$ref\": \"request.aspectRatio\"\n                                        }\n                                      }\n                                    },\n                                    \"×\"\n                                  ]\n                                },\n                                0\n                              ]\n                            },\n                            \"*\",\n                            {\n                              \"$at\": [\n                                {\n                                  \"$split\": [\n                                    {\n                                      \"$lower\": {\n                                        \"$trim\": {\n                                          \"$ref\": \"request.aspectRatio\"\n                                        }\n                                      }\n                                    },\n                                    \"×\"\n                                  ]\n                                },\n                                1\n                              ]\n                            }\n                          ]\n                        }\n                      }\n                    ],\n                    \"default\": null\n                  }\n                }\n              },\n              \"prompt_extend\": {\n                \"$if\": {\n                  \"condition\": {\n                    \"$ref\": \"request.extra.connectionTest\"\n                  },\n                  \"then\": false,\n                  \"else\": null\n                }\n              },\n              \"enable_thinking\": {\n                \"$if\": {\n                  \"condition\": {\n                    \"$and\": [\n                      {\n                        \"$ref\": \"request.extra.connectionTest\"\n                      },\n                      {\n                        \"$gt\": [\n                          {\n                            \"$len\": {\n                              \"$split\": [\n                                {\n                                  \"$lower\": {\n                                    \"$trim\": {\n                                      \"$ref\": \"request.model\"\n                                    }\n                                  }\n                                },\n                                \"qwen-image-3.0\"\n                              ]\n                            }\n                          },\n                          1\n                        ]\n                      }\n                    ]\n                  },\n                  \"then\": false,\n                  \"else\": null\n                }\n              },\n              \"enable_interleave\": {\n                \"$if\": {\n                  \"condition\": {\n                    \"$and\": [\n                      {\n                        \"$ref\": \"request.extra.connectionTest\"\n                      },\n                      {\n                        \"$gt\": [\n                          {\n                            \"$len\": {\n                              \"$split\": [\n                                {\n                                  \"$lower\": {\n                                    \"$trim\": {\n                                      \"$ref\": \"request.model\"\n                                    }\n                                  }\n                                },\n                                \"wan2.7-image\"\n                              ]\n                            }\n                          },\n                          1\n                        ]\n                      }\n                    ]\n                  },\n                  \"then\": false,\n                  \"else\": null\n                }\n              }\n            }\n          }\n        },\n        \"poll\": {\n          \"method\": \"GET\",\n          \"path\": \"/api/v1/tasks/{{taskId}}\",\n          \"originPath\": true\n        },\n        \"response\": {\n          \"taskId\": {\n            \"$coalesce\": [\n              {\n                \"$ref\": \"response.output.task_id\"\n              },\n              {\n                \"$ref\": \"response.task_id\"\n              },\n              {\n                \"$ref\": \"taskId\"\n              }\n            ]\n          },\n          \"status\": {\n            \"$coalesce\": [\n              {\n                \"$ref\": \"response.output.task_status\"\n              },\n              {\n                \"$ref\": \"response.status\"\n              },\n              \"pending\"\n            ]\n          },\n          \"message\": {\n            \"$coalesce\": [\n              {\n                \"$ref\": \"response.output.message\"\n              },\n              {\n                \"$ref\": \"response.message\"\n              }\n            ]\n          },\n          \"images\": {\n            \"$map\": {\n              \"from\": {\n                \"$concatArrays\": [\n                  {\n                    \"$ref\": \"response.output.choices.0.message.content\"\n                  },\n                  {\n                    \"$ref\": \"response.output.choices.1.message.content\"\n                  },\n                  {\n                    \"$ref\": \"response.output.choices.2.message.content\"\n                  },\n                  {\n                    \"$ref\": \"response.output.choices.3.message.content\"\n                  },\n                  {\n                    \"$ref\": \"response.output.choices.4.message.content\"\n                  },\n                  {\n                    \"$ref\": \"response.output.choices.5.message.content\"\n                  }\n                ]\n              },\n              \"as\": \"item\",\n              \"in\": {\n                \"$omitEmpty\": {\n                  \"$ref\": \"item.image\"\n                }\n              }\n            }\n          },\n          \"errorPaths\": [\n            \"code\",\n            \"output.code\"\n          ],\n          \"messagePaths\": [\n            \"message\",\n            \"output.message\"\n          ],\n          \"resultEphemeral\": true\n        }\n      }\n    ]\n  }\n}\n```\n<!-- YINGCE_MANIFEST_CONTRACT_END -->\n",
+  "permissions": [
+    "generation.run",
+    "media.read"
+  ],
+  "configuration": {
+    "fields": [
+      {
+        "name": "apiKey",
+        "type": "secret",
+        "label": "API Key",
+        "required": true
+      }
+    ]
+  },
+  "contributes": {
+    "providers": [
+      {
+        "id": "bailian-image",
+        "label": "阿里百炼图片",
+        "capabilities": [
+          "image"
+        ],
+        "scopes": [
+          "admin.system-channel",
+          "user.custom-channel",
+          "canvas",
+          "creation",
+          "agent"
+        ],
+        "baseUrl": "https://dashscope.aliyuncs.com",
+        "requiresPublicMediaUrls": false,
+        "auth": {
+          "type": "bearer",
+          "field": "apiKey"
+        },
+        "parameters": [
+          {
+            "name": "model",
+            "type": "string",
+            "required": true,
+            "mapping": "model",
+            "description": "百炼千问或万相图片模型标识"
+          },
+          {
+            "name": "prompt",
+            "type": "string",
+            "required": true,
+            "mapping": "input.messages",
+            "description": "图片生成提示词，可与 instructions 合并"
+          },
+          {
+            "name": "images",
+            "type": "media[]",
+            "required": false,
+            "mapping": "input.messages",
+            "description": "编辑参考图，优先内嵌 data URL，不支持蒙版"
+          },
+          {
+            "name": "imageCount",
+            "type": "integer",
+            "required": false,
+            "mapping": "parameters.n",
+            "description": "生成数量，默认 1，模型能力限定最大数量"
+          },
+          {
+            "name": "aspectRatio",
+            "type": "string",
+            "required": false,
+            "mapping": "parameters.size",
+            "description": "尺寸档位、推荐宽高比或自定义宽x高"
+          }
+        ],
+        "validations": [
+          {
+            "assert": {
+              "$eq": [
+                {
+                  "$len": {
+                    "$ref": "request.videos"
+                  }
+                },
+                0
+              ]
+            },
+            "message": "阿里百炼图片协议不支持参考视频"
+          },
+          {
+            "assert": {
+              "$eq": [
+                {
+                  "$len": {
+                    "$ref": "request.audios"
+                  }
+                },
+                0
+              ]
+            },
+            "message": "阿里百炼图片协议不支持参考音频"
+          },
+          {
+            "assert": {
+              "$eq": [
+                {
+                  "$len": {
+                    "$filter": {
+                      "from": {
+                        "$ref": "request.images"
+                      },
+                      "as": "media",
+                      "where": {
+                        "$eq": [
+                          {
+                            "$ref": "media.role"
+                          },
+                          "mask"
+                        ]
+                      }
+                    }
+                  }
+                },
+                0
+              ]
+            },
+            "message": "阿里百炼图片协议不支持蒙版文件"
+          },
+          {
+            "assert": {
+              "$gt": [
+                {
+                  "$len": {
+                    "$trim": {
+                      "$ref": "request.prompt"
+                    }
+                  }
+                },
+                0
+              ]
+            },
+            "message": "阿里百炼图片请求缺少提示词"
+          }
+        ],
+        "create": {
+          "method": "POST",
+          "path": "/api/v1/services/aigc/image-generation/generation",
+          "originPath": true,
+          "contentType": "application/json",
+          "headers": {
+            "X-DashScope-Async": "enable"
+          },
+          "body": {
+            "model": {
+              "$ref": "request.model"
+            },
+            "input": {
+              "messages": [
+                {
+                  "role": "user",
+                  "content": {
+                    "$concatArrays": [
+                      {
+                        "$map": {
+                          "from": {
+                            "$sortByOrder": {
+                              "$ref": "request.images"
+                            }
+                          },
+                          "as": "media",
+                          "in": {
+                            "image": {
+                              "$coalesce": [
+                                {
+                                  "$ref": "media.dataUrl"
+                                },
+                                {
+                                  "$ref": "media.url"
+                                }
+                              ]
+                            }
+                          }
+                        }
+                      },
+                      [
+                        {
+                          "text": {
+                            "$if": {
+                              "condition": {
+                                "$ref": "request.instructions"
+                              },
+                              "then": {
+                                "$concat": [
+                                  {
+                                    "$ref": "request.instructions"
+                                  },
+                                  "\n\n",
+                                  {
+                                    "$ref": "request.prompt"
+                                  }
+                                ]
+                              },
+                              "else": {
+                                "$ref": "request.prompt"
+                              }
+                            }
+                          }
+                        }
+                      ]
+                    ]
+                  }
+                }
+              ]
+            },
+            "parameters": {
+              "n": {
+                "$if": {
+                  "condition": {
+                    "$gt": [
+                      {
+                        "$ref": "request.imageCount"
+                      },
+                      0
+                    ]
+                  },
+                  "then": {
+                    "$ref": "request.imageCount"
+                  },
+                  "else": 1
+                }
+              },
+              "watermark": false,
+              "size": {
+                "$omitEmpty": {
+                  "$switch": {
+                    "cases": [
+                      {
+                        "when": {
+                          "$in": [
+                            {
+                              "$lower": {
+                                "$trim": {
+                                  "$ref": "request.aspectRatio"
+                                }
+                              }
+                            },
+                            [
+                              "1k",
+                              "2k",
+                              "4k"
+                            ]
+                          ]
+                        },
+                        "then": {
+                          "$upper": {
+                            "$lower": {
+                              "$trim": {
+                                "$ref": "request.aspectRatio"
+                              }
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "when": {
+                          "$eq": [
+                            {
+                              "$lower": {
+                                "$trim": {
+                                  "$ref": "request.aspectRatio"
+                                }
+                              }
+                            },
+                            "1:1"
+                          ]
+                        },
+                        "then": "2048*2048"
+                      },
+                      {
+                        "when": {
+                          "$eq": [
+                            {
+                              "$lower": {
+                                "$trim": {
+                                  "$ref": "request.aspectRatio"
+                                }
+                              }
+                            },
+                            "16:9"
+                          ]
+                        },
+                        "then": "2688*1536"
+                      },
+                      {
+                        "when": {
+                          "$eq": [
+                            {
+                              "$lower": {
+                                "$trim": {
+                                  "$ref": "request.aspectRatio"
+                                }
+                              }
+                            },
+                            "9:16"
+                          ]
+                        },
+                        "then": "1536*2688"
+                      },
+                      {
+                        "when": {
+                          "$eq": [
+                            {
+                              "$lower": {
+                                "$trim": {
+                                  "$ref": "request.aspectRatio"
+                                }
+                              }
+                            },
+                            "4:3"
+                          ]
+                        },
+                        "then": "2368*1728"
+                      },
+                      {
+                        "when": {
+                          "$eq": [
+                            {
+                              "$lower": {
+                                "$trim": {
+                                  "$ref": "request.aspectRatio"
+                                }
+                              }
+                            },
+                            "3:4"
+                          ]
+                        },
+                        "then": "1728*2368"
+                      },
+                      {
+                        "when": {
+                          "$eq": [
+                            {
+                              "$lower": {
+                                "$trim": {
+                                  "$ref": "request.aspectRatio"
+                                }
+                              }
+                            },
+                            "3:2"
+                          ]
+                        },
+                        "then": "2496*1664"
+                      },
+                      {
+                        "when": {
+                          "$eq": [
+                            {
+                              "$lower": {
+                                "$trim": {
+                                  "$ref": "request.aspectRatio"
+                                }
+                              }
+                            },
+                            "2:3"
+                          ]
+                        },
+                        "then": "1664*2496"
+                      },
+                      {
+                        "when": {
+                          "$eq": [
+                            {
+                              "$lower": {
+                                "$trim": {
+                                  "$ref": "request.aspectRatio"
+                                }
+                              }
+                            },
+                            "21:9"
+                          ]
+                        },
+                        "then": "3072*1312"
+                      },
+                      {
+                        "when": {
+                          "$eq": [
+                            {
+                              "$len": {
+                                "$split": [
+                                  {
+                                    "$lower": {
+                                      "$trim": {
+                                        "$ref": "request.aspectRatio"
+                                      }
+                                    }
+                                  },
+                                  "x"
+                                ]
+                              }
+                            },
+                            2
+                          ]
+                        },
+                        "then": {
+                          "$concat": [
+                            {
+                              "$at": [
+                                {
+                                  "$split": [
+                                    {
+                                      "$lower": {
+                                        "$trim": {
+                                          "$ref": "request.aspectRatio"
+                                        }
+                                      }
+                                    },
+                                    "x"
+                                  ]
+                                },
+                                0
+                              ]
+                            },
+                            "*",
+                            {
+                              "$at": [
+                                {
+                                  "$split": [
+                                    {
+                                      "$lower": {
+                                        "$trim": {
+                                          "$ref": "request.aspectRatio"
+                                        }
+                                      }
+                                    },
+                                    "x"
+                                  ]
+                                },
+                                1
+                              ]
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "when": {
+                          "$eq": [
+                            {
+                              "$len": {
+                                "$split": [
+                                  {
+                                    "$lower": {
+                                      "$trim": {
+                                        "$ref": "request.aspectRatio"
+                                      }
+                                    }
+                                  },
+                                  "×"
+                                ]
+                              }
+                            },
+                            2
+                          ]
+                        },
+                        "then": {
+                          "$concat": [
+                            {
+                              "$at": [
+                                {
+                                  "$split": [
+                                    {
+                                      "$lower": {
+                                        "$trim": {
+                                          "$ref": "request.aspectRatio"
+                                        }
+                                      }
+                                    },
+                                    "×"
+                                  ]
+                                },
+                                0
+                              ]
+                            },
+                            "*",
+                            {
+                              "$at": [
+                                {
+                                  "$split": [
+                                    {
+                                      "$lower": {
+                                        "$trim": {
+                                          "$ref": "request.aspectRatio"
+                                        }
+                                      }
+                                    },
+                                    "×"
+                                  ]
+                                },
+                                1
+                              ]
+                            }
+                          ]
+                        }
+                      }
+                    ],
+                    "default": null
+                  }
+                }
+              },
+              "prompt_extend": {
+                "$if": {
+                  "condition": {
+                    "$ref": "request.extra.connectionTest"
+                  },
+                  "then": false,
+                  "else": null
+                }
+              },
+              "enable_thinking": {
+                "$if": {
+                  "condition": {
+                    "$and": [
+                      {
+                        "$ref": "request.extra.connectionTest"
+                      },
+                      {
+                        "$gt": [
+                          {
+                            "$len": {
+                              "$split": [
+                                {
+                                  "$lower": {
+                                    "$trim": {
+                                      "$ref": "request.model"
+                                    }
+                                  }
+                                },
+                                "qwen-image-3.0"
+                              ]
+                            }
+                          },
+                          1
+                        ]
+                      }
+                    ]
+                  },
+                  "then": false,
+                  "else": null
+                }
+              },
+              "enable_interleave": {
+                "$if": {
+                  "condition": {
+                    "$and": [
+                      {
+                        "$ref": "request.extra.connectionTest"
+                      },
+                      {
+                        "$gt": [
+                          {
+                            "$len": {
+                              "$split": [
+                                {
+                                  "$lower": {
+                                    "$trim": {
+                                      "$ref": "request.model"
+                                    }
+                                  }
+                                },
+                                "wan2.7-image"
+                              ]
+                            }
+                          },
+                          1
+                        ]
+                      }
+                    ]
+                  },
+                  "then": false,
+                  "else": null
+                }
+              }
+            }
+          }
+        },
+        "poll": {
+          "method": "GET",
+          "path": "/api/v1/tasks/{{taskId}}",
+          "originPath": true
+        },
+        "response": {
+          "taskId": {
+            "$coalesce": [
+              {
+                "$ref": "response.output.task_id"
+              },
+              {
+                "$ref": "response.task_id"
+              },
+              {
+                "$ref": "taskId"
+              }
+            ]
+          },
+          "status": {
+            "$coalesce": [
+              {
+                "$ref": "response.output.task_status"
+              },
+              {
+                "$ref": "response.status"
+              },
+              "pending"
+            ]
+          },
+          "message": {
+            "$coalesce": [
+              {
+                "$ref": "response.output.message"
+              },
+              {
+                "$ref": "response.message"
+              }
+            ]
+          },
+          "images": {
+            "$map": {
+              "from": {
+                "$concatArrays": [
+                  {
+                    "$ref": "response.output.choices.0.message.content"
+                  },
+                  {
+                    "$ref": "response.output.choices.1.message.content"
+                  },
+                  {
+                    "$ref": "response.output.choices.2.message.content"
+                  },
+                  {
+                    "$ref": "response.output.choices.3.message.content"
+                  },
+                  {
+                    "$ref": "response.output.choices.4.message.content"
+                  },
+                  {
+                    "$ref": "response.output.choices.5.message.content"
+                  }
+                ]
+              },
+              "as": "item",
+              "in": {
+                "$omitEmpty": {
+                  "$ref": "item.image"
+                }
+              }
+            }
+          },
+          "errorPaths": [
+            "code",
+            "output.code"
+          ],
+          "messagePaths": [
+            "message",
+            "output.message"
+          ],
+          "resultEphemeral": true
+        }
+      }
+    ]
+  }
+}

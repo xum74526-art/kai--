@@ -28,7 +28,7 @@ import { promptOptimizerPlugin, PROMPT_OPTIMIZER_PLUGIN_ID } from "@/lib/plugins
 import { createPluginHostContext } from "@/services/plugin-host";
 import { usePluginStore } from "@/stores/use-plugin-store";
 import { buildCreationMentionReferences, expandCreationPrompt, reconcileCreationAttachmentLimit, reconcileCreationAttachmentLimits, removeCreationReferenceTokens, replaceCreationAttachmentReference, selectedCreationReferences, type CreationReference, type CreationReferenceLimits } from "./creation-references";
-import { creationAttachmentFromAsset, creationAttachmentFromAudio, creationAttachmentFromAudioAsset, creationAttachmentFromDocument, creationAttachmentFromExternalAsset, creationAttachmentFromImage, creationAttachmentFromVideo, creationAttachmentFromVideoAsset, creationAttachmentKind, creationAudioAsset, creationFileAccepted, creationImageAsset, creationMediaAspectRatio, creationUploadAccept, creationVideoAsset, removeCreationAttachment, splitCreationAttachments, type CreationAttachment } from "./creation-assets";
+import { creationAttachmentFromAsset, creationAttachmentFromAudio, creationAttachmentFromDocument, creationAttachmentFromExternalAsset, creationAttachmentFromImage, creationAttachmentFromVideo, creationAttachmentKind, creationAudioAsset, creationFileAccepted, creationImageAsset, creationMediaAspectRatio, creationVideoAsset, removeCreationAttachment, splitCreationAttachments, type CreationAttachment } from "./creation-assets";
 import { defaultCreationMode, modeLabels, type CreationConversation, type CreationMessage, type CreationMode, type CreationRetryContext, type CreationSettings, type CreationShotRailEntry, type CreationStatus } from "./creation-types";
 import { attachCreationTaskContexts, completedCreationGenerationTask, conversationTimestamp, creationShotRail, creationVideoShotOrdinal, isImageAttachment, isVideoAttachment, materializeCreationTaskResults, newConversation, newMessage, reconcileCreationTaskMessages } from "./creation-conversations";
 import { CreationComposer, CreationEmptySuggest, CreationHistoryDrawer, CreationMessageView, CreationModeTabs, CreationWorkspaceToolbar, creationAssetCategoryLabels } from "./creation-workspace";
@@ -433,7 +433,7 @@ export default function CreatePage() {
     };
 
     const externalLibraryItems = useMemo<AssetLibraryPickerItem[]>(
-        () => externalAssetSources.items.map((item) => ({
+        () => externalAssetSources.items.filter((item) => item.external?.item.kind === "image").map((item) => ({
             ...item,
             disabledReason: creationLibraryDisabledReason(mode, item.external?.item.kind, videoReferenceLimits),
         })),
@@ -441,12 +441,12 @@ export default function CreatePage() {
     );
     const libraryItems = useMemo<AssetLibraryPickerItem[]>(() => [
         ...assets
-            .filter((asset): asset is Extract<Asset, { kind: "image" | "video" | "audio" }> => asset.kind === "image" || asset.kind === "video" || asset.kind === "audio")
+            .filter((asset): asset is Extract<Asset, { kind: "image" }> => asset.kind === "image")
             .map((asset) => ({
                 id: asset.id,
                 title: asset.title,
                 category: asset.category || "other",
-                kindLabel: asset.kind === "video" ? "视频" : asset.kind === "audio" ? "音频" : "图片",
+                kindLabel: "图片",
                 asset,
                 searchText: (asset.tags || []).join(" "),
                 disabledReason: creationLibraryDisabledReason(mode, asset.kind, videoReferenceLimits),
@@ -480,7 +480,8 @@ export default function CreatePage() {
         };
     };
     const uploadLibraryAssets = async (files: FileList | File[]) => {
-        const next = Array.from(files).filter((file) => creationFileAccepted(mode, file));
+        // 保留图片素材库约定，视频和音频仍可存在于历史会话中。
+        const next = Array.from(files).filter((file) => creationFileAccepted("image", file));
         if (!next.length) return [];
         const settled = await Promise.allSettled(next.map(async (file) => {
             const { asset } = await uploadCreationAsset(file);
@@ -493,15 +494,7 @@ export default function CreatePage() {
         return assetIds;
     };
 
-    const handleLibrarySelect = (selectedIds: string[]) => {
-        const next = selectedIds.flatMap((id): CreationAttachment[] => {
-            const asset = assets.find((item) => item.id === id);
-            if (asset?.kind === "image") return [creationAttachmentFromAsset(asset)];
-            if (asset?.kind === "video" && mode !== "image") return [creationAttachmentFromVideoAsset(asset)];
-            if (asset?.kind === "audio" && mode !== "image") return [creationAttachmentFromAudioAsset(asset)];
-            const external = libraryItems.find((item) => item.id === id)?.external;
-            return external ? [creationAttachmentFromExternalAsset(external)] : [];
-        });
+    const appendAttachments = (next: CreationAttachment[]) => {
         if (!next.length) return;
         setAttachments((current) => {
             const candidates = [...current.filter((item) => !next.some((candidate) => candidate.id === item.id)), ...next];
@@ -511,6 +504,35 @@ export default function CreatePage() {
             if (reconciled.attachments.length < candidates.length) toast.warning("部分素材超出当前模型的参考内容上限，未添加到创作中");
             return reconciled.attachments;
         });
+    };
+
+    const addPastedImages = (files: File[]) => {
+        if (busy || referenceReplacementBusy) return;
+        const scope = getActiveUserScope();
+        const next = files.filter((file) => creationFileAccepted("image", file)).slice(0, Math.max(0, maxReferences - attachments.length));
+        if (!next.length) return;
+        void Promise.allSettled(next.map(async (file) => {
+            const { asset, attachment } = await uploadCreationAsset(file);
+            // 上传期间切换账号时，不把附件写入另一个用户的缓存。
+            if (getActiveUserScope() !== scope) throw new Error("账号已切换，请在当前账号重新添加图片");
+            if (asset) addAsset(asset);
+            return attachment;
+        })).then((settled) => {
+            if (getActiveUserScope() !== scope) return;
+            appendAttachments(settled.flatMap((entry) => entry.status === "fulfilled" ? [entry.value] : []));
+            const failed = settled.filter((entry) => entry.status === "rejected");
+            if (failed.length) toast.error(`${failed.length} 个参考图片上传失败，请重试`);
+        });
+    };
+
+    const handleLibrarySelect = (selectedIds: string[], pickedItems: AssetLibraryPickerItem[] = libraryItems) => {
+        const next = selectedIds.flatMap((id): CreationAttachment[] => {
+            const selected = pickedItems.find((item) => item.id === id);
+            const asset = selected?.asset || assets.find((item) => item.id === id);
+            if (asset?.kind === "image") return [creationAttachmentFromAsset(asset)];
+            return selected?.external?.item.kind === "image" ? [creationAttachmentFromExternalAsset(selected.external)] : [];
+        });
+        appendAttachments(next);
         setLibraryOpen(false);
     };
 
@@ -1018,6 +1040,7 @@ export default function CreatePage() {
         onReplaceAttachment: replaceReferenceFromTrack,
         onReplaceReferenceFiles: replaceReferenceFromFiles,
         onOpenLibrary: () => setLibraryOpen(true),
+        onPasteFiles: addPastedImages,
         onModeChange: selectMode,
         model: selectedModel,
         modelRequirements,
@@ -1123,12 +1146,15 @@ export default function CreatePage() {
         <CreationLoginDialog open={loginDialogOpen} onClose={() => setLoginDialogOpen(false)} />
         {libraryOpen ? <Suspense fallback={null}><AssetLibraryPickerModal
             remoteLibrary
+            remoteKind="image"
+            mediaKinds={["image"]}
+            acceptRemoteItems
             open={libraryOpen}
             items={libraryItems}
             categoryLabels={{ ...creationAssetCategoryLabels, ...externalAssetSources.categoryLabels }}
             folders={externalAssetSources.folders}
             initialSelectedIds={attachments.flatMap((item) => item.id.startsWith("asset:") ? [item.id.slice(6)] : item.id.startsWith("external:") ? [item.id] : [])}
-            upload={{ accept: creationUploadAccept(mode), description: mode === "text" ? "支持图片、视频、音频和常用文档；媒体会保存到素材库" : `支持图片${mode === "video" ? "、视频和音频" : ""}，上传后保存到素材库`, onUpload: uploadLibraryAssets, external: { accept: "image/*", description: "写入当前 Eagle 文件夹；Eagle 当前支持图片文件", onUpload: (files, folderId) => externalAssetSources.uploadExternalFiles(files, folderId) } }}
+            upload={{ accept: "image/*", description: "上传图片后保存到素材库", onUpload: uploadLibraryAssets, external: { accept: "image/*", description: "写入当前 Eagle 文件夹；Eagle 当前支持图片文件", onUpload: (files, folderId) => externalAssetSources.uploadExternalFiles(files, folderId) } }}
             onClose={() => setLibraryOpen(false)}
             onConfirm={handleLibrarySelect}
         /></Suspense> : null}

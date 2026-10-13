@@ -1,5 +1,5 @@
 export const chapters = [
-    { id: "opening", label: "序幕", title: "影策", subtitle: "让一个故事，从文字走向银幕。", description: "面向 AI 影视与短剧创作的开源工作台。" },
+    { id: "opening", label: "序幕", title: "KAI影", subtitle: "让一个故事，从文字走向银幕。", description: "面向 AI 影视与短剧创作的开源工作台。" },
     { id: "story", label: "故事", title: "一念，成故事。" },
     { id: "world", label: "角色", title: "让想象，有了面孔。" },
     { id: "shots", label: "分镜", title: "字里行间，皆是镜头。" },
@@ -20,6 +20,24 @@ export type WelcomeLook = {
 const reelFrames = (folder: string, names: string[]) => Array.from({ length: 12 }, (_, index) => `/welcome/${folder}/${names[index % names.length]}.webp`);
 
 export const welcomeLooks: WelcomeLook[] = [
+    {
+        id: "neon-rain-city", label: "霓虹雨城", title: "霓虹雨城",
+        frames: Array.from({ length: 12 }, () => "/create-showcase/director-neon-rain-city.png"),
+        screenplay: ["外景 · 未来都市 · 雨夜", "雨幕落在灯牌之间。", "路面接住一片霓虹。", "镜头缓慢向前。", "青色光线延伸到街口。", "粉色灯牌映亮水面。", "高楼没入薄雾。", "街道向远处展开。", "镜头保持低位。", "城市的光穿过雨丝。", "转过下一个路口。", "夜色仍在继续。"],
+        video: "/create-showcase/director-neon-rain-city.mp4",
+    },
+    {
+        id: "golden-countryside", label: "金色原野", title: "金色原野",
+        frames: Array.from({ length: 12 }, () => "/create-showcase/director-golden-countryside.png"),
+        screenplay: ["外景 · 原野 · 黄昏", "夕阳落在连绵草坡上。", "一棵树站在风里。", "树影慢慢伸长。", "远处露出红色农舍。", "炊烟掠过屋顶。", "草浪随风起伏。", "镜头平稳横移。", "云影经过山坡。", "暖光照亮树梢。", "远景安静地舒展。", "一天缓缓落幕。"],
+        video: "/create-showcase/director-golden-countryside.mp4",
+    },
+    {
+        id: "ink-mountain-lake", label: "水墨山河", title: "水墨山河",
+        frames: Array.from({ length: 12 }, () => "/create-showcase/director-ink-mountain-lake.png"),
+        screenplay: ["外景 · 山间湖泊 · 清晨", "薄雾藏住远山。", "墨色在水面铺开。", "一叶孤舟缓缓驶来。", "古松伸向湖面。", "山石与倒影相连。", "镜头贴着水面移动。", "微光落在船边。", "涟漪轻轻散开。", "山影一层层退远。", "孤舟进入留白。", "湖面重新安静。"],
+        video: "/create-showcase/director-ink-mountain-lake.mp4",
+    },
     {
         id: "spring", label: "Spring · 奇幻", title: "山谷之春",
         frames: reelFrames("spring", ["1807", "1669", "4336", "3191", "3250"]),

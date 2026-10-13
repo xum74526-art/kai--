@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="210 0 130 128" role="img" aria-labelledby="title">
+  <title id="title">KAI影</title>
+  <style>
+    :root { --ink-start: #090806; --ink-mid: #2c2821; --ink-end: #080705; --detail: #4c453b; --cutout: #f7f3eb; }
+    @media (prefers-color-scheme: dark) {
+      :root { --ink-start: #faf7f0; --ink-mid: #d8d1c4; --ink-end: #f2eee6; --detail: #d2cabc; --cutout: #090908; }
+    }
+  </style>
+  <defs>
+    <linearGradient id="ink" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="var(--ink-start)"/>
+      <stop offset=".52" stop-color="var(--ink-mid)"/>
+      <stop offset="1" stop-color="var(--ink-end)"/>
+    </linearGradient>
+    <linearGradient id="red" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#d05a3f"/>
+      <stop offset="1" stop-color="#922e23"/>
+    </linearGradient>
+    <filter id="rough" x="-12%" y="-12%" width="124%" height="124%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.017 0.095" numOctaves="2" seed="43" result="noise"/>
+      <feDisplacementMap in="SourceGraphic" in2="noise" scale="1.2"/>
+    </filter>
+    <filter id="wash" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="1.5"/>
+    </filter>
+    <g id="ying" fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M0 0c11-1.8 24-1.4 36 .2M1.5 1c-1.1 8.6-.8 17.3-.5 26M36 1c.8 8.8.5 17.3-.2 26M3 13.4c10.4-1 20.8-.8 30.9-.1M2 26.8c10.2-1 22.5-.8 33.5.1M19 31.2c.3 1.4.2 2.7-.3 4M1.5 37.4c11-1.9 24.4-2 37.2-.1M7.5 42.2c7.1-1 16.8-.9 24.8.2l-1.2 10c-7.3-1.2-15.5-1.2-22.6-.1zM19.3 53.2c.2 5.4-.2 11.2-1 17M10.9 56.5C8.5 61.4 5.2 65.4.8 68.7M27 56.7c3.9 3.4 7.2 7.4 9.7 11.7M68.4 2.8c-4.7 7.3-11 13.3-18.8 18M74.1 22.6c-5.8 8.8-13.5 16.1-23.2 21.7M79.1 42.2C72 53.4 62.6 62.8 50.7 70.4"/>
+    </g>
+  </defs>
+  <circle cx="275" cy="63" r="45" fill="var(--detail)" opacity=".055" filter="url(#wash)"/>
+  <g fill="none" stroke="url(#ink)" stroke-linecap="round" filter="url(#rough)">
+    <path d="M235 27c17-17 45-23 67-12 27 13 38 45 25 70-6 12-15 21-27 27" stroke-width="8.4" opacity=".88"/>
+    <path d="M292 114c-21 8-44 1-57-16" stroke-width="4" opacity=".65"/>
+    <path d="M326 46c4 13 3 26-2 37" stroke-width="2" opacity=".35"/>
+  </g>
+  <g fill="none" stroke="var(--detail)" stroke-width="1.6" stroke-linecap="round" opacity=".24">
+    <path d="M251 40c13-8 30-8 43 0M302 48c7 12 7 26 0 38M294 94c-12 8-29 9-42 1"/>
+  </g>
+  <circle cx="305" cy="29" r="8.4" fill="url(#red)" opacity=".9" filter="url(#rough)"/>
+  <circle cx="305" cy="29" r="11.5" fill="#a73a2b" opacity=".12" filter="url(#wash)"/>
+  <use href="#ying" transform="translate(244 31) scale(.76)" fill="none" stroke="url(#ink)" stroke-width="6.1" filter="url(#rough)"/>
+  <g transform="translate(260 69)" stroke-linejoin="round">
+    <circle r="13.2" fill="var(--cutout)" stroke="url(#ink)" stroke-width="2.4"/>
+    <g fill="url(#ink)" opacity=".94">
+      <path d="M0-10.1 7.3-5.8 4.5 1.2 0-2.4z"/>
+      <path d="M0-10.1 7.3-5.8 4.5 1.2 0-2.4z" transform="rotate(60)"/>
+      <path d="M0-10.1 7.3-5.8 4.5 1.2 0-2.4z" transform="rotate(120)"/>
+      <path d="M0-10.1 7.3-5.8 4.5 1.2 0-2.4z" transform="rotate(180)"/>
+      <path d="M0-10.1 7.3-5.8 4.5 1.2 0-2.4z" transform="rotate(240)"/>
+      <path d="M0-10.1 7.3-5.8 4.5 1.2 0-2.4z" transform="rotate(300)"/>
+    </g>
+    <circle r="3.1" fill="var(--cutout)"/>
+  </g>
+</svg>

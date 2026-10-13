@@ -307,6 +307,7 @@ func blockedOutboundHeader(name string) bool {
 
 func newOutboundTransport(resolveHost func(context.Context, string) ([]net.IP, error)) *http.Transport {
 	dialer := &net.Dialer{Timeout: 15 * time.Second, KeepAlive: 30 * time.Second}
+	configureOutboundDialer(dialer)
 	return &http.Transport{
 		Proxy: outboundProxyFromEnvironment,
 		DialContext: func(ctx context.Context, network string, address string) (net.Conn, error) {
@@ -322,7 +323,18 @@ func newOutboundTransport(resolveHost func(context.Context, string) ([]net.IP, e
 			if err != nil {
 				return nil, err
 			}
-			return dialer.DialContext(ctx, network, net.JoinHostPort(addresses[0].String(), port))
+			var lastErr error
+			for _, address := range addresses {
+				connection, err := dialer.DialContext(ctx, network, net.JoinHostPort(address.String(), port))
+				if err == nil {
+					return connection, nil
+				}
+				lastErr = err
+				if ctx.Err() != nil {
+					return nil, ctx.Err()
+				}
+			}
+			return nil, lastErr
 		},
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          100,
@@ -352,6 +364,7 @@ func newOutboundTransportWithProxy(proxyURL string) *http.Transport {
 	}
 	scheme := strings.ToLower(parsed.Scheme)
 	forwardDialer := &net.Dialer{Timeout: 15 * time.Second, KeepAlive: 30 * time.Second}
+	configureOutboundDialer(forwardDialer)
 
 	transport := &http.Transport{
 		ForceAttemptHTTP2:     true,
@@ -403,12 +416,16 @@ func configuredProxyHost(host string) bool {
 }
 
 func ValidateOutboundHost(host string) error {
-	_, err := resolveOutboundHost(context.Background(), host)
+	ctx, cancel := context.WithTimeout(context.Background(), outboundValidationTimeout)
+	defer cancel()
+	_, err := resolveOutboundHost(ctx, host)
 	return err
 }
 
 func validateCustomRelayHost(host string) error {
-	_, err := resolveCustomRelayHost(context.Background(), host)
+	ctx, cancel := context.WithTimeout(context.Background(), outboundValidationTimeout)
+	defer cancel()
+	_, err := resolveCustomRelayHost(ctx, host)
 	return err
 }
 
@@ -441,7 +458,9 @@ func resolveOutboundHostWithPolicy(ctx context.Context, host string, allowPrivat
 	if !allowPrivateHost && (host == "localhost" || strings.HasSuffix(host, ".localhost")) {
 		return nil, BadAuthRequest("不允许访问本机或内网地址")
 	}
-	addresses, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+	addresses, err := lookupOutboundHostWithCache(ctx, host, sharedOutboundDNSCache, func(lookupCtx context.Context, lookupHost string) ([]net.IP, error) {
+		return net.DefaultResolver.LookupIP(lookupCtx, "ip", lookupHost)
+	})
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()

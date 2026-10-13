@@ -39,7 +39,7 @@ export async function createVideoGenerationTask(config: AiConfig, prompt: string
     assertVideoConfig(requestConfig, requestConfig.model);
     assertVideoCapability(modelCapabilityConfigFor(config, selectedModel).video!, references, videoReferences, audioReferences, config.videoSeconds);
     const deps: VideoProviderDeps = { transport: createVideoTransport(requestConfig), response: videoResponseTools };
-    if (requestConfig.interfaceType === "newapi-channel-2") return createVideoGenerationsTask(deps, requestConfig, selectedModel, prompt, references, videoReferences, audioReferences, options);
+    if (requestConfig.interfaceType === "aiapiway-video" || requestConfig.interfaceType === "newapi-channel-2") return createVideoGenerationsTask(deps, requestConfig, selectedModel, prompt, references, videoReferences, audioReferences, options);
     if (requestConfig.interfaceType === "gemini-veo") return createGeminiVeoTask(deps, requestConfig, selectedModel, prompt, references, videoReferences, audioReferences, options);
     if (requestConfig.interfaceType === "novita-video") return createNovitaVideoTask(deps, requestConfig, selectedModel, prompt, references, videoReferences, audioReferences, options);
     if (requestConfig.interfaceType === "minimax-video") return createMiniMaxVideoTask(deps, requestConfig, selectedModel, prompt, references, videoReferences, audioReferences, options);

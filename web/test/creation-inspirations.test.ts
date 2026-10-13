@@ -5,8 +5,9 @@ import { creationFeaturedWorks, inspirationSource } from "../src/pages/create/cr
 
 describe("curated creation inspirations", () => {
     test("all templates have unique titles, usable prompts and local cover assets", () => {
-        expect(creationFeaturedWorks.length).toBe(22);
-        expect(new Set(creationFeaturedWorks.map((item) => item.title)).size).toBe(22);
+        expect(creationFeaturedWorks.length).toBe(25);
+        expect(new Set(creationFeaturedWorks.map((item) => item.title)).size).toBe(25);
+        expect(creationFeaturedWorks.slice(0, 3).map((item) => item.title)).toEqual(["霓虹雨城", "金色原野", "水墨山河"]);
         for (const item of creationFeaturedWorks) {
             expect(["image", "video", "text"]).toContain(item.mode);
             expect(item.prompt.length).toBeGreaterThan(35);

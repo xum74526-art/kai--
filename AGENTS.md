@@ -1,10 +1,10 @@
 # AGENTS.md
 
-本文件是影策仓库中 AI、自动化工具和协作者的工作约定。用户当前任务优先于本文件；本文件优先于个人习惯。所有结论应能回溯到代码、配置、测试、日志或文档，不用历史印象替代现状。
+本文件是 KAI影仓库中 AI、自动化工具和协作者的工作约定。用户当前任务优先于本文件；本文件优先于个人习惯。所有结论应能回溯到代码、配置、测试、日志或文档，不用历史印象替代现状。
 
 ## 1. 项目边界
 
-影策（`ddcat-ai/open-ai-canvas`）是面向 AI 影视与短剧创作的工作台，当前仍在快速开发。公开接口、数据结构和部署配置可能直接调整；除非任务明确要求，不为旧字段、旧 API 或旧数据增加兼容层。
+KAI影（`xum74526-art/kai--`）基于影策（`ddcat-ai/open-ai-canvas`），是面向 AI 影视与短剧创作的工作台，当前仍在快速开发。公开接口、数据结构和部署配置可能直接调整；除非任务明确要求，不为旧字段、旧 API 或旧数据增加兼容层。
 
 仓库由几个边界清晰但可独立运行的单元组成：
 
@@ -20,7 +20,7 @@
 
 ### Agent 本地开发
 
-详细说明请参考 [docs/AGENT_LOCAL_DEVELOPMENT.md](docs/AGENT_LOCAL_DEVELOPMENT.md)。
+详细说明请参考 [本地开发文档](docs/content/docs/backend/local-development.mdx)。
 
 **快速启动**：
 
@@ -136,6 +136,7 @@ cd web && bun run dev
 ## 7. 本地开发、部署和数据目录
 
 - 先阅读 `.env.example` 和对应 Compose 文件。宿主机后端开发必须使用 Git 忽略的 `.local/project-workbench-debug`，通过 `CANVAS_BACKEND_DATA_DIR` 显式指定；不要把 `backend/data` 当作开发账号数据库。
+- 多个 Git 工作树共用本地账号库时，先定位已有数据库与 `.settings-key`；不能根据当前工作树路径另建空库。跨版本启动前先备份并执行正式迁移，详细步骤见 `docs/content/docs/backend/local-development.mdx`。
 - 本地缓存放 `.local/cache`；不要提交数据库、上传文件、`.env`、真实密钥、构建产物或编辑器配置。
 - 宿主机开发：`backend/` 运行 `CANVAS_BACKEND_DATA_DIR=../.local/project-workbench-debug go run ./cmd/server`，`web/` 使用 Bun 和 Vite；不要用 pnpm/npm 覆盖同一套 `node_modules`，也不要提交 `pnpm-lock.yaml` 或 `package-lock.json`。Docker 热更新使用 `docker-compose.dev.yml`；本地构建运行使用 `docker-compose.local.yml`。
 - 生产 Compose 使用 `docker-compose.deploy.yml`（PostgreSQL、Redis、backend、web），源码构建可叠加 `docker-compose.build.yml`。公网只暴露 web 的 `3000`，backend `8080` 留在 Compose 网络内。

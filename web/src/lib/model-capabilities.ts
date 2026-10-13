@@ -221,6 +221,19 @@ export function defaultImageCapabilityConfig(protocol?: ModelProtocol, model = "
         outputFormat: { supported: true },
         maxOutputs: 15,
     };
+    if (protocol === "bailian-image") {
+        const qwen = model.trim().toLowerCase().startsWith("qwen-image-3.0");
+        image.references = { promptMaxChars: 5000, maxImages: qwen ? 3 : 9, maxImageBytes: (qwen ? 10 : 20) * 1024 * 1024, maskSupported: false };
+        image.size = qwen
+            ? { parameter: "size", values: ["auto", "1024x1024", "2048x2048", "2688x1536", "1536x2688", "2368x1728", "1728x2368"], default: "auto", allowCustom: true }
+            : { parameter: "size", values: ["1K", "2K", ...(model.trim().toLowerCase() === "wan2.7-image-pro" ? ["4K"] : [])], default: "2K", allowCustom: true };
+        image.quality.supported = false;
+        image.transparentBackground.supported = false;
+        image.responseFormat.supported = false;
+        image.outputFormat.supported = false;
+        image.maxOutputs = qwen ? 6 : 4;
+        return image;
+    }
     if (protocol === "km-kemei-seedream") {
         const presets = kemeiSeedreamPresets();
         image.references = { ...image.references, maxImages: 10, maskSupported: false };
@@ -386,7 +399,7 @@ export function defaultModelCapabilityConfig(protocol?: ModelProtocol, model = "
         video.duration = { selection: "enum", values: [4, 6, 8], default: 6 };
         video.resolutions = ["720p", "1080p"];
     }
-    if (protocol === "volcengine-ark-video" || protocol === "volcengine-ark-agent-plan-video" || protocol === "newapi-channel-1" || protocol === "newapi-channel-2") {
+    if (protocol === "volcengine-ark-video" || protocol === "volcengine-ark-agent-plan-video" || protocol === "newapi-channel-1" || protocol === "newapi-channel-2" || protocol === "aiapiway-video") {
         video.references.maxVideos = 3;
         video.references.maxAudios = 3;
         video.references.maxVideoBytes = 200 * 1024 * 1024;
@@ -399,6 +412,11 @@ export function defaultModelCapabilityConfig(protocol?: ModelProtocol, model = "
     if (protocol === "volcengine-ark-video" || protocol === "volcengine-ark-agent-plan-video") {
         video.watermark = { supported: true, default: false };
         video.operations.push("reference_to_video", "audio_to_video");
+    }
+    if (protocol === "aiapiway-video") {
+        video.resolutions = ["480p", "720p", "1080p", ...(model.toLowerCase().includes("filter-off") ? ["4k"] : [])];
+        video.watermark = { supported: true, default: false };
+        video.operations.push("reference_to_video");
     }
     if (protocol === "novita-video") {
         video.references.maxImages = 1;

@@ -35,5 +35,6 @@ const srcRoot = resolve(import.meta.dir, "../../src");
 export function moduleGroupSource(relativePath: string): string {
     const normalized = relativePath.replace(/^(\.\.\/)*src\//, "").replace(/^\.\//, "");
     const files = [normalized, ...(SPLIT_MODULE_GROUPS[normalized] ?? [])];
-    return files.map((file) => readFileSync(resolve(srcRoot, file), "utf8")).join("\n");
+    // Windows 检出的 CRLF 不改变源码语义，断言统一使用 LF。
+    return files.map((file) => readFileSync(resolve(srcRoot, file), "utf8").replace(/\r\n?/g, "\n")).join("\n");
 }

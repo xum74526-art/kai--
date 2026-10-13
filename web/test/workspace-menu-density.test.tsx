@@ -51,7 +51,7 @@ test("real collection toolbar supplies filled selects without changing their lab
 test("collection select focus uses a thin keyboard ring, not a persistent pointer outline", () => {
     const css = readFileSync(new URL("../src/styles/workspace-product.css", import.meta.url), "utf8");
     const toolbar = readFileSync(new URL("../src/components/layout/collection-toolbar.tsx", import.meta.url), "utf8");
-    expect(css).toContain(".collection-toolbar .ant-select {\n        outline: none !important;");
+    expect(css.replace(/\r\n?/g, "\n")).toContain(".collection-toolbar .ant-select {\n        outline: none !important;");
     expect(css).toContain('[data-input-modality="keyboard"] .ant-select:not(.ant-select-disabled):focus-within');
     expect(css).toContain("outline: 1px solid var(--control-focus-ring) !important;");
     expect(toolbar).toContain('onPointerDownCapture={() => setInputModality("pointer")}');
@@ -90,7 +90,7 @@ test("menu surfaces are explicitly scoped and old account inner overrides are re
     expect(globals).not.toContain(".workspace-account-popover .ant-popover-inner");
     expect(globals).toContain('.app-unified-select[data-input-modality="keyboard"]:not(.ant-select-open)');
     expect(globals).toMatch(/:where\(\.ant-select-dropdown, \.ant-dropdown-menu,[^)]*\)\s*\{\s*border: 0 !important;/);
-    expect(globals).toContain("body.app-spatial-overlays :where(.ant-dropdown-menu, .ant-select-dropdown, .ant-cascader-menus, .ant-mentions-dropdown) {\n        border: 0 !important;");
+    expect(globals.replace(/\r\n?/g, "\n")).toContain("body.app-spatial-overlays :where(.ant-dropdown-menu, .ant-select-dropdown, .ant-cascader-menus, .ant-mentions-dropdown) {\n        border: 0 !important;");
 });
 
 test("shared single-select popup uses a borderless surface instead of a bright focus frame", () => {

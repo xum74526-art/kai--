@@ -375,6 +375,11 @@ func validateImageTask(profile *ImageCapabilityConfig, input canvasGenerationInp
 			return BadAuthRequest(err.Error())
 		}
 	}
+	if input.Config.InterfaceType == string(model.ChannelInterfaceBailianImage) {
+		if err := validateBailianImageSize(modelName, input.Config.Size, len(input.ReferenceImages) > 0); err != nil {
+			return BadAuthRequest(err.Error())
+		}
+	}
 	quality := strings.TrimSpace(input.Config.Quality)
 	if profile.Quality.Supported && quality != "" && !strings.EqualFold(quality, "auto") && !strings.EqualFold(quality, "any") && !containsCapabilityString(profile.Quality.Values, quality) {
 		return BadAuthRequest("图片质量不在当前模型支持范围内")

@@ -1,4 +1,5 @@
-const ACTIVE_USER_SCOPE_KEY = "yingce:active-user-scope";
+// 品牌升级不改变持久化命名空间，避免已配置渠道和用户缓存被当作新账号数据。
+const ACTIVE_USER_SCOPE_KEY = "infinite-canvas:active-user-scope";
 const GUEST_SCOPE = "guest";
 let userScopedPersistenceSuppressionDepth = 0;
 

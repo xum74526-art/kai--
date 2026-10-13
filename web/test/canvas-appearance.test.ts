@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { DEFAULT_CANVAS_COLOR_THEME } from "../src/lib/canvas-theme";
+import { setActiveUserScope } from "../src/lib/user-scope";
 
 import {
     DEFAULT_CANVAS_BACKGROUND_MODE,
@@ -180,14 +181,14 @@ describe("canvas custom appearance", () => {
     });
 
     test("stores defaults locally with the active account scope", () => {
-        window.localStorage.setItem("yingce:active-user-scope", "account-A");
+        setActiveUserScope("account-A");
         const value = { appearance: customCanvasAppearanceFromTheme("dark"), backgroundMode: "lines" as const };
         writeCanvasAppearanceDefault(value);
 
         expect(values.has("yingce:canvas-appearance-default:user:account-A")).toBe(true);
         expect(readCanvasAppearanceDefault()).toEqual(value);
 
-        window.localStorage.setItem("yingce:active-user-scope", "account-B");
+        setActiveUserScope("account-B");
         expect(readCanvasAppearanceDefault()).toBeNull();
     });
 });

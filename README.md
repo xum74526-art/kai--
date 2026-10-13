@@ -1,30 +1,32 @@
 <p align="center">
-  <img src="web/public/logo.svg" width="88" alt="影策 logo">
+  <img src="web/public/logo.svg" width="200" alt="KAI影 logo">
 </p>
 
-<h1 align="center">影策</h1>
+<h1 align="center">KAI影</h1>
 
 <p align="center">让一个故事，从文字走向银幕</p>
 
 <p align="center">
-  <a href="https://github.com/ddcat-ai/open-ai-canvas">GitHub</a> ·
+  <a href="https://github.com/xum74526-art/kai--">GitHub</a> ·
   <a href="docs/content/docs/overview/features.mdx">功能</a> ·
   <a href="docs/content/docs/overview/quick-start.mdx">文档</a> ·
   <a href="SECURITY.md">安全策略</a>
 </p>
 
-影策是一个开源的 AI 影视与短剧创作工作台：用自由画布组织创作，用结构化工作流管理剧本、角色、场景和分镜，并通过统一的任务系统完成图片、视频、音频与文本生成。
+KAI影是一个开源的 AI 影视与短剧创作工作台：用自由画布组织创作，用结构化工作流管理剧本、角色、场景和分镜，并通过统一的任务系统完成图片、视频、音频与文本生成。
+
+本项目基于上游[影策](https://github.com/ddcat-ai/open-ai-canvas)持续同步，保留 KAI影品牌、展示素材和本地定制；上游作者、贡献者及第三方素材许可保留原始署名。
 
 > 项目仍在快速开发，数据结构和外部接口可能调整。默认适合个人、本地或可信环境部署；未经安全配置，不要直接作为公网多人服务使用。
 
-在线演示：[https://yingce.tv](https://yingce.tv)
+KAI影入口：[https://simon.kai.com/kai/](https://simon.kai.com/kai/)
 
-账号/密码：test/test123456
+上游影策演示：[https://yingce.tv](https://yingce.tv)
 
 
 ## 赞助商
 
-感谢以下赞助商对影策项目的支持：
+感谢以下赞助商对上游影策项目的支持：
 
 | LOGO | 类型 | 赞助商名称 | 说明 | 网站 |
 | --- | --- | --- | --- | --- |
@@ -88,8 +90,8 @@ GitHub 用户：[@TripsCoder](https://github.com/TripsCoder) · [@sugtex](https:
 ### 宿主机启动
 
 ```bash
-git clone https://github.com/ddcat-ai/open-ai-canvas.git
-cd open-ai-canvas
+git clone https://github.com/xum74526-art/kai--.git kai
+cd kai
 
 # 使用 Git 忽略的目录保存本地开发数据和缓存
 mkdir -p .local/project-workbench-debug .local/cache/go-build .local/cache/go-mod

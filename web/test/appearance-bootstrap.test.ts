@@ -3,11 +3,11 @@ import { expect, test } from "bun:test";
 import { appearanceLogoURL, normalizePublicAppearance } from "../src/stores/use-appearance-store";
 import { moduleGroupSource } from "./helpers/module-group-source";
 
-test("initial HTML stays brand neutral until the public appearance is resolved", async () => {
+test("initial HTML keeps the KAIying title and resolves public appearance before loading the application", async () => {
     const [html, mainSource] = await Promise.all([Bun.file(new URL("../index.html", import.meta.url)).text(), Bun.file(new URL("../src/main.tsx", import.meta.url)).text()]);
 
     expect(html).not.toContain("影策");
-    expect(html).toContain("<title>正在加载</title>");
+    expect(html).toContain("<title>KAI影</title>");
     expect(mainSource).toContain("bootstrapAppearance()");
     expect(mainSource).toContain('import("./application")');
     expect(mainSource.indexOf("bootstrapAppearance()")).toBeLessThan(mainSource.indexOf('import("./application")'));
@@ -122,10 +122,10 @@ test("object storage can adopt the configured English brand identifier without r
     expect(source).toContain("setting.pathPrefix || DEFAULT_OSS_PATH_PREFIX");
 });
 
-test("appearance management exposes a server-side reset to the built-in Yingce brand", async () => {
+test("appearance management exposes a server-side reset to the built-in KAIying brand", async () => {
     const [pageSource, apiSource] = await Promise.all([Promise.resolve(moduleGroupSource("pages/admin/settings/appearance-settings-page.tsx")), Bun.file(new URL("../src/services/api/appearance.ts", import.meta.url)).text()]);
 
-    expect(pageSource).toContain("恢复影策默认");
+    expect(pageSource).toContain("恢复KAI影默认");
     expect(pageSource).toContain("resetAdminAppearance()");
     expect(pageSource).toContain("已上传文件仍保留在存储资源中");
     expect(apiSource).toContain('http.delete<{ setting: AdminAppearance }>("/admin/settings/appearance")');

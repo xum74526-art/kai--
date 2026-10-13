@@ -1,0 +1,564 @@
+{
+  "apiVersion": "yingce.plugin/v2",
+  "id": "kai-aiapiway-video",
+  "name": "AI API WAY 视频",
+  "version": "1.0.0",
+  "author": "KAI影",
+  "description": "KAI影现有 AIAPIWay Seedance 视频渠道。",
+  "documentation": "# AI API WAY 视频\n\n保留 KAI影 的 aiapiway-video 渠道 ID。POST /v1/video/generations 创建，GET /v1/video/generations/{taskId} 查询，Bearer 鉴权。顶层仅发送 model、prompt；metadata 包含 duration（1–15 秒）、ratio、resolution、generate_audio、watermark 与 content。content 保留首尾帧/参考图角色，视频和音频分别为 reference_video、reference_audio。最多 9 张图、3 段视频、3 段音频，音频必须同时有图片或视频。参考图片可使用 data URL；视频和音频需要公网 URL。4K 仅允许 filter-off 模型。SUCCESS/SUCCEEDED/COMPLETED 为成功，FAILURE/FAILED/CANCELLED 保留上游原因。错误码、鉴权、SSRF、轮询恢复和结果保存均由宿主处理。\n\n协议源码为 manifest.json，分发文件为上一级同名 .yingce-plugin 包；修改后必须同步更新包。\n\n---\n\n# AI API WAY 视频接口\n\n配置 `apiKey` 由宿主注入 Bearer 请求头；插件不保存密钥或改变出站安全规则。\n\n## 创建和查询\n\n使用 `POST /v1/video/generations` 创建，`GET /v1/video/generations/{taskId}` 只查询已提交任务。`model`、`prompt` 放在顶层，`duration`、`aspectRatio`、`resolution`、`generateAudio`、`watermark` 映射到 `metadata`。`images`、`videos`、`audios` 统一映射到 `metadata.content`，保留媒体类型及图片角色。\n\n图片支持 data URL；视频和音频由宿主准备公网 URL。图片最多 9 张，视频和音频各最多 3 段，音频必须搭配图片或视频。4K 仅允许模型名包含 filter-off，fast 模型的 1080p 自动使用 720p。\n\n## 响应\n\n创建响应从 data.task_id、task_id、data.id、id 提取上游任务 ID。查询响应读取 data.status/status、data.result_url/result_url 或 video_url，失败保留 fail_reason、error.message、message。鉴权或错误码失败由宿主返回真实错误；已持久化的上游任务超时后只恢复查询，不重新创建或重复计费。\n\n<!-- YINGCE_MANIFEST_CONTRACT_START -->\n## Manifest 完整接口定义\n\n以下 JSON 与插件包内实际 `manifest.json` 逐字段一致，覆盖插件身份、权限、配置、鉴权、参数、校验、创建、Agent、查询、取消、结果下载、响应和 Agent 响应映射。`documentation` 字段的值就是当前完整文档；为避免文档在自身内部无限递归，JSON 中仅用等义占位文本表示正文。\n\n```json\n{\n  \"apiVersion\": \"yingce.plugin/v2\",\n  \"id\": \"kai-aiapiway-video\",\n  \"name\": \"AI API WAY 视频\",\n  \"version\": \"1.0.0\",\n  \"author\": \"KAI影\",\n  \"description\": \"KAI影现有 AIAPIWay Seedance 视频渠道。\",\n  \"documentation\": \"<当前插件的完整 documentation，由 README.md 与 docs/interface.md 拼接而成；为避免 JSON 递归，此处不重复展开正文。>\",\n  \"permissions\": [\n    \"generation.run\",\n    \"media.read\"\n  ],\n  \"configuration\": {\n    \"fields\": [\n      {\n        \"name\": \"apiKey\",\n        \"type\": \"secret\",\n        \"label\": \"API Key\",\n        \"required\": true\n      }\n    ]\n  },\n  \"contributes\": {\n    \"providers\": [\n      {\n        \"id\": \"aiapiway-video\",\n        \"label\": \"AI API WAY 视频\",\n        \"capabilities\": [\n          \"video\"\n        ],\n        \"scopes\": [\n          \"admin.system-channel\",\n          \"user.custom-channel\",\n          \"canvas\",\n          \"creation\",\n          \"agent\"\n        ],\n        \"requiresPublicMediaUrls\": false,\n        \"auth\": {\n          \"type\": \"bearer\",\n          \"field\": \"apiKey\"\n        },\n        \"parameters\": [\n          {\n            \"name\": \"model\",\n            \"type\": \"string\",\n            \"required\": true,\n            \"mapping\": \"model\",\n            \"description\": \"渠道授权的 Seedance 模型标识\"\n          },\n          {\n            \"name\": \"prompt\",\n            \"type\": \"string\",\n            \"required\": true,\n            \"mapping\": \"prompt\",\n            \"description\": \"视频生成提示词\"\n          },\n          {\n            \"name\": \"duration\",\n            \"type\": \"integer\",\n            \"required\": false,\n            \"mapping\": \"metadata.duration\",\n            \"description\": \"视频时长，范围 1 至 15 秒\"\n          },\n          {\n            \"name\": \"aspectRatio\",\n            \"type\": \"string\",\n            \"required\": false,\n            \"mapping\": \"metadata.ratio\",\n            \"description\": \"输出宽高比，默认 16:9\"\n          },\n          {\n            \"name\": \"resolution\",\n            \"type\": \"string\",\n            \"required\": false,\n            \"mapping\": \"metadata.resolution\",\n            \"description\": \"输出清晰度，4K 仅支持 filter-off 模型\"\n          },\n          {\n            \"name\": \"generateAudio\",\n            \"type\": \"boolean\",\n            \"required\": false,\n            \"mapping\": \"metadata.generate_audio\",\n            \"description\": \"是否生成声音\"\n          },\n          {\n            \"name\": \"watermark\",\n            \"type\": \"boolean\",\n            \"required\": false,\n            \"mapping\": \"metadata.watermark\",\n            \"description\": \"是否保留水印\"\n          },\n          {\n            \"name\": \"images\",\n            \"type\": \"media[]\",\n            \"required\": false,\n            \"mapping\": \"metadata.content\",\n            \"description\": \"最多 9 张参考图片，可内嵌 data URL 并保留首尾帧角色\"\n          },\n          {\n            \"name\": \"videos\",\n            \"type\": \"media[]\",\n            \"required\": false,\n            \"mapping\": \"metadata.content\",\n            \"description\": \"最多 3 段公网参考视频\"\n          },\n          {\n            \"name\": \"audios\",\n            \"type\": \"media[]\",\n            \"required\": false,\n            \"mapping\": \"metadata.content\",\n            \"description\": \"最多 3 段公网参考音频，不能单独使用\"\n          }\n        ],\n        \"validations\": [\n          {\n            \"assert\": {\n              \"$and\": [\n                {\n                  \"$gte\": [\n                    {\n                      \"$ref\": \"request.duration\"\n                    },\n                    1\n                  ]\n                },\n                {\n                  \"$lte\": [\n                    {\n                      \"$ref\": \"request.duration\"\n                    },\n                    15\n                  ]\n                }\n              ]\n            },\n            \"message\": \"AI API WAY Seedance 视频时长需要在 1–15 秒之间\"\n          },\n          {\n            \"assert\": {\n              \"$and\": [\n                {\n                  \"$lte\": [\n                    {\n                      \"$len\": {\n                        \"$ref\": \"request.images\"\n                      }\n                    },\n                    9\n                  ]\n                },\n                {\n                  \"$lte\": [\n                    {\n                      \"$len\": {\n                        \"$ref\": \"request.videos\"\n                      }\n                    },\n                    3\n                  ]\n                },\n                {\n                  \"$lte\": [\n                    {\n                      \"$len\": {\n                        \"$ref\": \"request.audios\"\n                      }\n                    },\n                    3\n                  ]\n                }\n              ]\n            },\n            \"message\": \"AI API WAY 最多支持 9 张参考图、3 个参考视频和 3 个参考音频\"\n          },\n          {\n            \"assert\": {\n              \"$or\": [\n                {\n                  \"$eq\": [\n                    {\n                      \"$len\": {\n                        \"$ref\": \"request.audios\"\n                      }\n                    },\n                    0\n                  ]\n                },\n                {\n                  \"$gt\": [\n                    {\n                      \"$len\": {\n                        \"$ref\": \"request.images\"\n                      }\n                    },\n                    0\n                  ]\n                },\n                {\n                  \"$gt\": [\n                    {\n                      \"$len\": {\n                        \"$ref\": \"request.videos\"\n                      }\n                    },\n                    0\n                  ]\n                }\n              ]\n            },\n            \"message\": \"AI API WAY 的参考音频不能单独使用，请同时提供参考图片或参考视频\"\n          },\n          {\n            \"assert\": {\n              \"$or\": [\n                {\n                  \"$not\": {\n                    \"$in\": [\n                      {\n                        \"$lower\": {\n                          \"$trim\": {\n                            \"$ref\": \"request.resolution\"\n                          }\n                        }\n                      },\n                      [\n                        \"2160\",\n                        \"2160p\",\n                        \"4k\"\n                      ]\n                    ]\n                  }\n                },\n                {\n                  \"$gt\": [\n                    {\n                      \"$len\": {\n                        \"$split\": [\n                          {\n                            \"$lower\": {\n                              \"$trim\": {\n                                \"$ref\": \"request.model\"\n                              }\n                            }\n                          },\n                          \"filter-off\"\n                        ]\n                      }\n                    },\n                    1\n                  ]\n                }\n              ]\n            },\n            \"message\": \"AI API WAY 的 4K 输出只支持 filter-off 海外版模型\"\n          }\n        ],\n        \"create\": {\n          \"method\": \"POST\",\n          \"path\": \"/v1/video/generations\",\n          \"contentType\": \"application/json\",\n          \"body\": {\n            \"model\": {\n              \"$ref\": \"request.model\"\n            },\n            \"prompt\": {\n              \"$trim\": {\n                \"$ref\": \"request.prompt\"\n              }\n            },\n            \"metadata\": {\n              \"duration\": {\n                \"$ref\": \"request.duration\"\n              },\n              \"ratio\": {\n                \"$if\": {\n                  \"condition\": {\n                    \"$in\": [\n                      {\n                        \"$ref\": \"request.aspectRatio\"\n                      },\n                      [\n                        \"16:9\",\n                        \"9:16\",\n                        \"1:1\",\n                        \"4:3\",\n                        \"3:4\",\n                        \"21:9\"\n                      ]\n                    ]\n                  },\n                  \"then\": {\n                    \"$ref\": \"request.aspectRatio\"\n                  },\n                  \"else\": \"16:9\"\n                }\n              },\n              \"resolution\": {\n                \"$switch\": {\n                  \"cases\": [\n                    {\n                      \"when\": {\n                        \"$in\": [\n                          {\n                            \"$lower\": {\n                              \"$trim\": {\n                                \"$ref\": \"request.resolution\"\n                              }\n                            }\n                          },\n                          [\n                            \"480\",\n                            \"480p\",\n                            \"low\"\n                          ]\n                        ]\n                      },\n                      \"then\": \"480p\"\n                    },\n                    {\n                      \"when\": {\n                        \"$in\": [\n                          {\n                            \"$lower\": {\n                              \"$trim\": {\n                                \"$ref\": \"request.resolution\"\n                              }\n                            }\n                          },\n                          [\n                            \"1080\",\n                            \"1080p\"\n                          ]\n                        ]\n                      },\n                      \"then\": {\n                        \"$if\": {\n                          \"condition\": {\n                            \"$gt\": [\n                              {\n                                \"$len\": {\n                                  \"$split\": [\n                                    {\n                                      \"$lower\": {\n                                        \"$trim\": {\n                                          \"$ref\": \"request.model\"\n                                        }\n                                      }\n                                    },\n                                    \"fast\"\n                                  ]\n                                }\n                              },\n                              1\n                            ]\n                          },\n                          \"then\": \"720p\",\n                          \"else\": \"1080p\"\n                        }\n                      }\n                    },\n                    {\n                      \"when\": {\n                        \"$in\": [\n                          {\n                            \"$lower\": {\n                              \"$trim\": {\n                                \"$ref\": \"request.resolution\"\n                              }\n                            }\n                          },\n                          [\n                            \"2160\",\n                            \"2160p\",\n                            \"4k\"\n                          ]\n                        ]\n                      },\n                      \"then\": \"4k\"\n                    }\n                  ],\n                  \"default\": \"720p\"\n                }\n              },\n              \"generate_audio\": {\n                \"$ref\": \"request.generateAudio\"\n              },\n              \"watermark\": {\n                \"$ref\": \"request.watermark\"\n              },\n              \"content\": {\n                \"$omitEmpty\": {\n                  \"$concatArrays\": [\n                    {\n                      \"$map\": {\n                        \"from\": {\n                          \"$sortByOrder\": {\n                            \"$ref\": \"request.images\"\n                          }\n                        },\n                        \"as\": \"media\",\n                        \"in\": {\n                          \"type\": \"image_url\",\n                          \"role\": {\n                            \"$coalesce\": [\n                              {\n                                \"$ref\": \"media.role\"\n                              },\n                              \"reference_image\"\n                            ]\n                          },\n                          \"image_url\": {\n                            \"url\": {\n                              \"$coalesce\": [\n                                {\n                                  \"$ref\": \"media.dataUrl\"\n                                },\n                                {\n                                  \"$ref\": \"media.url\"\n                                }\n                              ]\n                            }\n                          }\n                        }\n                      }\n                    },\n                    {\n                      \"$map\": {\n                        \"from\": {\n                          \"$sortByOrder\": {\n                            \"$ref\": \"request.videos\"\n                          }\n                        },\n                        \"as\": \"media\",\n                        \"in\": {\n                          \"type\": \"video_url\",\n                          \"role\": \"reference_video\",\n                          \"video_url\": {\n                            \"url\": {\n                              \"$coalesce\": [\n                                {\n                                  \"$ref\": \"media.dataUrl\"\n                                },\n                                {\n                                  \"$ref\": \"media.url\"\n                                }\n                              ]\n                            }\n                          }\n                        }\n                      }\n                    },\n                    {\n                      \"$map\": {\n                        \"from\": {\n                          \"$sortByOrder\": {\n                            \"$ref\": \"request.audios\"\n                          }\n                        },\n                        \"as\": \"media\",\n                        \"in\": {\n                          \"type\": \"audio_url\",\n                          \"role\": \"reference_audio\",\n                          \"audio_url\": {\n                            \"url\": {\n                              \"$coalesce\": [\n                                {\n                                  \"$ref\": \"media.dataUrl\"\n                                },\n                                {\n                                  \"$ref\": \"media.url\"\n                                }\n                              ]\n                            }\n                          }\n                        }\n                      }\n                    }\n                  ]\n                }\n              }\n            }\n          }\n        },\n        \"poll\": {\n          \"method\": \"GET\",\n          \"path\": \"/v1/video/generations/{{taskId}}\"\n        },\n        \"response\": {\n          \"taskId\": {\n            \"$coalesce\": [\n              {\n                \"$ref\": \"response.data.task_id\"\n              },\n              {\n                \"$ref\": \"response.task_id\"\n              },\n              {\n                \"$ref\": \"response.data.id\"\n              },\n              {\n                \"$ref\": \"response.id\"\n              },\n              {\n                \"$ref\": \"taskId\"\n              }\n            ]\n          },\n          \"status\": {\n            \"$coalesce\": [\n              {\n                \"$ref\": \"response.data.status\"\n              },\n              {\n                \"$ref\": \"response.status\"\n              },\n              \"pending\"\n            ]\n          },\n          \"message\": {\n            \"$coalesce\": [\n              {\n                \"$ref\": \"response.data.fail_reason\"\n              },\n              {\n                \"$ref\": \"response.fail_reason\"\n              },\n              {\n                \"$ref\": \"response.error.message\"\n              },\n              {\n                \"$ref\": \"response.message\"\n              },\n              {\n                \"$ref\": \"response.msg\"\n              }\n            ]\n          },\n          \"videos\": {\n            \"$coalesce\": [\n              {\n                \"$ref\": \"response.data.result_url\"\n              },\n              {\n                \"$ref\": \"response.result_url\"\n              },\n              {\n                \"$ref\": \"response.data.video_url\"\n              },\n              {\n                \"$ref\": \"response.video_url\"\n              }\n            ]\n          },\n          \"errorPaths\": [\n            \"code\",\n            \"error.code\"\n          ],\n          \"resultEphemeral\": true\n        }\n      }\n    ]\n  }\n}\n```\n<!-- YINGCE_MANIFEST_CONTRACT_END -->\n",
+  "permissions": [
+    "generation.run",
+    "media.read"
+  ],
+  "configuration": {
+    "fields": [
+      {
+        "name": "apiKey",
+        "type": "secret",
+        "label": "API Key",
+        "required": true
+      }
+    ]
+  },
+  "contributes": {
+    "providers": [
+      {
+        "id": "aiapiway-video",
+        "label": "AI API WAY 视频",
+        "capabilities": [
+          "video"
+        ],
+        "scopes": [
+          "admin.system-channel",
+          "user.custom-channel",
+          "canvas",
+          "creation",
+          "agent"
+        ],
+        "requiresPublicMediaUrls": false,
+        "auth": {
+          "type": "bearer",
+          "field": "apiKey"
+        },
+        "parameters": [
+          {
+            "name": "model",
+            "type": "string",
+            "required": true,
+            "mapping": "model",
+            "description": "渠道授权的 Seedance 模型标识"
+          },
+          {
+            "name": "prompt",
+            "type": "string",
+            "required": true,
+            "mapping": "prompt",
+            "description": "视频生成提示词"
+          },
+          {
+            "name": "duration",
+            "type": "integer",
+            "required": false,
+            "mapping": "metadata.duration",
+            "description": "视频时长，范围 1 至 15 秒"
+          },
+          {
+            "name": "aspectRatio",
+            "type": "string",
+            "required": false,
+            "mapping": "metadata.ratio",
+            "description": "输出宽高比，默认 16:9"
+          },
+          {
+            "name": "resolution",
+            "type": "string",
+            "required": false,
+            "mapping": "metadata.resolution",
+            "description": "输出清晰度，4K 仅支持 filter-off 模型"
+          },
+          {
+            "name": "generateAudio",
+            "type": "boolean",
+            "required": false,
+            "mapping": "metadata.generate_audio",
+            "description": "是否生成声音"
+          },
+          {
+            "name": "watermark",
+            "type": "boolean",
+            "required": false,
+            "mapping": "metadata.watermark",
+            "description": "是否保留水印"
+          },
+          {
+            "name": "images",
+            "type": "media[]",
+            "required": false,
+            "mapping": "metadata.content",
+            "description": "最多 9 张参考图片，可内嵌 data URL 并保留首尾帧角色"
+          },
+          {
+            "name": "videos",
+            "type": "media[]",
+            "required": false,
+            "mapping": "metadata.content",
+            "description": "最多 3 段公网参考视频"
+          },
+          {
+            "name": "audios",
+            "type": "media[]",
+            "required": false,
+            "mapping": "metadata.content",
+            "description": "最多 3 段公网参考音频，不能单独使用"
+          }
+        ],
+        "validations": [
+          {
+            "assert": {
+              "$and": [
+                {
+                  "$gte": [
+                    {
+                      "$ref": "request.duration"
+                    },
+                    1
+                  ]
+                },
+                {
+                  "$lte": [
+                    {
+                      "$ref": "request.duration"
+                    },
+                    15
+                  ]
+                }
+              ]
+            },
+            "message": "AI API WAY Seedance 视频时长需要在 1–15 秒之间"
+          },
+          {
+            "assert": {
+              "$and": [
+                {
+                  "$lte": [
+                    {
+                      "$len": {
+                        "$ref": "request.images"
+                      }
+                    },
+                    9
+                  ]
+                },
+                {
+                  "$lte": [
+                    {
+                      "$len": {
+                        "$ref": "request.videos"
+                      }
+                    },
+                    3
+                  ]
+                },
+                {
+                  "$lte": [
+                    {
+                      "$len": {
+                        "$ref": "request.audios"
+                      }
+                    },
+                    3
+                  ]
+                }
+              ]
+            },
+            "message": "AI API WAY 最多支持 9 张参考图、3 个参考视频和 3 个参考音频"
+          },
+          {
+            "assert": {
+              "$or": [
+                {
+                  "$eq": [
+                    {
+                      "$len": {
+                        "$ref": "request.audios"
+                      }
+                    },
+                    0
+                  ]
+                },
+                {
+                  "$gt": [
+                    {
+                      "$len": {
+                        "$ref": "request.images"
+                      }
+                    },
+                    0
+                  ]
+                },
+                {
+                  "$gt": [
+                    {
+                      "$len": {
+                        "$ref": "request.videos"
+                      }
+                    },
+                    0
+                  ]
+                }
+              ]
+            },
+            "message": "AI API WAY 的参考音频不能单独使用，请同时提供参考图片或参考视频"
+          },
+          {
+            "assert": {
+              "$or": [
+                {
+                  "$not": {
+                    "$in": [
+                      {
+                        "$lower": {
+                          "$trim": {
+                            "$ref": "request.resolution"
+                          }
+                        }
+                      },
+                      [
+                        "2160",
+                        "2160p",
+                        "4k"
+                      ]
+                    ]
+                  }
+                },
+                {
+                  "$gt": [
+                    {
+                      "$len": {
+                        "$split": [
+                          {
+                            "$lower": {
+                              "$trim": {
+                                "$ref": "request.model"
+                              }
+                            }
+                          },
+                          "filter-off"
+                        ]
+                      }
+                    },
+                    1
+                  ]
+                }
+              ]
+            },
+            "message": "AI API WAY 的 4K 输出只支持 filter-off 海外版模型"
+          }
+        ],
+        "create": {
+          "method": "POST",
+          "path": "/v1/video/generations",
+          "contentType": "application/json",
+          "body": {
+            "model": {
+              "$ref": "request.model"
+            },
+            "prompt": {
+              "$trim": {
+                "$ref": "request.prompt"
+              }
+            },
+            "metadata": {
+              "duration": {
+                "$ref": "request.duration"
+              },
+              "ratio": {
+                "$if": {
+                  "condition": {
+                    "$in": [
+                      {
+                        "$ref": "request.aspectRatio"
+                      },
+                      [
+                        "16:9",
+                        "9:16",
+                        "1:1",
+                        "4:3",
+                        "3:4",
+                        "21:9"
+                      ]
+                    ]
+                  },
+                  "then": {
+                    "$ref": "request.aspectRatio"
+                  },
+                  "else": "16:9"
+                }
+              },
+              "resolution": {
+                "$switch": {
+                  "cases": [
+                    {
+                      "when": {
+                        "$in": [
+                          {
+                            "$lower": {
+                              "$trim": {
+                                "$ref": "request.resolution"
+                              }
+                            }
+                          },
+                          [
+                            "480",
+                            "480p",
+                            "low"
+                          ]
+                        ]
+                      },
+                      "then": "480p"
+                    },
+                    {
+                      "when": {
+                        "$in": [
+                          {
+                            "$lower": {
+                              "$trim": {
+                                "$ref": "request.resolution"
+                              }
+                            }
+                          },
+                          [
+                            "1080",
+                            "1080p"
+                          ]
+                        ]
+                      },
+                      "then": {
+                        "$if": {
+                          "condition": {
+                            "$gt": [
+                              {
+                                "$len": {
+                                  "$split": [
+                                    {
+                                      "$lower": {
+                                        "$trim": {
+                                          "$ref": "request.model"
+                                        }
+                                      }
+                                    },
+                                    "fast"
+                                  ]
+                                }
+                              },
+                              1
+                            ]
+                          },
+                          "then": "720p",
+                          "else": "1080p"
+                        }
+                      }
+                    },
+                    {
+                      "when": {
+                        "$in": [
+                          {
+                            "$lower": {
+                              "$trim": {
+                                "$ref": "request.resolution"
+                              }
+                            }
+                          },
+                          [
+                            "2160",
+                            "2160p",
+                            "4k"
+                          ]
+                        ]
+                      },
+                      "then": "4k"
+                    }
+                  ],
+                  "default": "720p"
+                }
+              },
+              "generate_audio": {
+                "$ref": "request.generateAudio"
+              },
+              "watermark": {
+                "$ref": "request.watermark"
+              },
+              "content": {
+                "$omitEmpty": {
+                  "$concatArrays": [
+                    {
+                      "$map": {
+                        "from": {
+                          "$sortByOrder": {
+                            "$ref": "request.images"
+                          }
+                        },
+                        "as": "media",
+                        "in": {
+                          "type": "image_url",
+                          "role": {
+                            "$coalesce": [
+                              {
+                                "$ref": "media.role"
+                              },
+                              "reference_image"
+                            ]
+                          },
+                          "image_url": {
+                            "url": {
+                              "$coalesce": [
+                                {
+                                  "$ref": "media.dataUrl"
+                                },
+                                {
+                                  "$ref": "media.url"
+                                }
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "$map": {
+                        "from": {
+                          "$sortByOrder": {
+                            "$ref": "request.videos"
+                          }
+                        },
+                        "as": "media",
+                        "in": {
+                          "type": "video_url",
+                          "role": "reference_video",
+                          "video_url": {
+                            "url": {
+                              "$coalesce": [
+                                {
+                                  "$ref": "media.dataUrl"
+                                },
+                                {
+                                  "$ref": "media.url"
+                                }
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "$map": {
+                        "from": {
+                          "$sortByOrder": {
+                            "$ref": "request.audios"
+                          }
+                        },
+                        "as": "media",
+                        "in": {
+                          "type": "audio_url",
+                          "role": "reference_audio",
+                          "audio_url": {
+                            "url": {
+                              "$coalesce": [
+                                {
+                                  "$ref": "media.dataUrl"
+                                },
+                                {
+                                  "$ref": "media.url"
+                                }
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "poll": {
+          "method": "GET",
+          "path": "/v1/video/generations/{{taskId}}"
+        },
+        "response": {
+          "taskId": {
+            "$coalesce": [
+              {
+                "$ref": "response.data.task_id"
+              },
+              {
+                "$ref": "response.task_id"
+              },
+              {
+                "$ref": "response.data.id"
+              },
+              {
+                "$ref": "response.id"
+              },
+              {
+                "$ref": "taskId"
+              }
+            ]
+          },
+          "status": {
+            "$coalesce": [
+              {
+                "$ref": "response.data.status"
+              },
+              {
+                "$ref": "response.status"
+              },
+              "pending"
+            ]
+          },
+          "message": {
+            "$coalesce": [
+              {
+                "$ref": "response.data.fail_reason"
+              },
+              {
+                "$ref": "response.fail_reason"
+              },
+              {
+                "$ref": "response.error.message"
+              },
+              {
+                "$ref": "response.message"
+              },
+              {
+                "$ref": "response.msg"
+              }
+            ]
+          },
+          "videos": {
+            "$coalesce": [
+              {
+                "$ref": "response.data.result_url"
+              },
+              {
+                "$ref": "response.result_url"
+              },
+              {
+                "$ref": "response.data.video_url"
+              },
+              {
+                "$ref": "response.video_url"
+              }
+            ]
+          },
+          "errorPaths": [
+            "code",
+            "error.code"
+          ],
+          "resultEphemeral": true
+        }
+      }
+    ]
+  }
+}

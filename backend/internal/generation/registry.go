@@ -66,6 +66,8 @@ func OfficialDeclarativeVideoInterface(interfaceType string) (string, bool) {
 		return "Novita", true
 	case string(model.ChannelInterfaceNewAPIChannel2):
 		return "NewAPI Video Generations", true
+	case string(model.ChannelInterfaceAIAPIWayVideo):
+		return "AI API WAY", true
 	case string(model.ChannelInterfaceNewAPIChannel1):
 		return "NewAPI 媒体任务", true
 	case string(model.ChannelInterfaceXAIVideo):
@@ -87,6 +89,8 @@ func OfficialDeclarativeImageInterface(interfaceType string) (string, bool) {
 		return "Gemini Images", true
 	case string(model.ChannelInterfaceOpenAIImage):
 		return "OpenAI Images", true
+	case string(model.ChannelInterfaceBailianImage):
+		return "阿里百炼图片", true
 	case string(model.ChannelInterfaceGrokImage):
 		return "Grok Images", true
 	case string(model.ChannelInterfaceVolcengineArkImage):

@@ -1,0 +1,67 @@
+name: beidou-kai
+
+services:
+  backend:
+    image: beidou-kai-backend:${KAI_IMAGE_TAG:?set a unique KAI_IMAGE_TAG in deploy/simon/.env}
+    build:
+      context: ../..
+      dockerfile: backend/Dockerfile
+      args:
+        GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
+        BUILD_REVISION: ${KAI_BUILD_REVISION:?set KAI_BUILD_REVISION to the checked-out 40-character commit}
+    environment:
+      CANVAS_BACKEND_ADDR: ":8080"
+      CANVAS_BACKEND_DATA_DIR: /data
+      CANVAS_PUBLIC_BASE_PATH: /kai
+      CANVAS_PUBLIC_BASE_URL: https://simon.kai.com/kai
+      CANVAS_DATABASE_DRIVER: sqlite
+      # 仅在数据库没有后台注册设置时作为兜底；已有设置以管理员后台保存值为准。
+      # 新注册用户仍只能是普通用户，数据库和预检继续强制恰好一个管理员。
+      CANVAS_REGISTRATION_ENABLED: ${CANVAS_REGISTRATION_ENABLED:-false}
+      CANVAS_CORS_ORIGINS: https://simon.kai.com
+      # 后端仅暴露在 Compose 网络内；只信任 Docker bridge 段，不信任公网来源头。
+      CANVAS_TRUSTED_PROXIES: ${CANVAS_TRUSTED_PROXIES:-172.16.0.0/12}
+      CANVAS_DESKTOP_LOCAL_CHANNELS_ENABLED: "false"
+      CANVAS_ALLOW_PRIVATE_UPSTREAMS: "false"
+      CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS: ""
+      CANVAS_WORKER_CONCURRENCY: ${CANVAS_WORKER_CONCURRENCY:-2}
+      CANVAS_CHANNEL_CONCURRENCY: ${CANVAS_CHANNEL_CONCURRENCY:-2}
+      REDIS_URL: ""
+      GIN_MODE: release
+      TZ: Asia/Shanghai
+    volumes:
+      - type: bind
+        source: ${KAI_DATA_PATH:?set KAI_DATA_PATH in deploy/simon/.env}
+        target: /data
+        bind:
+          create_host_path: false
+    expose:
+      - "8080"
+    init: true
+    stop_grace_period: 45s
+    restart: unless-stopped
+    logging:
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  web:
+    image: beidou-kai-web:${KAI_IMAGE_TAG:?set a unique KAI_IMAGE_TAG in deploy/simon/.env}
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        BUILD_REVISION: ${KAI_BUILD_REVISION:?set KAI_BUILD_REVISION to the checked-out 40-character commit}
+        VITE_APP_BASE_PATH: /kai/
+        VITE_TLDRAW_LICENSE_KEY: ${VITE_TLDRAW_LICENSE_KEY:-}
+    ports:
+      - "127.0.0.1:${KAI_HTTP_PORT:-5173}:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    init: true
+    restart: unless-stopped
+    logging:
+      options:
+        max-size: "20m"
+        max-file: "5"

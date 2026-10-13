@@ -75,6 +75,11 @@ func protocolRequestFromInput(input canvasGenerationInput) protocol.GenerationRe
 	if duration, err := strconv.Atoi(strings.TrimSpace(input.Config.VideoSeconds)); err == nil && duration > 0 {
 		request.Duration = duration
 	}
+	if input.Config.InterfaceType == string(model.ChannelInterfaceAIAPIWayVideo) {
+		request.Duration = normalizeSeedanceVideosDuration(input.Config.VideoSeconds)
+		request.AspectRatio = normalizeSeedanceVideosRatio(input.Config.Size)
+		request.GenerateAudio = videoCapabilitySupportsAudio(input) && parseBool(input.Config.VideoGenerateAudio, true)
+	}
 	if count, err := strconv.Atoi(strings.TrimSpace(input.Config.Count)); err == nil && count > 0 {
 		request.ImageCount = count
 	}
@@ -98,6 +103,9 @@ func protocolRequestFromInput(input canvasGenerationInput) protocol.GenerationRe
 		}
 		options["response_format"] = grokImageResponseFormat(input.ImageCapability)
 		request.ProviderOptions[input.Config.InterfaceType] = options
+	}
+	if input.Config.InterfaceType == string(model.ChannelInterfaceBailianImage) {
+		request.Extra["connectionTest"] = metadataString(input.Metadata, "source") == "model-connection-test"
 	}
 	return request
 }
@@ -128,6 +136,9 @@ func protocolImageReferences(input canvasGenerationInput) []protocol.MediaRefere
 }
 
 func protocolVideoImageReferences(input canvasGenerationInput) []protocol.MediaReference {
+	if input.Config.InterfaceType == string(model.ChannelInterfaceAIAPIWayVideo) && !shouldSendNewAPIVideoImages(input) {
+		return nil
+	}
 	result := make([]protocol.MediaReference, 0, len(input.ReferenceImages))
 	fallbackRole := ""
 	if metadataString(input.Metadata, "videoStartFrameNodeId") != "" || metadataString(input.Metadata, "videoEndFrameNodeId") != "" {

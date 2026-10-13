@@ -62,6 +62,7 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
     validateImageCapability(imageProfile, []);
     const normalizedImage = normalizeImageValue(imageProfile, config);
     const n = Number(normalizedImage.count);
+    if (requestConfig.interfaceType === "bailian-image") throw new Error("阿里百炼图片必须通过任务中心异步生成");
     if (requestConfig.interfaceType === "gemini-image") {
         try {
             return await requestGeminiImages(requestConfig, prompt, [], n, buildGeminiImageGenerationConfig(normalizedImage.size, normalizedImage.quality), options);
@@ -139,6 +140,7 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
     const normalizedImage = normalizeImageValue(imageProfile, config);
     const n = Number(normalizedImage.count);
     const requestPrompt = buildImageReferencePromptText(prompt, references);
+    if (requestConfig.interfaceType === "bailian-image") throw new Error("阿里百炼图片必须通过任务中心异步编辑");
     if (requestConfig.interfaceType === "gemini-image") {
         if (mask) throw new Error("Gemini 调用格式暂不支持蒙版编辑");
         try {

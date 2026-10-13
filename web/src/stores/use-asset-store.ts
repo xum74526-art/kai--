@@ -74,7 +74,7 @@ type AssetStore = {
     cleanupImages: (extra?: unknown) => Promise<void>;
 };
 
-export const ASSET_STORE_KEY = "yingce:asset_store";
+export const ASSET_STORE_KEY = "infinite-canvas:asset_store";
 
 type PersistedAssetState = Pick<AssetStore, "assets">;
 type ObservedAssetPersist = {

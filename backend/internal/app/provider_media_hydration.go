@@ -19,6 +19,11 @@ func (s *Service) hydrateGenerationMedia(userID string, input *canvasGenerationI
 	groups := [][]providerMedia{input.ReferenceImages, input.ReferenceVideos, input.ReferenceAudios}
 	for groupIndex, group := range groups {
 		mediaPolicy := policy
+		// AIAPIWay 图片接受内嵌数据，本地文件无需公网地址；视频和音频仍需可访问 URL。
+		if groupIndex == 0 && input.Config.InterfaceType == string(model.ChannelInterfaceAIAPIWayVideo) {
+			mediaPolicy.requireURL = false
+			mediaPolicy.preferURL = true
+		}
 		// 识图规划与 Agent 看图都发送归属校验后的实际像素，避免供应商无法读取签名 URL。
 		// 视频、音频及其他普通生成任务保留原来的协议策略。
 		inlineVision := input.Mode == "text" && ((input.AgentRequests != nil && input.AgentRequests.Canonical != nil) || metadataString(input.Metadata, "edit") == "layer-planning")

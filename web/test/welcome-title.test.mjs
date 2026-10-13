@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import vm from "node:vm";
 
-const source = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
+const source = (path) => readFileSync(new URL(path, import.meta.url), "utf8").replace(/\r\n?/g, "\n");
 
 test("welcome entry loads configured appearance", async () => {
     let calls = 0;

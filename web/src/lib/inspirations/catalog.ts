@@ -92,6 +92,33 @@ export function catalogIdOf(item: CreationInspiration): string {
 /** 本项目编写的灵感，与外部导入的条目合并后展示。 */
 const curatedWorks: CreationInspiration[] = [
     {
+        id: "original:kaiying-neon-rain-city",
+        title: "霓虹雨城",
+        description: "雨夜街道 · 低位前推与霓虹反光",
+        image: "/create-showcase/director-neon-rain-city.png",
+        mode: "video",
+        prompt: "镜头沿雨夜未来都市的湿润街道低位前推，青色与粉色霓虹灯牌映在路面，高楼在薄雾中逐层展开。",
+        featured: true,
+    },
+    {
+        id: "original:kaiying-golden-countryside",
+        title: "金色原野",
+        description: "暖阳草坡 · 平稳横移与开阔远景",
+        image: "/create-showcase/director-golden-countryside.png",
+        mode: "video",
+        prompt: "金色夕阳照亮连绵起伏的草坡，一棵枝叶繁茂的大树立在原野中央，远处红色农舍升起炊烟，镜头缓慢横移，云影与风吹草浪轻轻掠过画面。",
+        featured: true,
+    },
+    {
+        id: "original:kaiying-ink-mountain-lake",
+        title: "水墨山河",
+        description: "远山孤舟 · 贴水慢移与水墨留白",
+        image: "/create-showcase/director-ink-mountain-lake.png",
+        mode: "video",
+        prompt: "水墨群山笼罩在薄雾中，一叶孤舟从古松与山石之间缓慢驶过，镜头贴近平静水面横移，金色微光在墨色倒影中闪动。",
+        featured: true,
+    },
+    {
         title: "雨夜霓虹 · 电影感开场",
         description: "宽银幕构图、环境反光与缓慢推进镜头",
         image: "/short-drama-styles/cyberpunk-neon.jpg",

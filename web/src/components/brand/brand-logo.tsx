@@ -15,9 +15,18 @@ type BrandLogoProps = {
 export function BrandLogo({ className, fallback, alt = "", theme = "auto" }: BrandLogoProps) {
     const appearance = useAppearanceStore((state) => state.appearance);
     const currentTheme = useActiveTheme();
-    const source = appearanceLogoURL(appearance, theme === "auto" ? currentTheme : theme);
+    const resolvedTheme = theme === "auto" ? currentTheme : theme;
+    const source = appearance.logoConfigured ? appearanceLogoURL(appearance, resolvedTheme) : resolvedTheme === "dark" ? "/logo-dark.svg" : "/logo.svg";
     const [failedSource, setFailedSource] = useState<string | null>(null);
-    if (!appearance.logoConfigured) return <>{fallback}</>;
+    if (!appearance.logoConfigured) {
+        if (failedSource === source) return <>{fallback}</>;
+        // 新版导航使用方形标记与文字组合，截取原字标中的镜头图形，保持既有品牌比例。
+        return (
+            <svg className={cn("block", className)} viewBox="210 0 130 128" role={alt ? "img" : undefined} aria-label={alt || undefined} aria-hidden={!alt || undefined}>
+                <image href={source} width="350" height="128" onError={() => setFailedSource(source)} />
+            </svg>
+        );
+    }
     // A configured custom logo must never fall through to the built-in brand
     // when its file becomes unavailable. Keep its footprint neutral instead.
     if (failedSource === source) return <span className={cn("block", className)} aria-hidden="true" />;

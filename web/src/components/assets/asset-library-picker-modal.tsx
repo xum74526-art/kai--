@@ -675,6 +675,9 @@ function PickerCard({ item, selected, onToggle }: { item: AssetLibraryPickerItem
                             className={item.imageFit === "contain" ? "is-contain" : undefined}
                             fallback={<div className="assets-cover-fallback">{kindIcon(item.kindLabel)}</div>}
                         />
+                    ) : item.asset?.kind === "video" ? (
+                        // 素材网格不批量挂载视频播放器，避免 Range 请求和解码内存累积导致页面卡死。
+                        <div className="assets-cover-fallback">{kindIcon(item.kindLabel)}</div>
                     ) : (
                         <AssetMediaPreview asset={item.asset} alt={item.title} fallback={<div className="assets-cover-fallback">{kindIcon(item.kindLabel)}</div>} />
                     )}

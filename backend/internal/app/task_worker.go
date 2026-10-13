@@ -281,7 +281,7 @@ func (w *taskWorkerCoordinator) processClaimedTask(task *model.Task, globalSlot 
 		decryptedInput, decryptErr := s.decryptTaskInputJSON(task.InputJSON)
 		if decryptErr == nil && s.shouldDeferVideoProviderTask(*task, decryptedInput, err) {
 			stage := "后台仍在生成"
-			message := "前台等待结束，上游视频仍在生成，将继续回查原任务"
+			message := "前台等待结束，上游任务仍在生成，将继续回查原任务"
 			var pendingErr providerStatePendingError
 			if errors.As(err, &pendingErr) {
 				stage = "等待上游任务同步"
@@ -399,7 +399,9 @@ func taskExecutionTimeoutWithPolicy(taskType string, policy RuntimeTaskPolicy) t
 
 func (s *Service) shouldDeferVideoProviderTask(task model.Task, decryptedInput string, err error) bool {
 	providerRequestID := strings.TrimSpace(task.ProviderRequestID)
-	if providerRequestID == "" || (!strings.HasPrefix(task.Type, "canvas_video") && !strings.HasPrefix(task.Type, "video_")) {
+	isVideo := strings.HasPrefix(task.Type, "canvas_video") || strings.HasPrefix(task.Type, "video_")
+	isImage := strings.HasPrefix(task.Type, "canvas_image")
+	if providerRequestID == "" || (!isVideo && !isImage) {
 		return false
 	}
 	deferSignal := errors.Is(err, context.DeadlineExceeded)
@@ -415,7 +417,18 @@ func (s *Service) shouldDeferVideoProviderTask(task model.Task, decryptedInput s
 		return false
 	}
 	resolved, resolveErr := s.resolveProviderConfig(input.Config)
-	return resolveErr == nil && resolved.InterfaceType == string(model.ChannelInterfaceNewAPIChannel2)
+	if resolveErr != nil {
+		return false
+	}
+	// 仅恢复已持久化的上游任务 ID；声明式运行时会跳过 create，避免超时后重复计费。
+	switch model.ChannelInterfaceType(resolved.InterfaceType) {
+	case model.ChannelInterfaceNewAPIChannel2, model.ChannelInterfaceAIAPIWayVideo:
+		return isVideo
+	case model.ChannelInterfaceBailianImage:
+		return isImage && errors.Is(err, context.DeadlineExceeded)
+	default:
+		return false
+	}
 }
 
 func newAPIChannel2TaskSyncExpired(task model.Task, err error, now time.Time) bool {

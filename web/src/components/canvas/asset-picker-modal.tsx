@@ -44,7 +44,7 @@ const categoryLabels: Record<string, string> = { all: "全部素材", ...ASSET_C
 export function AssetPickerModal({ open, multiple = true, onInsert, onClose }: Props) {
     const assets = useAssetStore((state) => state.assets);
     const externalAssetSources = useExternalAssetSources(open);
-    const insertableAssets = useMemo(() => assets.filter((asset): asset is InsertableAsset => asset.kind === "text" || asset.kind === "image" || asset.kind === "video" || asset.kind === "audio"), [assets]);
+    const insertableAssets = useMemo(() => assets.filter((asset): asset is Extract<Asset, { kind: "image" }> => asset.kind === "image"), [assets]);
     const items = useMemo<AssetLibraryPickerItem[]>(
         () => [
             ...insertableAssets.map((asset) => ({
@@ -52,12 +52,12 @@ export function AssetPickerModal({ open, multiple = true, onInsert, onClose }: P
                 title: asset.title,
                 category: normalizeAssetCategory(asset.category),
                 archived: asset.status === "archived",
-                kindLabel: asset.kind === "image" ? "图片" : asset.kind === "video" ? "视频" : asset.kind === "audio" ? "音频" : "文本",
+                kindLabel: "图片",
                 mediaKind: asset.kind,
                 asset,
                 searchText: (asset.tags || []).join(" "),
             })),
-            ...externalAssetSources.items,
+            ...externalAssetSources.items.filter((item) => item.external?.item.kind === "image"),
         ],
         [externalAssetSources.items, insertableAssets],
     );
@@ -65,17 +65,17 @@ export function AssetPickerModal({ open, multiple = true, onInsert, onClose }: P
     return (
         <AssetLibraryPickerModal
             remoteLibrary
-            allowCharacters
+            remoteKind="image"
             acceptRemoteItems
             open={open}
-            mediaKinds={["image", "video", "audio", "text"]}
+            mediaKinds={["image"]}
             items={items}
             categoryLabels={{ ...categoryLabels, ...externalAssetSources.categoryLabels }}
             folders={externalAssetSources.folders}
             footerNote={externalAssetSources.error || undefined}
             multiple={multiple}
             confirmLabel={(count) => `插入已选素材${count ? `（${count}）` : ""}`}
-            emptyDescription="先在素材库中添加图片、视频、音频、文本或角色卡。"
+            emptyDescription="先在素材库中添加图片。"
             onClose={onClose}
             onConfirm={async (ids, pickedItems) => {
                 await onInsert(await assetPickerSelectionToInsertPayloads(ids, pickedItems || items));

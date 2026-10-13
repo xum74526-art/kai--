@@ -15,6 +15,8 @@ import (
 func agentMediaFixture(t *testing.T) (*Service, *gorm.DB, cloudAgentMediaArgs) {
 	t.Helper()
 	s, db, _, _ := creationTestService(t)
+	// 此夹具由测试逐步 advance 驱动；审批后台 waiter 不能抢先消费测试设置的终态。
+	s.closeApprovedCloudAgentMediaWaiters()
 	capability := DefaultModelCapabilityConfigForModel(string(model.ChannelInterfaceVolcengineArkVideo), "seedance-test")
 	capability.Video.References.PromptMaxChars = 16000
 	for _, row := range []any{

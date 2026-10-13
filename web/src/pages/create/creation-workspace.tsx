@@ -1,7 +1,7 @@
 import { ImageSizePicker } from "@/components/image-size-picker";
 import { imageResolutionUsesQuality } from "@/lib/image-size-presets";
 import { createPortal } from "react-dom";
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent, type ReactNode, type RefObject } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent, type CSSProperties, type PointerEvent, type ReactNode, type RefObject } from "react";
 import { Button, Popover } from "antd";
 import { useWorkspaceTopBarMount } from "@/components/layout/workspace-top-bar-extension";
 import { Tooltip } from "@/components/ui/base/tooltip";
@@ -99,6 +99,7 @@ type ComposerProps = {
     onReplaceAttachment: (targetAttachmentId: string, replacement: CreationAttachment) => void;
     onReplaceReferenceFiles: (targetAttachmentId: string, files: File[]) => void;
     onOpenLibrary: () => void;
+    onPasteFiles: (files: File[]) => void;
     onModeChange: (mode: CreationMode) => void;
     model: string;
     modelRequirements: ModelRequirements;
@@ -289,6 +290,21 @@ export function CreationComposer(props: ComposerProps) {
         }
         return undefined;
     };
+    const handlePasteCapture = (event: ClipboardEvent<HTMLDivElement>) => {
+        if (interactionBusy || !referencesSupported || !canAddMoreReferences) return;
+        const itemImages = Array.from(event.clipboardData.items)
+            .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+            .flatMap((item) => {
+                const file = item.getAsFile();
+                return file ? [file] : [];
+            });
+        const images = itemImages.length ? itemImages : Array.from(event.clipboardData.files).filter((file) => file.type.startsWith("image/"));
+        if (!images.length) return;
+        // 富文本编辑器会按纯文本处理粘贴，图片先在捕获阶段交给统一上传流程。
+        event.preventDefault();
+        event.stopPropagation();
+        props.onPasteFiles(images);
+    };
     const composer = <HoverBorderGradient as="div" duration={2.2} containerClassName="creation-composer-shell" className="creation-composer-shell-inner">
         <SpotlightSurface
             className={`creation-chat-composer is-${props.variant}`}
@@ -296,7 +312,7 @@ export function CreationComposer(props: ComposerProps) {
             spotlightColor="color-mix(in srgb, var(--user-ink) 12%, transparent)"
             spotlightRadius={280}
         >
-        <div className="creation-chat-writing-surface">
+        <div className="creation-chat-writing-surface" onPasteCapture={handlePasteCapture}>
             <div className="creation-chat-editor">
                 <CanvasResourceMentionTextarea ref={props.composerFocusRef} value={props.prompt} references={props.references} mentionMenuWidth={400} sendOnEnter onFocus={props.onPromptFocus} onChange={props.setPrompt} onSubmit={props.onSubmit} containerClassName="creation-chat-mention-container" className="creation-chat-mention-editor creation-scrollbar" style={{ color: "var(--creation-text)" }} placeholder={props.placeholderOverride || (props.variant === "empty" ? emptyPlaceholder : placeholder)} aria-label="创作提示词，可使用 @ 引用当前参考内容或技能；回车发送，Shift+回车换行" spellCheck disabled={interactionBusy} activeDropReferenceId={dropTargetReferenceId} onReferenceFilesDrop={(reference, files) => { const target = props.references.find((item) => item.id === reference.id); if (target?.attachmentId) props.onReplaceReferenceFiles(target.attachmentId, files); }} />
                 {props.attachments.length || referencesSupported ? <div className={`creation-reference-panel${trackState.isExpanded ? " is-expanded" : ""}`} aria-busy={interactionBusy}>

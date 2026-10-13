@@ -27,6 +27,27 @@ func DefaultImageCapabilityConfig(protocol string, modelName string) *ImageCapab
 		MaxOutputs:            15,
 	}
 	switch model.ChannelInterfaceType(protocol) {
+	case model.ChannelInterfaceBailianImage:
+		image.References.PromptMaxChars = 5000
+		image.References.MaxImageBytes = 10 * 1024 * 1024
+		image.References.MaskSupported = false
+		image.Size = ImageSizeConfig{Parameter: "size", Values: []string{"1K", "2K"}, Default: "2K", AllowCustom: true}
+		image.Quality.Supported = false
+		image.TransparentBackground.Supported = false
+		image.ResponseFormat.Supported = false
+		image.OutputFormat.Supported = false
+		image.MaxOutputs = 4
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(modelName)), "qwen-image-3.0") {
+			image.References.MaxImages = 3
+			image.Size = ImageSizeConfig{Parameter: "size", Values: []string{"auto", "1024x1024", "2048x2048", "2688x1536", "1536x2688", "2368x1728", "1728x2368"}, Default: "auto", AllowCustom: true}
+			image.MaxOutputs = 6
+		} else {
+			image.References.MaxImages = 9
+			image.References.MaxImageBytes = 20 * 1024 * 1024
+			if strings.EqualFold(strings.TrimSpace(modelName), "wan2.7-image-pro") {
+				image.Size.Values = append(image.Size.Values, "4K")
+			}
+		}
 	case "km-kemei-seedream":
 		image.References.MaxImages = 10
 		image.References.MaskSupported = false
@@ -142,6 +163,17 @@ func DefaultModelCapabilityConfigForModel(protocol string, modelName string) *Mo
 		if model.ChannelInterfaceType(protocol) == model.ChannelInterfaceNewAPIChannel1 {
 			video.Resolutions = []string{"480p", "720p", "1080p"}
 		}
+	case model.ChannelInterfaceAIAPIWayVideo:
+		video.References.MaxVideos, video.References.MaxAudios = 3, 3
+		video.References.MaxVideoBytes, video.References.MaxAudioBytes = 200*1024*1024, 15*1024*1024
+		video.References.MaxVideoDuration, video.References.MaxAudioDuration = 15, 15
+		video.GenerateAudio = VideoBooleanConfig{Supported: true, Default: true}
+		video.Watermark = VideoBooleanConfig{Supported: true, Default: false}
+		video.Resolutions = []string{"480p", "720p", "1080p"}
+		if strings.Contains(strings.ToLower(modelName), "filter-off") {
+			video.Resolutions = append(video.Resolutions, "4k")
+		}
+		video.Operations = append(video.Operations, "reference_to_video")
 	case model.ChannelInterfaceNewAPIVideo, model.ChannelInterfaceXAIVideo:
 		video.GenerateAudio = VideoBooleanConfig{Supported: false, Default: false}
 	case model.ChannelInterfaceNovitaVideo:

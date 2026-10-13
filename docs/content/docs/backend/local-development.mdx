@@ -1,6 +1,6 @@
 ---
 title: 本地开发
-description: 在宿主机启动影策前后端开发服务
+description: 在宿主机启动 KAI影前后端开发服务
 ---
 
 # 本地开发
@@ -11,7 +11,7 @@ description: 在宿主机启动影策前后端开发服务
 
 `error` 保留 SMTP 状态码和服务器错误说明，并标记失败步骤：`connect` / `connect_tls`（连接）、`greeting`（服务器欢迎响应）、`starttls`、`auth`、`mail_from`、`rcpt_to`、`data`、`write_body`、`finish_data` 或 `quit`。日志不主动记录账号、密码、邮件标题、正文或验证码，并对错误中回显的这些值及其 Base64 编码做脱敏。对外 API 继续使用原有通用错误响应。
 
-宿主机开发查看运行后端的终端；Docker 查看实际使用的 Compose 文件中的 `backend` 服务，例如：
+宿主机手工开发查看运行后端的终端；一键后台启动查看脚本输出的 `.local/cache/logs` 日志；Docker 查看实际使用的 Compose 文件中的 `backend` 服务，例如：
 
 ```bash
 docker compose -f docker-compose.deploy.yml logs --since=15m -f backend
@@ -35,15 +35,19 @@ docker compose -f docker-compose.deploy.yml logs --since=15m -f backend
 
 脚本会：
 
-- 使用 `.local/project-workbench-debug` 作为后端 SQLite 开发数据目录；
+- 优先查找当前工作树与主仓库 `.local/project-workbench-debug` 中的既有 SQLite 数据库；存在多份时必须用 `-DataDir` 明确选择，不自动切换账号库；
+- 检查既有库的 `.settings-key`；找不到数据库时停止，只有首次使用才传 `-InitializeData`；
+- 既有库默认设置 `CANVAS_AUTO_MIGRATE=false`，未升级的库不会在后台启动时静默迁移；
 - 创建 `.local/cache/go-build` 和 `.local/cache/go-mod` 缓存目录；
-- 首次启动时，如果 `web/node_modules` 不存在，执行 `bun install --frozen-lockfile`；
-- 打开两个 PowerShell 窗口，分别运行后端和前端；
+- 执行 `bun install --frozen-lockfile` 同步前端依赖，避免旧的 `node_modules` 在源码更新后漏装新增包；
+- 未设置非空 `YINGCE_AGENT_URL` 时，检查 Node.js 稳定版不低于 `22.19.0` 和 npm，以及完整的 `backend/agent-runtime/pi` 入口与锁文件；执行 `npm ci --omit=dev` 同步内嵌 Agent 依赖，并显式设置 `CANVAS_PI_RUNTIME_DIR` 指向当前仓库的运行时；任一步失败都不启动服务；
+- 已设置 `YINGCE_AGENT_URL` 时沿用远端 Agent 模式，不要求本机安装 Node/npm 或同步内嵌依赖；远端不可用不会自动降级到本地；
+- 在后台启动前后端，打印进程 PID 和 `.local/cache/logs` 下本次启动的标准输出、错误日志路径；
 - 将前端 `/api` 请求代理到 `http://127.0.0.1:8080`。
 
 启动后访问 [http://localhost:3000](http://localhost:3000)。后端健康检查地址是 [http://127.0.0.1:8080/api/health](http://127.0.0.1:8080/api/health)。
 
-脚本使用固定的本地开发端口：前端 `3000`，后端 `8080`。如果端口被占用，脚本会先退出，不会关闭已有进程。请分别在两个开发窗口中按 `Ctrl+C` 停止服务。
+脚本使用固定的本地开发端口：前端 `3000`，后端 `8080`。如果端口被占用，脚本会在安装依赖前退出，不会关闭已有进程或替换运行中的依赖目录。关闭调用脚本的终端不会主动停止服务；需停止时先核对对应监听端口的进程归属，不要批量终止全部 Go、Node 或 PowerShell 进程。脚本输出启动请求不代表后端已就绪，应继续查看日志和健康接口。
 
 如果 PowerShell 的执行策略阻止脚本运行，可以只对当前进程临时放行：
 
@@ -53,6 +57,18 @@ Set-ExecutionPolicy -Scope Process Bypass
 ```
 
 ## 手工启动
+
+已有账号数据时必须复用原 `.local/project-workbench-debug`；多工作树下可通过绝对路径指定。下面的相对路径示例适用于数据就在当前仓库的情况，不可据此另建空库。
+
+内嵌 Agent 默认需要 Node.js 稳定版 `22.19.0` 或更高版本。先同步其独立 npm 锁文件（不在 `web/` 执行 npm）：
+
+```bash
+cd backend/agent-runtime/pi
+npm ci --omit=dev
+cd ../../..
+```
+
+设置了 `YINGCE_AGENT_URL` 的远端模式跳过此步骤，远端服务及鉴权配置需要另行准备。
 
 后端：
 
@@ -77,6 +93,25 @@ bun run dev
 `web/` 只使用 `bun.lock`。不要用 pnpm 或 npm 往同一套 `node_modules` 里再装一遍。
 
 前端默认监听 `0.0.0.0:3000`，Vite 将 `/api` 和 OAuth 回调代理到 `127.0.0.1:8080`。如需修改代理目标，可设置 `VITE_API_PROXY_TARGET`。
+
+## 从旧版 KAI影升级
+
+当前代码同步自影策 v1.6.6（`4c1d2b4`），后端要求 Schema 53。拉取源码不代表旧数据库已升级；既有数据库、`.settings-key` 和媒体文件必须一起保留。
+
+1. 停止所有使用该数据目录的后端写入，并备份完整数据目录。SQLite 备份必须包含一致的 WAL 状态：使用 SQLite backup API，或确认进程全部正常退出后复制完整目录；不要在运行中只复制 `.db`。
+2. 先在备份副本上演练升级，保留原库。进入 `backend/`，显式设置 `CANVAS_BACKEND_DATA_DIR` 指向所选数据目录，再执行 `go run ./cmd/migrate-schema up` 和 `go run ./cmd/migrate-schema verify`。这两步需要实际执行并检查结果，不能用源码阅读代替。
+3. 经确认后才对正式本地库执行相同步骤；检查登录、历史项目、模型渠道、SMTP/存储设置和资源引用。若需回退，应同时恢复旧代码及升级前整套数据，不让旧代码连接已升级的新库。
+4. 新版嵌入式 Agent 需要 Node.js 稳定版 `22.19.0` 或更高版本，在 `backend/agent-runtime/pi/` 执行 `npm ci --omit=dev`；前端在 `web/` 执行 `bun install --frozen-lockfile`。Windows 一键脚本会执行这两步；远端 Agent 模式不安装内嵌依赖。恢复运行时仍用原端口和数据目录。
+
+使用 Git sparse checkout 的旧工作区必须包含新版根目录 `plugin-packages/`；缺少它时后端的官方插件初始化会直接失败。需要容器部署或完整开发源码时还应包含 `docker/`、`yingce-agent/`、`tools/`，不能只沿用旧版目录列表。
+
+Windows 启动脚本支持 `-DataDir` 指定既有目录；第一次初始化新账号库才使用 `-InitializeData`。DNS 缓存、重试及 Windows 的 `CANVAS_OUTBOUND_DISABLE_IPV4_PMTUD` 可选开关沿用 KAI影实现，不修改操作系统 DNS 或网卡设置，也不代表第三方鉴权、余额或域名可用性已通过验证。
+
+### Windows 验证环境
+
+只有明确需要验证时才运行检查、测试或构建。后端全量测试会为大量 service 创建隔离临时目录；若系统临时目录与仓库不在同一磁盘，官方插件无法硬链接，会反复复制较大的插件包。可仅为测试进程把 `TEMP` / `TMP` 指向工作树同盘的 `.local/cache/go-test-temp`，并用 `go test -p 2 -timeout 30m ./...` 控制并行度。不要修改系统级临时目录，也不要让测试使用正式账号数据目录。
+
+Windows 的目录句柄不支持 `FlushFileBuffers`；配置密钥仍先同步文件内容，再通过原子链接或排他创建发布，只跳过不支持的目录同步。Linux/macOS 继续同步目录；文件写入和发布失败仍返回错误。
 
 ## 时间线字幕转写（whisper.cpp）
 

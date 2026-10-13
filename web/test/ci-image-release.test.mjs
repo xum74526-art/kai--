@@ -9,6 +9,9 @@ const scripts = fileURLToPath(new URL("../../.github/scripts/", import.meta.url)
 const temporaryDirectories = [];
 const sha = "a".repeat(40);
 const digest = "b".repeat(64);
+// Windows 的系统 bash 可能只是未安装发行版的 WSL 启动器；使用 Git 自带的真实 Bash。
+const gitExecPath = process.platform === "win32" ? spawnSync("git", ["--exec-path"], { encoding: "utf8" }).stdout.trim() : "";
+const bash = process.platform === "win32" ? path.resolve(gitExecPath, "../../../bin/bash.exe") : "bash";
 afterEach(() => {
     for (const directory of temporaryDirectories.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
@@ -29,24 +32,31 @@ function fixture(overrides = {}) {
     writeFileSync(output, "");
     const env = {
         ...process.env,
-        PATH: `${bin}:${process.env.PATH}`,
-        GITHUB_OUTPUT: output,
+        PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+        CI_FIXTURE_BIN: bin.replaceAll("\\", "/"),
+        GITHUB_OUTPUT: output.replaceAll("\\", "/"),
         GITHUB_SHA: sha,
         GITHUB_REF: "refs/heads/main",
         GITHUB_REPOSITORY: "fixture/repo",
         IMAGE: "ghcr.io/fixture/image",
         VERSION_TAG: "1.5.5",
         EXPECTED_DIGESTS: "1",
-        DIGEST_DIR: digests,
+        DIGEST_DIR: digests.replaceAll("\\", "/"),
         MOCK_DIGEST: `sha256:${digest}`,
         MOCK_ERROR: "",
         MOCK_GH_ERROR: "",
         MOCK_MAIN: sha,
-        MOCK_CALL: path.join(root, "docker-call"),
+        MOCK_CALL: path.join(root, "docker-call").replaceAll("\\", "/"),
         ...overrides,
     };
     return {
-        run: (script, ...args) => spawnSync("bash", [path.join(scripts, script), ...args], { env, encoding: "utf8" }),
+        run: (script, ...args) => {
+            // 显式在 shell 内设置路径并核验 mock，避免 Windows 的 Path/PATH 合并调用真实发布工具。
+            const prelude = 'fixture_bin=$(cd "$CI_FIXTURE_BIN" && pwd) || exit 90\nexport PATH="$fixture_bin:/usr/bin:/bin:$PATH"\nif [[ "$(command -v docker)" != "$fixture_bin/docker" || "$(command -v gh)" != "$fixture_bin/gh" ]]; then printf "Mock tools unavailable: bin=%s docker=%s gh=%s\\n" "$fixture_bin" "$(command -v docker)" "$(command -v gh)" >&2; exit 90; fi\n';
+            const result = spawnSync(bash, ["-s", "--", ...args], { env, encoding: "utf8", input: prelude + readFileSync(path.join(scripts, script), "utf8").replace(/\r\n?/g, "\n") });
+            if (result.error || result.status === 90) throw new Error(result.error?.message || result.stderr);
+            return result;
+        },
         output: () => readFileSync(output, "utf8"),
         call: () => (existsSync(env.MOCK_CALL) ? readFileSync(env.MOCK_CALL, "utf8") : ""),
     };

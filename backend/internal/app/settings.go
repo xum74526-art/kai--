@@ -13,6 +13,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -486,6 +487,10 @@ func publishSettingsKey(path string, key []byte, link func(string, string) error
 		if err := fallback.Close(); err != nil {
 			return err
 		}
+	}
+	// Windows 不支持目录句柄的 FlushFileBuffers；文件内容已 Sync，发布仍由原子 Link/O_EXCL 保护。
+	if runtime.GOOS == "windows" {
+		return nil
 	}
 	// Persist the published name, not only the inode's contents.
 	dir, err := os.Open(filepath.Dir(path))

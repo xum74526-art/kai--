@@ -10,7 +10,7 @@ function compactSource(source: string) {
 }
 
 function readCreateSource() {
-    return readFileSync(resolve(import.meta.dir, "../src/pages/create/index.tsx"), "utf8");
+    return readFileSync(resolve(import.meta.dir, "../src/pages/create/index.tsx"), "utf8").replace(/\r\n?/g, "\n");
 }
 
 function readCreateWorkspaceSource() {
@@ -42,14 +42,14 @@ describe("creation library button", () => {
         const source = readCreateSource();
         const pickerSource = readFileSync(resolve(import.meta.dir, "../src/components/assets/asset-library-picker-modal.tsx"), "utf8");
         const uploadStart = source.indexOf("const uploadLibraryAssets = async");
-        const uploadEnd = source.indexOf("const handleLibrarySelect", uploadStart);
+        const uploadEnd = source.indexOf("\n    };", uploadStart);
 
         expect(uploadStart).toBeGreaterThanOrEqual(0);
         expect(uploadEnd).toBeGreaterThan(uploadStart);
         expect(source.slice(uploadStart, uploadEnd)).not.toContain("setAttachments");
         expect(source).toContain("onUpload: uploadLibraryAssets");
         expect(source).not.toContain("onUpload={() => fileInputRef.current?.click()}");
-        expect(source).toContain("上传后保存到素材库");
+        expect(source).toContain("上传图片后保存到素材库");
         expect(pickerSource).toContain("保存完成后会自动选中");
         expect(source).toContain("个素材已上传到素材库并自动选中");
     });
