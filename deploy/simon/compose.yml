@@ -1,8 +1,9 @@
-name: beidou-kai
+# 现有部署沿用私有 .env 中的项目名；不得因品牌更新创建另一组容器。
+name: ${COMPOSE_PROJECT_NAME:?set the existing project name in deploy/simon/.env}
 
 services:
   backend:
-    image: beidou-kai-backend:${KAI_IMAGE_TAG:?set a unique KAI_IMAGE_TAG in deploy/simon/.env}
+    image: ${COMPOSE_PROJECT_NAME:?set the existing project name in deploy/simon/.env}-backend:${KAI_IMAGE_TAG:?set a unique KAI_IMAGE_TAG in deploy/simon/.env}
     build:
       context: ../..
       dockerfile: backend/Dockerfile
@@ -46,7 +47,7 @@ services:
         max-file: "5"
 
   web:
-    image: beidou-kai-web:${KAI_IMAGE_TAG:?set a unique KAI_IMAGE_TAG in deploy/simon/.env}
+    image: ${COMPOSE_PROJECT_NAME:?set the existing project name in deploy/simon/.env}-web:${KAI_IMAGE_TAG:?set a unique KAI_IMAGE_TAG in deploy/simon/.env}
     build:
       context: ../..
       dockerfile: Dockerfile

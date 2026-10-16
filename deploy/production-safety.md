@@ -37,6 +37,8 @@ KAI_BUILD_REVISION=0123456789abcdef0123456789abcdef01234567
 
 备份目录必须位于应用数据目录之外。脚本不会修改源数据，也不会自动停止容器；只有操作者明确设置 `CANVAS_BACKUP_QUIESCED=yes` 才会执行。
 
+新示例路径仅用于首次部署，现有数据目录和备份目录保持不变。新备份文件默认以 `kaiying-` 命名；已有定时任务若依赖旧文件名前缀，可显式设置 `CANVAS_BACKUP_PREFIX` 为原前缀，无需重命名历史备份。恢复校验按归档内容而非文件名前缀识别，新旧备份均可验证。
+
 ### SQLite
 
 SQLite 部署先停止后端，再执行：
@@ -45,8 +47,8 @@ SQLite 部署先停止后端，再执行：
 docker compose --env-file deploy/simon/.env -f deploy/simon/compose.yml stop backend
 
 CANVAS_DATABASE_DRIVER=sqlite \
-CANVAS_DATA_PATH=/srv/beidou-kai/data \
-CANVAS_BACKUP_DIR=/srv/beidou-kai-backups \
+CANVAS_DATA_PATH=/srv/kaiying/data \
+CANVAS_BACKUP_DIR=/srv/kaiying-backups \
 CANVAS_RELEASE_REVISION="$(git rev-parse HEAD)" \
 CANVAS_BACKUP_QUIESCED=yes \
 bash deploy/backup-production.sh
@@ -65,16 +67,16 @@ backend_container="$(docker compose --env-file .env -f docker-compose.deploy.yml
 backend_data_path="$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Source}}{{end}}{{end}}' "$backend_container")"
 docker compose --env-file .env -f docker-compose.deploy.yml exec -T postgres \
   pg_dump -U open_ai_canvas -d open_ai_canvas --format=custom --no-owner --no-acl \
-  > /srv/beidou-kai-backups/postgres.pending.dump
+  > /srv/kaiying-backups/postgres.pending.dump
 
 CANVAS_DATABASE_DRIVER=postgres \
 CANVAS_DATA_PATH="$backend_data_path" \
-CANVAS_BACKUP_DIR=/srv/beidou-kai-backups \
-CANVAS_POSTGRES_DUMP_PATH=/srv/beidou-kai-backups/postgres.pending.dump \
+CANVAS_BACKUP_DIR=/srv/kaiying-backups \
+CANVAS_POSTGRES_DUMP_PATH=/srv/kaiying-backups/postgres.pending.dump \
 CANVAS_RELEASE_REVISION="${CANVAS_RELEASE_REVISION}" \
 CANVAS_BACKUP_QUIESCED=yes \
 bash deploy/backup-production.sh
-rm -f /srv/beidou-kai-backups/postgres.pending.dump
+rm -f /srv/kaiying-backups/postgres.pending.dump
 ```
 
 上述命令从 Backend 容器挂载信息解析实际数据路径，兼容命名 volume 和显式宿主机目录。生产 `.env` 仍建议把 `CANVAS_DATA_PATH` 设置为受限权限的绝对宿主机目录，便于审计和恢复。备份成功并完成校验后才能重新启动 Backend。
@@ -84,7 +86,7 @@ rm -f /srv/beidou-kai-backups/postgres.pending.dump
 每个备份包都包含版本元数据和全部文件的 SHA-256 校验和。校验脚本只解压到临时目录，不写入生产数据目录：
 
 ```sh
-bash deploy/verify-production-backup.sh /srv/beidou-kai-backups/beidou-kai-*.tar.gz
+bash deploy/verify-production-backup.sh '/srv/kaiying-backups/<具体备份文件名>.tar.gz'
 ```
 
 SQLite 会再次执行完整性与外键检查。PostgreSQL 默认验证 dump 目录；要做真实恢复演练，先单独创建名称以 `_restore_verify` 结尾的隔离数据库，再执行：
@@ -92,7 +94,7 @@ SQLite 会再次执行完整性与外键检查。PostgreSQL 默认验证 dump �
 ```sh
 POSTGRES_VERIFY_URL='postgresql://verify_user:password@127.0.0.1:5432/kai_restore_verify?sslmode=require' \
 POSTGRES_RESTORE_VERIFY_CONFIRM=restore-isolated-database \
-bash deploy/verify-production-backup.sh /srv/beidou-kai-backups/beidou-kai-postgres-*.tar.gz
+bash deploy/verify-production-backup.sh '/srv/kaiying-backups/<具体PostgreSQL备份文件名>.tar.gz'
 ```
 
 校验库必须是新建且 `public` schema 中没有任何表；脚本拒绝非空数据库，也拒绝与 `DATABASE_URL` 相同的地址，不会替操作者执行清空。不要把生产地址作为校验地址。

@@ -29,12 +29,13 @@ sh deploy/simon/preflight.sh /secure/stage/open_ai_canvas.db
 
 预检要求：`PRAGMA quick_check` 为 `ok`、无外键违规、同目录存在恰好 32 字节的 `.settings-key`、数据库存在单管理员唯一索引、管理员数量恰好为 1 且处于启用状态并保留本地密码、登录会话与临时 OAuth/邮箱验证码均为 0。它不会修改数据库。是否开放公开注册优先由后台设置决定，只有缺失该设置时才使用服务器私有 `.env`；后端的单管理员约束仍应由当前代码和数据库迁移负责，预检不能替代运行时权限检查。
 
-把通过预检的整套数据放到服务器私有目录，例如 `/srv/beidou-kai/data`。目录不得由 Web 根目录提供，也不要加入 Git 或镜像。确认运行后端镜像的 `app` 用户对该目录可读写。
+新部署把通过预检的整套数据放到服务器私有目录，例如 `/srv/kaiying/data`。现有部署继续使用原 `KAI_DATA_PATH`，不要为品牌改名移动数据库、密钥或媒体文件。目录不得由 Web 根目录提供，也不要加入 Git 或镜像。确认运行后端镜像的 `app` 用户对该目录可读写。
 
 ## 2. 配置并启动容器
 
 ```sh
-cp deploy/simon/.env.example deploy/simon/.env
+# 仅首次部署复制；升级时保留原 .env，禁止用示例覆盖。
+test -e deploy/simon/.env || cp deploy/simon/.env.example deploy/simon/.env
 # 编辑 deploy/simon/.env，至少确认 KAI_DATA_PATH 是绝对路径、公开注册策略以及每次上线的 KAI_IMAGE_TAG。
 
 docker compose --env-file deploy/simon/.env -f deploy/simon/compose.yml config
@@ -45,6 +46,8 @@ curl --fail http://127.0.0.1:5173/api/health
 ```
 
 不要把 `KAI_HTTP_PORT` 绑定到 `0.0.0.0`。Compose 文件已硬编码监听 `127.0.0.1`；公网只应通过现有 HTTPS Nginx 进入。
+
+`COMPOSE_PROJECT_NAME` 必须沿用现有部署的值，镜像名仍由该项目名加 `-backend` / `-web` 组成。示例中的 `kaiying` 仅供新部署使用；旧部署缺少该变量时，先从现有容器的 `com.docker.compose.project` 标签核对项目名并写入私有 `.env`，不要猜测或改名。品牌更新不会重命名现有容器、数据目录或迁移数据库。
 
 ## 3. 接入现有 Nginx
 

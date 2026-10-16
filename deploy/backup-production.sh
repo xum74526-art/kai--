@@ -15,12 +15,14 @@ database_driver="${CANVAS_DATABASE_DRIVER:-}"
 data_dir="${CANVAS_DATA_PATH:-}"
 backup_root="${CANVAS_BACKUP_DIR:-}"
 release_revision="${CANVAS_RELEASE_REVISION:-}"
+archive_prefix="${CANVAS_BACKUP_PREFIX:-kaiying}"
 
 [[ "$database_driver" == "sqlite" || "$database_driver" == "postgres" || "$database_driver" == "postgresql" ]] || fail "CANVAS_DATABASE_DRIVER 必须是 sqlite 或 postgres"
 [[ -n "$data_dir" && -d "$data_dir" ]] || fail "CANVAS_DATA_PATH 必须指向现有应用数据目录"
 [[ -n "$backup_root" ]] || fail "必须配置独立的 CANVAS_BACKUP_DIR"
 [[ "$release_revision" =~ ^[0-9a-f]{40}$ ]] || fail "CANVAS_RELEASE_REVISION 必须是当前部署的 40 位小写提交哈希"
 [[ "${CANVAS_BACKUP_QUIESCED:-}" == "yes" ]] || fail "先停止后端写入，再显式设置 CANVAS_BACKUP_QUIESCED=yes"
+[[ "$archive_prefix" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]] || fail "CANVAS_BACKUP_PREFIX 只能包含字母、数字、下划线和连字符"
 
 require_command realpath
 require_command python3
@@ -49,7 +51,7 @@ short_revision="${release_revision:0:12}"
 staging="$(mktemp -d "${backup_root}/.kai-backup.XXXXXX")"
 archive_tmp="$(mktemp "${backup_root}/.kai-archive.XXXXXX")"
 archive_token="${archive_tmp##*.kai-archive.}"
-archive_name="beidou-kai-${database_driver}-${timestamp}-${short_revision}-${archive_token}.tar.gz"
+archive_name="${archive_prefix}-${database_driver}-${timestamp}-${short_revision}-${archive_token}.tar.gz"
 cleanup() {
     rm -rf -- "$staging"
     rm -f -- "$archive_tmp"

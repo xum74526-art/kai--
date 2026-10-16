@@ -12,11 +12,11 @@ require_command() {
 }
 
 archive="${1:-}"
-[[ -n "$archive" && -f "$archive" ]] || fail "用法：$0 /absolute/path/to/beidou-kai-backup.tar.gz"
+[[ -n "$archive" && -f "$archive" ]] || fail "用法：$0 /absolute/path/to/kaiying-backup.tar.gz"
 require_command python3
 
 umask 077
-restore_root="$(mktemp -d "${TMPDIR:-/tmp}/beidou-kai-restore-verify.XXXXXX")"
+restore_root="$(mktemp -d "${TMPDIR:-/tmp}/kaiying-restore-verify.XXXXXX")"
 cleanup() {
     if [[ "${KEEP_RESTORE_VERIFY_DIR:-}" == "yes" ]]; then
         printf '已保留隔离校验目录：%s\n' "$restore_root"
