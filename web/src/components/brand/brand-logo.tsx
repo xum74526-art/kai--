@@ -10,15 +10,16 @@ type BrandLogoProps = {
     fallback: ReactNode;
     alt?: string;
     theme?: ThemeName | "auto";
+    variant?: "symbol" | "wordmark";
 };
 
-export function BrandLogo({ className, fallback, alt = "", theme = "auto" }: BrandLogoProps) {
+export function BrandLogo({ className, fallback, alt = "", theme = "auto", variant = "symbol" }: BrandLogoProps) {
     const appearance = useAppearanceStore((state) => state.appearance);
     const currentTheme = useActiveTheme();
     const resolvedTheme = theme === "auto" ? currentTheme : theme;
     const source = appearance.logoConfigured ? appearanceLogoURL(appearance, resolvedTheme) : resolvedTheme === "dark" ? "/logo-dark.svg" : "/logo.svg";
     const [failedSource, setFailedSource] = useState<string | null>(null);
-    if (!appearance.logoConfigured) {
+    if (!appearance.logoConfigured && variant === "symbol") {
         if (failedSource === source) return <>{fallback}</>;
         // 新版导航使用方形标记与文字组合，截取原字标中的镜头图形，保持既有品牌比例。
         return (
@@ -29,7 +30,7 @@ export function BrandLogo({ className, fallback, alt = "", theme = "auto" }: Bra
     }
     // A configured custom logo must never fall through to the built-in brand
     // when its file becomes unavailable. Keep its footprint neutral instead.
-    if (failedSource === source) return <span className={cn("block", className)} aria-hidden="true" />;
+    if (failedSource === source) return appearance.logoConfigured ? <span className={cn("block", className)} aria-hidden="true" /> : <>{fallback}</>;
     return (
         <img
             src={source}

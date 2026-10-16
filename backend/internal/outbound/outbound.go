@@ -26,7 +26,7 @@ const (
 	maxOutboundHeaderBytes   = 16 << 10
 	maxProxyURLBytes         = 512
 	CustomRelayHeadersHeader = "X-Canvas-Upstream-Headers"
-	DefaultOutboundUserAgent = "CanvasViewport/1.0 (+https://github.com/ddcat-ai/open-ai-canvas)"
+	DefaultOutboundUserAgent = "CanvasViewport/1.0 (+https://github.com/xum74526-art/kai--)"
 )
 
 type OutboundHeader struct {

@@ -6,24 +6,33 @@ import { parseContributors } from "../src/pages/welcome/contributors-parse";
 
 const identityAvatar = (path: string) => path;
 
-test("welcome contributors parse the README HTML table", () => {
-    const readme = readFileSync(resolve(import.meta.dir, "../../README.md"), "utf8");
+test("contributor parser supports an explicitly supplied HTML table", () => {
+    const readme = `## 贡献者与团队
+<table><tr><td>
+<img src="assets/user-example.jpg" alt="Example">
+<strong>Example<br><sub>项目发起者 · 微信：example</sub></strong><br>
+<a href="mailto:example@example.com">example@example.com</a><br>
+<em>一起完善创作工具。</em>
+</td></tr></table>`;
     const people = parseContributors(readme, identityAvatar);
 
-    expect(people.length).toBeGreaterThanOrEqual(20);
+    expect(people).toHaveLength(1);
     expect(people[0]).toMatchObject({
-        name: "ddCat",
-        avatar: "assets/user-ddcat.jpg",
-        email: "ddcat666@126.com",
-        wechat: "ddcat0829",
+        name: "Example",
+        avatar: "assets/user-example.jpg",
+        email: "example@example.com",
+        wechat: "example",
         isFounder: true,
     });
-    expect(people[0]?.signature).toContain("没有任何黑魔法");
-    expect(people.some((person) => person.name === "爱笑的毛毛虫")).toBe(true);
-    expect(people.some((person) => person.name === "morrow" && person.email === "3201190041@qq.com" && person.signature === "最难不过坚持")).toBe(true);
-    expect(people.some((person) => person.name === "Wyatt_K" && person.avatar === "assets/user-Wyatt_K.png" && person.signature === "千里之行，始于足下。")).toBe(true);
-    expect(people.some((person) => person.name === "亿媒网老宋" && person.avatar === "assets/user-song.jpg" && person.email === "61731514@qq.com" && person.signature === "全国10W+媒体、自媒体，助力企业品牌传播")).toBe(true);
+    expect(people[0]?.signature).toBe("一起完善创作工具。");
     expect(people.filter((person) => person.isFounder)).toHaveLength(1);
+});
+
+test("KAI README does not present the upstream team as its own", () => {
+    const readme = readFileSync(resolve(import.meta.dir, "../../README.md"), "utf8");
+    expect(parseContributors(readme, identityAvatar)).toEqual([]);
+    expect(readme).toContain("开源来源与许可");
+    expect(readme).not.toContain("ddcat666@126.com");
 });
 
 test("welcome contributors still parse markdown pipe tables", () => {

@@ -366,19 +366,12 @@
     color: var(--foreground);
 }
 
-.auth-scene-hero {
+.auth-scene-layout {
     background: var(--auth-panel-bg);
-    color: var(--foreground);
 }
 
-.auth-scene-hero-overlay {
-    background: linear-gradient(
-        180deg,
-        color-mix(in srgb, var(--auth-panel-bg) 40%, transparent),
-        transparent 42%,
-        color-mix(in srgb, var(--auth-panel-bg) 76%, transparent)
-    );
-    pointer-events: none;
+.auth-scene-hero {
+    color: var(--foreground);
 }
 
 .auth-scene-brand,
@@ -386,39 +379,33 @@
     color: inherit;
 }
 
-.auth-scene-hero-control {
-    border: 1px solid color-mix(in srgb, var(--foreground) 16%, transparent);
-    background: color-mix(in srgb, var(--auth-panel-bg) 78%, transparent);
-    color: color-mix(in srgb, var(--foreground) 82%, transparent);
-}
-
-.auth-scene-hero-control:hover {
-    background: color-mix(in srgb, var(--auth-panel-bg) 92%, transparent);
-}
-
 .auth-scene-hero-muted {
     color: color-mix(in srgb, var(--foreground) 64%, transparent);
 }
 
 .auth-scene-hero-title {
+    margin: 0;
     color: var(--foreground);
 }
 
 .auth-scene-form-pane {
-    background: var(--auth-panel-bg);
-}
-
-.auth-scene-video-blend {
-    background: linear-gradient(90deg, transparent 0%, color-mix(in srgb, var(--auth-panel-bg) 68%, transparent) 58%, var(--auth-panel-bg) 100%);
+    color: var(--foreground);
 }
 
 .auth-scene-card {
     background: var(--auth-card-bg);
-    box-shadow: var(--elevation-card-hover);
 }
 
-.auth-scene-eyebrow {
-    color: var(--auth-accent);
+.auth-scene-card-header h2 {
+    margin: 0;
+}
+
+.auth-scene-card-header p {
+    margin: var(--space-2) 0 0;
+}
+
+.auth-scene-copy p {
+    margin: var(--space-3) 0 0;
 }
 
 .auth-scene-muted {
@@ -7080,7 +7067,7 @@ html:not(.dark) .creation-studio-control[aria-expanded="true"] { background: #e7
     }
 
     .auth-card-tabs .ant-tabs-nav {
-        margin: 0;
+        margin: 0 !important;
     }
 
     .auth-card-tabs .ant-tabs-nav::before {
@@ -14330,7 +14317,7 @@ html:not(.dark) .creation-history-drawer-root {
     .creation-empty-workspace > .creation-empty-suggest { margin-top: 20px; }
 }
 
-/* ===== 素材库 · 重构（影策影视资产） =====
+/* ===== 素材库 · 重构（KAI影影视资产） =====
    与画布库共用 studio-band 毛玻璃页头与 frame 外壳；类型化封面、accent 反白筛选、
    批量操作条、banner+欢迎卡空态、资产档案抽屉。全局保持黑白单色。 */
 .assets-library-page .assets-header-meta { gap: 6px; }

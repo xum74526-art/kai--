@@ -1,12 +1,12 @@
 # 贡献指南
 
-感谢参与 Open AI Canvas。提交改动前，请先确认相关 Issue 或用简短说明描述问题、目标和外部行为变化。
+感谢参与 KAI影。请在 [KAI影仓库](https://github.com/xum74526-art/kai--) 提交 Issue 或 Pull Request，并用简短说明描述问题、目标和外部行为变化。
 
 ## 开发环境
 
 - 前端：Bun、Vite、React、TypeScript。
 - 后端：Go、Gin、GORM、SQLite。
-- 本地全栈：`docker compose up -d --build`。
+- 本地全栈：`docker compose -f docker-compose.local.yml up -d --build`；Windows 也可使用 `scripts/start-local.ps1`。
 
 不要提交 `.env`、数据库、数据目录、生成产物、编辑器配置或真实 API/OSS 密钥。新增配置项时只在 `.env.example` 中提供无敏感信息的说明。
 

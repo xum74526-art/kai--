@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 
 INSTALL_DIR="${INSTALL_DIR:-/opt/open-ai-canvas}"
-REPOSITORY="${REPOSITORY:-ddcat-ai/open-ai-canvas}"
+REPOSITORY="${REPOSITORY:-xum74526-art/kai--}"
 SOCKET_DIR="${CANVAS_UPDATER_SOCKET_DIR:-/run/open-ai-canvas-updater}"
 UPDATER_BIN="/usr/local/bin/open-ai-canvas-host-updater"
 UPDATER_ENV="/etc/open-ai-canvas-updater.env"
@@ -77,7 +77,7 @@ ensure_token() {
     fi
     [[ ${#token} -ge 32 ]] || fail "CANVAS_UPDATER_TOKEN 长度不足"
     umask 077
-    printf 'CANVAS_UPDATER_TOKEN=%s\nCANVAS_UPDATER_INSTALL_DIR=%s\nCANVAS_UPDATER_SOCKET=%s/updater.sock\n' "$token" "$INSTALL_DIR" "$SOCKET_DIR" > "$UPDATER_ENV"
+    printf 'CANVAS_UPDATER_TOKEN=%s\nCANVAS_UPDATER_INSTALL_DIR=%s\nCANVAS_UPDATER_SOCKET=%s/updater.sock\nCANVAS_UPDATER_REPOSITORY=%s\n' "$token" "$INSTALL_DIR" "$SOCKET_DIR" "$REPOSITORY" > "$UPDATER_ENV"
 }
 
 install_service() {

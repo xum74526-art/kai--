@@ -5,6 +5,8 @@ description: Host Updater、Release 检查、数据库备份迁移、健康验�
 
 # 在线更新与安全回退
 
+KAI影的默认发布源是 `xum74526-art/kai--`，镜像位于 `ghcr.io/xum74526-art/`，继续使用现有的 `open-ai-canvas-*` 镜像名。安装器与更新器使用本仓库，不自动回退到上游发布。只有该仓库已成功发布的 Release、安装器资产和镜像摘要才能用于在线更新；尚未发布时使用源码部署。本轮仅修改源码默认值，不改写既有部署的配置、镜像摘要或数据目录。
+
 管理后台的“系统配置 → 系统更新”只负责管理员鉴权、展示状态和发起操作。真正的 Docker、数据库备份与服务切换由宿主机上的 `open-ai-canvas-host-updater` 执行，业务后端不挂载 Docker Socket。
 
 ```text
@@ -42,15 +44,17 @@ description: Host Updater、Release 检查、数据库备份迁移、健康验�
 GHCR 镜像部署必须把 `CANVAS_IMAGE_TAG` 固定到具体 Release，并把 `CANVAS_BACKEND_IMAGE`、`CANVAS_WEB_IMAGE` 固定到对应 GHCR digest，不可使用 `latest` 或仅使用可变 tag。首次安装时显式指定 Release：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ddcat-ai/open-ai-canvas/main/scripts/install-server-image.sh \
-  | sudo env CANVAS_IMAGE_TAG=v1.5.7.1 bash
+# 先将 KAI_RELEASE_TAG 设为 KAI影仓库已发布的版本。
+: "${KAI_RELEASE_TAG:?请先选择已发布的 KAI影版本}"
+curl -fsSL https://raw.githubusercontent.com/xum74526-art/kai--/main/scripts/install-server-image.sh \
+  | sudo env CANVAS_IMAGE_TAG="$KAI_RELEASE_TAG" bash
 ```
 
 已有部署只安装更新器时，先确认 `.env` 已包含两个 `@sha256:...` 镜像引用，再执行：
 
 ```bash
 cd /opt/open-ai-canvas
-curl -fsSL https://raw.githubusercontent.com/ddcat-ai/open-ai-canvas/main/scripts/install-host-updater.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/xum74526-art/kai--/main/scripts/install-host-updater.sh | sudo bash
 ```
 
 脚本会下载与当前 Release 匹配的 Linux amd64/arm64 二进制和 `SHA256SUMS`，生成随机 `CANVAS_UPDATER_TOKEN`，创建 systemd 服务、Socket 目录、状态目录和 `backups/`。Token 只保存在服务器 `.env` 与 root-only 更新器环境文件中。

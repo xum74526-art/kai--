@@ -96,7 +96,7 @@ bun run dev
 
 ## 从旧版 KAI影升级
 
-当前代码同步自影策 v1.6.6（`4c1d2b4`），后端要求 Schema 53。拉取源码不代表旧数据库已升级；既有数据库、`.settings-key` 和媒体文件必须一起保留。
+当前代码同步自上游 v1.6.6（`4c1d2b4`），后端要求 Schema 53。拉取源码不代表旧数据库已升级；既有数据库、`.settings-key` 和媒体文件必须一起保留。
 
 1. 停止所有使用该数据目录的后端写入，并备份完整数据目录。SQLite 备份必须包含一致的 WAL 状态：使用 SQLite backup API，或确认进程全部正常退出后复制完整目录；不要在运行中只复制 `.db`。
 2. 先在备份副本上演练升级，保留原库。进入 `backend/`，显式设置 `CANVAS_BACKEND_DATA_DIR` 指向所选数据目录，再执行 `go run ./cmd/migrate-schema up` 和 `go run ./cmd/migrate-schema verify`。这两步需要实际执行并检查结果，不能用源码阅读代替。

@@ -1,5 +1,5 @@
 import { Popover } from "antd";
-import { ChevronDown, ChevronRight, CircleUserRound, History as HistoryIcon, Infinity as InfinityIcon, PanelLeftClose, PanelLeftOpen, Plus } from "lucide-react";
+import { ChevronDown, ChevronRight, CircleUserRound, History as HistoryIcon, PanelLeftClose, PanelLeftOpen, Plus } from "lucide-react";
 import { LayoutGroup, motion, useReducedMotion } from "motion/react";
 import { useEffect, useMemo, useRef, useState, type ComponentType, type CSSProperties } from "react";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router";
@@ -101,7 +101,7 @@ function WorkspaceSwitcher({ collapsed, onNavigate }: { collapsed: boolean; onNa
         return (
             <div className="app-workspace-sidebar-brand-row relative shrink-0 flex items-center justify-center px-3 pt-3">
                 <Link to="/" onClick={onNavigate} className="app-workspace-sidebar-brand-button group" aria-label={`${appearance.brandName}首页`}>
-                    <BrandLogoFrame className="app-workspace-brand-mark grid size-8 shrink-0 place-items-center rounded-[var(--r-sm)] shadow-sm" logoClassName="size-5 object-contain" alt="" fallback={<InfinityIcon className="size-4" strokeWidth={2.2} />} />
+                    <BrandLogoFrame className="app-workspace-brand-mark grid size-8 shrink-0 place-items-center rounded-[var(--r-sm)] shadow-sm" logoClassName="size-5 object-contain" alt="" fallback={<span className="text-xs font-semibold">K</span>} />
                 </Link>
             </div>
         );
@@ -111,7 +111,7 @@ function WorkspaceSwitcher({ collapsed, onNavigate }: { collapsed: boolean; onNa
         <div className="app-workspace-sidebar-brand-row relative shrink-0 px-3 pt-3">
             <Link to="/" onClick={onNavigate} className="app-workspace-sidebar-brand-button group" aria-label={`${appearance.brandName}首页`}>
                 <span className="flex min-w-0 items-center gap-2">
-                    <BrandLogoFrame className="app-workspace-brand-mark grid size-8 shrink-0 place-items-center rounded-[var(--r-sm)] shadow-sm" logoClassName="size-5 object-contain" alt="" fallback={<InfinityIcon className="size-4" strokeWidth={2.2} />} />
+                    <BrandLogoFrame className="app-workspace-brand-mark grid size-8 shrink-0 place-items-center rounded-[var(--r-sm)] shadow-sm" logoClassName="size-5 object-contain" alt="" fallback={<span className="text-xs font-semibold">K</span>} />
                     <span className="flex min-w-0 flex-col">
                         <span className="app-workspace-brand-wordmark truncate text-[var(--fs-body)] leading-none font-semibold">{appearance.brandName}</span>
                         <span className="mt-1 truncate text-[var(--fs-label)] leading-none text-foreground/60">创作工作台</span>

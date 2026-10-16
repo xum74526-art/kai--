@@ -14,7 +14,7 @@ test("password recovery keeps the approved login placement and dedicated route",
     expect(loginSource).toContain("忘记密码？");
     expect(loginSource).toContain("forgotPasswordURL");
     expect(routerSource).toContain('{ path: "/forgot-password"');
-    expect(sceneSource).toContain('eyebrow: "ACCOUNT RECOVERY"');
+    expect(sceneSource).toContain('title: "重新设置密码"');
     expect(recoverySource).toContain("如果该邮箱已绑定可找回的账号，验证码将发送到邮箱");
     expect(recoverySource).toContain('autoComplete="one-time-code"');
     expect(recoverySource).toContain('autoComplete="new-password"');

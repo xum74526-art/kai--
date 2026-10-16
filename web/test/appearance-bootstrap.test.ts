@@ -69,19 +69,28 @@ test("appearance selects theme logos and falls back to the single configured log
 });
 
 test("auth scene consumes resolved appearance instead of hardcoded media constants", async () => {
-    const source = await Bun.file(new URL("../src/pages/auth/auth-scene.tsx", import.meta.url)).text();
+    const [scene, showcase, media] = await Promise.all([
+        Bun.file(new URL("../src/pages/auth/auth-scene.tsx", import.meta.url)).text(),
+        Bun.file(new URL("../src/pages/auth/auth-showcase.tsx", import.meta.url)).text(),
+        Bun.file(new URL("../src/pages/auth/auth-showcase-data.ts", import.meta.url)).text(),
+    ]);
 
-    expect(source).toContain("appearance.authVideoUrl");
-    expect(source).toContain("appearance.authVideoAutoplay");
-    expect(source).toContain("appearance.authVideoPosterUrl || undefined");
-    expect(source).toContain("appearance.brandName");
-    expect(source).toContain("appearance.authHeroTitle");
-    expect(source).toContain("appearance.authHeroDescription");
-    expect(source).toContain("useThemeStore((state) => state.theme)");
-    expect(source).toContain("theme={theme}");
-    expect(source).not.toContain("让一个故事，");
-    expect(source).not.toContain("AUTH_VIDEO_URL");
-    expect(source).not.toContain("AUTH_VIDEO_POSTER");
+    expect(scene).toContain("<AuthShowcase />");
+    expect(showcase).toContain("resolveAuthShowcaseClips(appearance)");
+    expect(media).toContain("appearance.authVideoConfigured || appearance.authVideoPosterConfigured");
+    expect(media).toContain("video: appearance.authVideoUrl");
+    expect(media).toContain("poster: appearance.authVideoPosterUrl");
+    expect(showcase).toContain("autoplay={appearance.authVideoAutoplay}");
+    expect(showcase).toContain("src={clip.video}");
+    expect(showcase).toContain("poster={clip.poster || undefined}");
+    expect(scene).toContain("appearance.brandName");
+    expect(scene).toContain("appearance.authHeroTitle");
+    expect(scene).toContain("appearance.authHeroDescription");
+    expect(scene).toContain("useThemeStore((state) => state.theme)");
+    expect(scene).toContain('theme={theme} variant="wordmark"');
+    expect(scene).not.toContain("让一个故事，");
+    expect(scene).not.toContain("AUTH_VIDEO_URL");
+    expect(scene).not.toContain("AUTH_VIDEO_POSTER");
 });
 
 test("appearance management exposes light and dark logo uploads plus the frame switch", async () => {

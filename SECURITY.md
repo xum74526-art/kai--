@@ -1,4 +1,4 @@
-# 安全策略
+# KAI影安全策略
 
 ## 支持范围
 
@@ -7,8 +7,8 @@
 ## 报告漏洞
 
 请不要通过公开 Issue 披露尚未修复的漏洞。优先使用 GitHub 仓库的
-[Private vulnerability reporting](https://github.com/ddcat-ai/open-ai-canvas/security/advisories/new)，
-或发送邮件至 `ddcat666@126.com`。
+[私密漏洞报告](https://github.com/xum74526-art/kai--/security/advisories/new)。
+若仓库暂未开放此入口，请先通过普通 Issue 请求维护者提供私密联系方式，不要在公开内容中披露漏洞细节、密钥或用户数据。
 
 报告中请包含受影响版本、复现步骤、影响范围和可行的缓解建议。请勿访问、下载或修改不属于你的数据，也不要对公开实例进行持续压测。
 

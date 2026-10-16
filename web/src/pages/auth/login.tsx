@@ -74,14 +74,6 @@ export default function LoginPage() {
             <AuthField
                 label="密码"
                 htmlFor="login-password"
-                action={
-                    <Link
-                        to={forgotPasswordURL}
-                        className="auth-scene-link -my-2 inline-flex min-h-8 items-center rounded-sm text-xs font-medium transition-colors"
-                    >
-                        忘记密码？
-                    </Link>
-                }
             >
                 <Input.Password
                     id="login-password"
@@ -93,6 +85,11 @@ export default function LoginPage() {
                     autoComplete="current-password"
                     required
                 />
+                <div className="flex justify-end">
+                    <Link to={forgotPasswordURL} className="auth-scene-link inline-flex min-h-8 items-center rounded-sm text-xs font-medium transition-colors">
+                        忘记密码？
+                    </Link>
+                </div>
             </AuthField>
             </>}
             <Button type="primary" htmlType="submit" size="large" block loading={submitting} icon={<ArrowRight className="size-4" />} iconPlacement="end">
@@ -112,14 +109,13 @@ export default function LoginPage() {
     );
 }
 
-function AuthField({ label, htmlFor, action, children }: { label: string; htmlFor: string; action?: ReactNode; children: ReactNode }) {
+function AuthField({ label, htmlFor, children }: { label: string; htmlFor: string; children: ReactNode }) {
     return (
         <div className="space-y-2">
             <div className="flex items-center justify-between gap-3">
                 <label htmlFor={htmlFor} className="auth-scene-label text-xs font-medium">
                     {label}
                 </label>
-                {action}
             </div>
             {children}
         </div>

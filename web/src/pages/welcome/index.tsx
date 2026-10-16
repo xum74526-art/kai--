@@ -101,12 +101,11 @@ function WelcomeExperience({ look, brandName, onLookChange }: { look: WelcomeLoo
             <a className="welcome-skip" href="#workbench">前往工作台介绍</a>
             <header className="welcome-header">
                 <a className="welcome-brand" href="/welcome" aria-label={`${brandName}首页`}>
-                    <BrandLogo theme="dark" className="welcome-brand-logo" alt="" fallback={<span className="welcome-brand-logo is-fallback" />} />
-                    {brandName}
+                    <BrandLogo theme="dark" variant="wordmark" className="welcome-brand-logo" alt={brandName} fallback={<span>{brandName}</span>} />
                 </a>
                 <nav className={menu ? "welcome-nav is-open" : "welcome-nav"} aria-label="首页导航">
                     <a href="#workbench" onClick={() => setMenu(false)}>工作台</a>
-                    <a href="#contributors" onClick={() => setMenu(false)}>贡献者</a>
+                    <a href="#contributors" onClick={() => setMenu(false)}>参与共建</a>
                     <a href={github} target="_blank" rel="noreferrer">GitHub<ArrowUpRight size={13} /></a>
                 </nav>
                 <Button className="welcome-header-cta" type="primary" href="/create" icon={<ArrowUpRight size={16} />} iconPlacement="end">开始创作</Button>
@@ -140,7 +139,15 @@ function WelcomeExperience({ look, brandName, onLookChange }: { look: WelcomeLoo
                 <section id="workbench" className="welcome-workbench">
                     <div className="welcome-section-heading"><h2>让想象，有处落笔。</h2></div>
                     <div className="welcome-workbench-bar"><Tabs activeKey={String(showcase)} aria-label="工作台预览" items={showcases.map((item, index) => ({ key: String(index), label: item.name }))} onChange={(key) => setShowcase(Number(key))} /><Button type="link" href={active.href} icon={<ArrowUpRight size={16} />} iconPlacement="end">进入{active.name}</Button></div>
-                    <div id="workbench-preview" role="tabpanel" className="welcome-workbench-preview"><img src={active.image} alt={`${brandName}${active.name}界面`} loading="lazy" /></div>
+                    <div id="workbench-preview" role="tabpanel" className="welcome-workbench-preview">
+                        {active.image ? <img src={active.image} alt={`${brandName}${active.name}界面`} loading="lazy" /> : (
+                            <div className="welcome-workbench-brand" aria-label={`${brandName}${active.name}介绍`}>
+                                <BrandLogo theme="dark" variant="wordmark" className="welcome-workbench-brand-logo" alt={brandName} fallback={<span>{brandName}</span>} />
+                                <h3>{active.name}</h3>
+                                <p>{active.description}</p>
+                            </div>
+                        )}
+                    </div>
                     <div className="welcome-workbench-caption"><p>{active.detail}</p></div>
                 </section>
 

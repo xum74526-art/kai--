@@ -13,7 +13,6 @@ import {
     FileClock,
     HardDrive,
     Home,
-    Infinity as InfinityIcon,
     KeyRound,
     Layers3,
     Mail,
@@ -163,7 +162,7 @@ function AdminShellLayout() {
                             <AdminTooltip title={collapsed ? (appearance.updates?.enabled ? "查看更新公告" : "查看更新日志") : undefined} placement="right">
                                 <AppChangelogButton
                                     className={cn("admin-sidebar-brand-button", collapsed && "is-collapsed")}
-                                    icon={<BrandLogoFrame className="admin-sidebar-brand-mark grid shrink-0 place-items-center bg-foreground text-background" logoClassName="size-5 object-contain" alt="" fallback={<InfinityIcon className="size-4" />} />}
+                                    icon={<BrandLogoFrame className="admin-sidebar-brand-mark grid shrink-0 place-items-center bg-foreground text-background" logoClassName="size-5 object-contain" alt="" fallback={<span className="text-xs font-semibold">K</span>} />}
                                     label={appearance.brandName}
                                     showLabel={!collapsed}
                                     showVersion={!collapsed}

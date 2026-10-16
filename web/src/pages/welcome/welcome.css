@@ -93,14 +93,10 @@ body:has(.welcome-page) {
 }
 .welcome-brand-logo {
     display: block;
-    width: 26px;
-    height: 26px;
+    width: auto;
+    height: 40px;
+    max-width: 160px;
     object-fit: contain;
-}
-.welcome-brand-logo.is-fallback {
-    background: currentColor;
-    mask: url("/logo.svg") center / contain no-repeat;
-    -webkit-mask: url("/logo.svg") center / contain no-repeat;
 }
 .welcome-nav {
     margin-left: auto;
@@ -470,6 +466,23 @@ body:has(.welcome-page) {
     height: 100%;
     object-fit: contain;
 }
+.welcome-workbench-brand {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: calc(var(--spacing) * 4);
+    padding: calc(var(--spacing) * 6);
+    text-align: center;
+}
+.welcome-workbench-preview .welcome-workbench-brand-logo {
+    width: 40%;
+    height: auto;
+}
+.welcome-workbench-brand p {
+    color: var(--welcome-muted);
+}
 .welcome-workbench-caption {
     padding: 24px 0 0;
 }
@@ -759,8 +772,8 @@ body:has(.welcome-page) {
         gap: 8px;
     }
     .welcome-brand-logo {
-        width: 22px;
-        height: 22px;
+        height: 32px;
+        max-width: 112px;
     }
     .welcome-header-cta {
         margin-left: auto;

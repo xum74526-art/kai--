@@ -6,7 +6,7 @@ import type { ChangeEvent } from "react";
 
 import type { ChannelHeader } from "@/stores/use-config-store";
 
-const DEFAULT_USER_AGENT = "Yingce/1.0 (+https://github.com/ddcat-ai/open-ai-canvas)";
+const DEFAULT_USER_AGENT = "KAIying/1.0 (+https://github.com/xum74526-art/kai--)";
 const MAX_HEADER_COUNT = 32;
 const BLOCKED_HEADERS = new Set([
     "authorization",
